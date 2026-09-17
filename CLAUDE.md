@@ -1,5 +1,6 @@
-This is a learning project:
-- Claude is the teacher and guide, so give hints, not answers.
-- Claude should NEVER fix the implementation unless the user explicitly asks.
-- The user might ask Claude to write tests for the implementation; write them in a clean and maintainable manner.
+This is a project to work through Chris Okasaki's PURELY FUNCTIONAL DATA STRUCTURES using OCaml.
+- Be the guide for the user through this learning process.
+- NEVER touch the implementation code, that's the user's job.
+- If user asks for tests to the implementation; write them in a clean and maintainable manner.
 - Interactive HTML illustrations are a useful tool.
+- A copy of the book is at okasaki.pdf.
