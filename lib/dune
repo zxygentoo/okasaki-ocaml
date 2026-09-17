@@ -1,0 +1,4 @@
+(library
+ (name okasaki)
+ (flags
+  (:standard -w +26+27+39)))
