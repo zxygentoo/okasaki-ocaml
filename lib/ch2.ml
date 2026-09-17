@@ -223,8 +223,7 @@ module type FINITE_MAP = sig
   val bind : key -> 'a -> 'a map -> 'a map
 end
 
-module UnbalancedMap (Key : ORDERED) :
-  FINITE_MAP with type key = Key.t and type 'a map = (Key.t * 'a) tree = struct
+module UnbalancedMap (Key : ORDERED) : FINITE_MAP with type key = Key.t = struct
   type key = Key.t
   type 'a map = (key * 'a) tree
 

@@ -544,9 +544,14 @@ let test_create_cost () =
 
 (* ----------------------------------------------------- UnbalancedMap (2.6) *)
 
-let rec bindings = function
-  | Empty -> []
-  | Tree (l, kv, r) -> bindings l @ [ kv ] @ bindings r
+(* UnbalancedMap seals 'a map, so the tests reach it only through lookup/bind. That is
+   enough to pin a map down completely: over a known key universe, every key either looks
+   up to the expected value or raises Not_found, which also rules out bindings the map
+   should not have. *)
+let lookup_opt k m =
+  match M.lookup k m with
+  | v -> Some v
+  | exception Not_found -> None
 ;;
 
 let test_map () =
@@ -585,11 +590,21 @@ let test_map () =
       M.empty
       [ 1; 2; 1; 1; 3; 2 ]
   in
+  let show_tally m =
+    String.concat
+      " "
+      (List.map
+         (fun k ->
+           match lookup_opt k m with
+           | Some v -> Printf.sprintf "%d->%d" k v
+           | None -> Printf.sprintf "%d->_" k)
+         [ 1; 2; 3; 4 ])
+  in
   check_eq
     "repeated rebinding accumulates"
-    ~expect:[ 1, 3; 2, 2; 3, 1 ]
-    ~actual:(bindings tally)
-    (fun l -> String.concat " " (List.map (fun (k, v) -> Printf.sprintf "%d->%d" k v) l));
+    ~expect:"1->3 2->2 3->1 4->_"
+    ~actual:(show_tally tally)
+    Fun.id;
   (* Randomised against an assoc-list reference. *)
   Random.init 20260917;
   let ok = ref true in
@@ -599,8 +614,12 @@ let test_map () =
     let reference =
       List.fold_left (fun a (k, v) -> (k, v) :: List.remove_assoc k a) [] ops
     in
-    List.iter (fun (k, v) -> if M.lookup k m <> v then ok := false) reference;
-    if List.length (bindings m) <> List.length reference then ok := false
+    (* Sweep the whole key universe: a bound key must yield its latest value, and an
+       unbound one must raise. Together those pin the map exactly, with no need to see
+       inside it. *)
+    for k = 0 to 19 do
+      if lookup_opt k m <> List.assoc_opt k reference then ok := false
+    done
   done;
   check "map agrees with an assoc-list reference over 300 random workloads" !ok;
   (* Values are unconstrained: no comparison is ever performed on them. *)
