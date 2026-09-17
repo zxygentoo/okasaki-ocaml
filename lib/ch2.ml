@@ -113,8 +113,6 @@ module type SET = sig
   val insert : elem -> set -> set
 end
 
-exception Already_present
-
 module UnbalancedSet (Element : ORDERED) : SET with type elem = Element.t = struct
   type elem = Element.t
   type set = elem tree
@@ -146,6 +144,8 @@ module UnbalancedSet (Element : ORDERED) : SET with type elem = Element.t = stru
 
      Exercise 2.4 Combine the ideas of the previous two exercises to obtain a version of
      insert that performs no unnecessary copying and uses no more than d + 1 comparisons. *)
+
+  exception Already_present
 
   let insert x s =
     let rec go candidate = function
