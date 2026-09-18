@@ -200,7 +200,7 @@ module BinomialHeap (Element : ORDERED) : HEAP with module Element = Element = s
   module Element = Element
 
   type elem = Element.t
-  type tree = Node of int * elem * tree list
+  type tree = Node of (int * elem * tree list)
   type heap = tree list
 
   let empty = []
@@ -283,7 +283,7 @@ struct
   module Element = Element
 
   type elem = Element.t
-  type tree = Node of elem * tree list
+  type tree = Node of (elem * tree list)
   type heap = (int * tree) list
 
   let empty = []
@@ -355,7 +355,7 @@ module ExplicitMin (H : HEAP) : HEAP with module Element = H.Element = struct
 
   type heap =
     | Empty
-    | Heap of elem * H.heap
+    | Heap of (elem * H.heap)
 
   let empty = Empty
 
@@ -387,5 +387,58 @@ module ExplicitMin (H : HEAP) : HEAP with module Element = H.Element = struct
     | Heap (_, h) ->
       let h' = H.delete_min h in
       if H.is_empty h' then Empty else Heap (H.find_min h', h')
+  ;;
+end
+
+module type SET = sig
+  type elem
+  type set
+
+  val empty : set
+  val member : elem -> set -> bool
+  val insert : elem -> set -> set
+end
+
+module RedBlackSet (Element : ORDERED) : SET = struct
+  type elem = Element.t
+
+  type color =
+    | R
+    | B
+
+  type tree =
+    | E
+    | T of (color * tree * elem * tree)
+
+  type set = tree
+
+  let empty = E
+
+  let rec member x = function
+    | E -> false
+    | T (_, a, y, b) ->
+      if Element.lt x y then member x a else if Element.lt y x then member x b else true
+  ;;
+
+  let balance = function
+    | B, T (R, T (R, a, x, b), y, c), z, d
+    | B, a, x, T (R, T (R, b, y, c), z, d)
+    | B, a, x, T (R, b, y, T (R, c, z, d)) -> T (R, T (B, a, x, b), y, T (B, c, z, d))
+    | body -> T body
+  ;;
+
+  let insert x s =
+    let rec ins = function
+      | E -> T (R, E, x, E)
+      | T (color, a, y, b) ->
+        if Element.lt x y
+        then balance (color, ins a, y, b)
+        else if Element.lt y x
+        then balance (color, a, y, ins b)
+        else s
+    in
+    match ins s with
+    | E -> E
+    | T (_, a, y, b) -> T (B, a, y, b)
   ;;
 end
