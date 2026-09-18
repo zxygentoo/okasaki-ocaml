@@ -7,16 +7,22 @@ module type ORDERED = sig
 end
 
 module type HEAP = sig
-  type elem
+  module Element : ORDERED
+
   type heap
 
   val empty : heap
   val is_empty : heap -> bool
-  val insert : elem -> heap -> heap
+  val insert : Element.t -> heap -> heap
   val merge : heap -> heap -> heap
-  val find_min : heap -> elem (* raises Failure if heap is empty *)
+  val find_min : heap -> Element.t (* raises Failure if heap is empty *)
   val delete_min : heap -> heap (* raises Failure if heap is empty *)
-  val from_list : elem list -> heap
+end
+
+module type HEAP_WITH_FROM_LIST = sig
+  include HEAP
+
+  val from_list : Element.t list -> heap
 end
 
 (* Leftist heaps [Cra72, Knu73a] are heap-ordered binary trees that satisfy the leftist
@@ -26,7 +32,10 @@ end
    leftist property is that the right spine of any node is always the shortest path to an
    empty node. *)
 
-module LeftistHeap (Element : ORDERED) : HEAP with type elem = Element.t = struct
+module LeftistHeap (Element : ORDERED) :
+  HEAP_WITH_FROM_LIST with module Element = Element = struct
+  module Element = Element
+
   type elem = Element.t
 
   type heap =
@@ -78,12 +87,12 @@ module LeftistHeap (Element : ORDERED) : HEAP with type elem = Element.t = struc
   ;;
 
   let find_min = function
-    | Empty -> raise (Failure "find_min")
+    | Empty -> raise (Failure "find_min: empty heap")
     | Heap { value } -> value
   ;;
 
   let delete_min = function
-    | Empty -> raise (Failure "delete_min")
+    | Empty -> raise (Failure "delete_min: empty heap")
     | Heap { left; right } -> merge left right
   ;;
 
@@ -116,8 +125,10 @@ end
 
 (* (b) Modify the implementation in Figure 3.2 to obtain weight-biased leftist heaps. *)
 
-module WeightBiasedLeftistHeap (Element : ORDERED) : HEAP with type elem = Element.t =
+module WeightBiasedLeftistHeap (Element : ORDERED) : HEAP with module Element = Element =
 struct
+  module Element = Element
+
   type elem = Element.t
 
   type heap =
@@ -175,26 +186,206 @@ struct
   ;;
 
   let find_min = function
-    | Empty -> raise (Failure "find_min")
+    | Empty -> raise (Failure "find_min: empty heap")
     | Heap { value } -> value
   ;;
 
   let delete_min = function
-    | Empty -> raise (Failure "delete_min")
+    | Empty -> raise (Failure "delete_min: empty heap")
     | Heap { left; right } -> merge left right
   ;;
+end
 
-  let from_list xs =
-    let rec pass acc = function
-      | [] -> acc
-      | [ h ] -> h :: acc
-      | h1 :: h2 :: hs -> pass (merge h1 h2 :: acc) hs
+module BinomialHeap (Element : ORDERED) : HEAP with module Element = Element = struct
+  module Element = Element
+
+  type elem = Element.t
+  type tree = Node of int * elem * tree list
+  type heap = tree list
+
+  let empty = []
+
+  let is_empty = function
+    | [] -> true
+    | _ -> false
+  ;;
+
+  let rank (Node (r, _, _)) = r
+  let root (Node (_, x, _)) = x
+
+  let link (Node (r, v1, c1) as t1) (Node (_, v2, c2) as t2) =
+    if Element.leq v1 v2 then Node (r + 1, v1, t2 :: c1) else Node (r + 1, v2, t1 :: c2)
+  ;;
+
+  let rec ins_tree t = function
+    | [] -> [ t ]
+    | t' :: ts' as ts -> if rank t < rank t' then t :: ts else ins_tree (link t t') ts'
+  ;;
+
+  let insert x h = ins_tree (Node (0, x, [])) h
+
+  let rec merge h1 h2 =
+    match h1, h2 with
+    | _, [] -> h1
+    | [], _ -> h2
+    | t1 :: t1s, t2 :: t2s ->
+      if rank t1 < rank t2
+      then t1 :: merge t1s h2
+      else if rank t1 > rank t2
+      then t2 :: merge h1 t2s
+      else ins_tree (link t1 t2) (merge t1s t2s)
+  ;;
+
+  let rec remove_min_tree = function
+    | [] -> raise (Failure "remove_min_tree: empty tree")
+    | [ t ] -> t, []
+    | t :: ts ->
+      let t', ts' = remove_min_tree ts in
+      if Element.leq (root t) (root t') then t, ts else t', t :: ts'
+  ;;
+
+  (* Exercise 3.5 Define findMin directly rather than via a call to removeMinTree. *)
+
+  let find_min = function
+    | [] -> raise (Failure "find_min: empty heap")
+    | t :: ts ->
+      let rec go acc = function
+        | [] -> acc
+        | x :: xs ->
+          let r = root x in
+          go (if Element.lt r acc then r else acc) xs
+      in
+      go (root t) ts
+  ;;
+
+  let delete_min h =
+    let Node (_, _, ts), h' =
+      try remove_min_tree h with
+      | Failure _ -> raise (Failure "delete_min: empty heap")
     in
-    let rec go = function
-      | [] -> Empty
-      | [ h ] -> h
-      | hs -> pass [] hs |> go
+    merge (List.rev ts) h'
+  ;;
+end
+
+(* Exercise 3.6 Most of the rank annotations in this representation of binomial heaps are
+   redundant because we know that the children of a node of rank r have ranks r - 1,...,
+   0. Thus, we can remove the rank annotations from each node and instead pair each tree
+   at the top-level with its rank, i.e.,
+
+   datatype Tree = Node of Elem x Tree list
+
+   type Heap = (int x Tree) list
+
+   Reimplement binomial heaps with this new representation. *)
+
+module RanklessBinomialHeap (Element : ORDERED) : HEAP with module Element = Element =
+struct
+  module Element = Element
+
+  type elem = Element.t
+  type tree = Node of elem * tree list
+  type heap = (int * tree) list
+
+  let empty = []
+
+  let is_empty = function
+    | [] -> true
+    | _ -> false
+  ;;
+
+  let root (Node (x, _)) = x
+
+  let link r (Node (v1, c1) as t1) (Node (v2, c2) as t2) =
+    if Element.leq v1 v2 then r + 1, Node (v1, t2 :: c1) else r + 1, Node (v2, t1 :: c2)
+  ;;
+
+  let rec ins_tree (r, t) = function
+    | [] -> [ r, t ]
+    | (r', t') :: ts' as ts -> if r < r' then (r, t) :: ts else ins_tree (link r t t') ts'
+  ;;
+
+  let insert x h = ins_tree (0, Node (x, [])) h
+
+  let rec merge h1 h2 =
+    match h1, h2 with
+    | _, [] -> h1
+    | [], _ -> h2
+    | ((r1, tr1) as t1) :: t1s, ((r2, tr2) as t2) :: t2s ->
+      if r1 < r2
+      then t1 :: merge t1s h2
+      else if r1 > r2
+      then t2 :: merge h1 t2s
+      else ins_tree (link r1 tr1 tr2) (merge t1s t2s)
+  ;;
+
+  let rec remove_min_tree = function
+    | [] -> raise (Failure "remove_min_tree: empty tree")
+    | [ rt ] -> rt, []
+    | ((_, t) as rt) :: ts ->
+      let ((_, t') as rt'), ts' = remove_min_tree ts in
+      if Element.leq (root t) (root t') then rt, ts else rt', rt :: ts'
+  ;;
+
+  let find_min h =
+    let (_, t), _ =
+      try remove_min_tree h with
+      | Failure _ -> raise (Failure "find_min: empty heap")
     in
-    List.map heap1 xs |> go
+    root t
+  ;;
+
+  let delete_min h =
+    let (_, Node (_, ts)), h' =
+      try remove_min_tree h with
+      | Failure _ -> raise (Failure "delete_min: empty heap")
+    in
+    merge (ts |> List.rev |> List.mapi (fun i t -> i, t)) h'
+  ;;
+end
+
+(* Exercise 3.7 One clear advantage of leftist heaps over binomial heaps is that findMin
+   takes only 0(1) time, rather than O(log n) time. The following functor skeleton
+   improves the running time of findMin to 0(1) by storing the minimum element separately
+   from the rest of the heap. *)
+
+module ExplicitMin (H : HEAP) : HEAP with module Element = H.Element = struct
+  module Element = H.Element
+
+  type elem = H.Element.t
+
+  type heap =
+    | Empty
+    | Heap of elem * H.heap
+
+  let empty = Empty
+
+  let is_empty = function
+    | Empty -> true
+    | _ -> false
+  ;;
+
+  let insert x = function
+    | Empty -> Heap (x, H.insert x H.empty)
+    | Heap (e, h) -> Heap ((if H.Element.leq x e then x else e), H.insert x h)
+  ;;
+
+  let merge h1 h2 =
+    match h1, h2 with
+    | _, Empty -> h1
+    | Empty, _ -> h2
+    | Heap (e1, h1'), Heap (e2, h2') ->
+      Heap ((if H.Element.leq e1 e2 then e1 else e2), H.merge h1' h2')
+  ;;
+
+  let find_min = function
+    | Empty -> raise (Failure "find_min: empty heap")
+    | Heap (e, _) -> e
+  ;;
+
+  let delete_min = function
+    | Empty -> raise (Failure "delete_min: empty heap")
+    | Heap (_, h) ->
+      let h' = H.delete_min h in
+      if H.is_empty h' then Empty else Heap (H.find_min h', h')
   ;;
 end

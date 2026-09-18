@@ -139,7 +139,7 @@ let orders n =
 
 (* Every test below is written against HEAP alone, so both implementations are held to the
    same behaviour and the same bounds. *)
-module Heap_tests (H : HEAP with type elem = int) = struct
+module Heap_tests (H : HEAP with type Element.t = int) = struct
   let of_list xs = List.fold_left (fun h x -> H.insert x h) H.empty xs
 
   (* find_min/delete_min to exhaustion. That this comes out sorted is the whole
@@ -160,15 +160,19 @@ module Heap_tests (H : HEAP with type elem = int) = struct
     count_only (fun () -> H.merge h big)
   ;;
 
-  let run name =
+  (* Every heap owes this, whatever its shape. *)
+  let run_contract name =
     let t label = Printf.sprintf "%s: %s" name label in
-    (* -------------------------------------------------------------- behaviour *)
     check (t "empty is empty") (H.is_empty H.empty);
     check (t "a singleton is not empty") (not (H.is_empty (H.insert 1 H.empty)));
-    check_raises (t "find_min on empty raises") (Failure "find_min") (fun () ->
-      H.find_min H.empty);
-    check_raises (t "delete_min on empty raises") (Failure "delete_min") (fun () ->
-      ignore (H.is_empty (H.delete_min H.empty)));
+    check_raises
+      (t "find_min on empty raises")
+      (Failure "find_min: empty heap")
+      (fun () -> H.find_min H.empty);
+    check_raises
+      (t "delete_min on empty raises")
+      (Failure "delete_min: empty heap")
+      (fun () -> ignore (H.is_empty (H.delete_min H.empty)));
     check_int (t "find_min of a singleton") ~expect:5 ~actual:(H.find_min (of_list [ 5 ]));
     check
       (t "delete_min of a singleton is empty")
@@ -201,41 +205,21 @@ module Heap_tests (H : HEAP with type elem = int) = struct
       ~actual:(drain (H.merge H.empty (of_list [ 3; 1; 2 ])))
       string_of_int_list;
     check (t "merge of two empties is empty") (H.is_empty (H.merge H.empty H.empty));
-    (* from_list (3.3) must agree with repeated insert, empty list included. *)
-    check (t "from_list []") (H.is_empty (H.from_list []));
-    check_eq
-      (t "from_list [7]")
-      ~expect:[ 7 ]
-      ~actual:(drain (H.from_list [ 7 ]))
-      string_of_int_list;
-    (* An odd length is where a pairwise pass can drop the unpaired heap. *)
-    check_eq
-      (t "from_list of an odd number of elements")
-      ~expect:[ 1; 2; 3; 4; 5 ]
-      ~actual:(drain (H.from_list [ 3; 1; 5; 2; 4 ]))
-      string_of_int_list;
-    (* Randomised, against List.sort as the reference. Sizes straddle the powers of two
-       where the pairwise passes of from_list leave an odd heap over. *)
+    (* Randomised, against List.sort as the reference. *)
     Random.init 20260918;
     let bad_insert = ref 0
-    and bad_from_list = ref 0
     and bad_merge = ref 0 in
     for _ = 0 to 299 do
       let n = Random.int 40 in
       let xs = List.init n (fun _ -> Random.int 50) in
       let sorted = List.sort compare xs in
       if drain (of_list xs) <> sorted then incr bad_insert;
-      if drain (H.from_list xs) <> sorted then incr bad_from_list;
       let m = Random.int 40 in
       let ys = List.init m (fun _ -> Random.int 50) in
       if drain (H.merge (of_list xs) (of_list ys)) <> List.sort compare (xs @ ys)
       then incr bad_merge
     done;
     check_int (t "insert then drain, 300 random lists") ~expect:0 ~actual:!bad_insert;
-    check_int
-      (t "from_list then drain, 300 random lists")
-      ~expect:0
-      ~actual:!bad_from_list;
     check_int (t "merge then drain, 300 random pairs") ~expect:0 ~actual:!bad_merge;
     (* Persistence: no operation may disturb its operands. *)
     let h = of_list [ 5; 3; 8; 1 ] in
@@ -243,7 +227,14 @@ module Heap_tests (H : HEAP with type elem = int) = struct
     let _ = H.insert 0 h
     and _ = H.delete_min h
     and _ = H.merge h h in
-    check_eq (t "operands are untouched") ~expect ~actual:(drain h) string_of_int_list;
+    check_eq (t "operands are untouched") ~expect ~actual:(drain h) string_of_int_list
+  ;;
+
+  (* Leftist heaps only: rank_of measures a RIGHT SPINE by merging with a large singleton.
+     Against a binomial heap the same call counts carries instead, so the bound it is
+     compared to would be measuring the wrong thing. *)
+  let run_structure name =
+    let t label = Printf.sprintf "%s: %s" name label in
     (* ------------------------------------------ 3.1 / 3.4(a): the spine bound *)
     (* This is the structural invariant. A heap that lost the leftist property would keep
        draining in sorted order but grow a spine past the bound, so this is the check that
@@ -261,7 +252,7 @@ module Heap_tests (H : HEAP with type elem = int) = struct
                   over
                   := Printf.sprintf "%s/%s n=%d rank=%d>%d" how built n r (spine_bound n)
                      :: !over)
-              [ "insert", of_list xs; "from_list", H.from_list xs ])
+              [ "insert", of_list xs ])
           (orders n))
       [ 1; 2; 3; 4; 7; 8; 15; 16; 17; 100; 511; 512; 1000 ];
     check
@@ -292,7 +283,7 @@ module Heap_tests (H : HEAP with type elem = int) = struct
         (List.fold_left
            (fun acc n ->
              List.fold_left
-               (fun acc (_, xs) -> acc + shrink (H.from_list xs) n 0)
+               (fun acc (_, xs) -> acc + shrink (of_list xs) n 0)
                acc
                (orders n))
            0
@@ -355,6 +346,45 @@ module Heap_tests (H : HEAP with type elem = int) = struct
         [ 1; 100; 100_000 ];
       check_int (t "find_min is O(1)") ~expect:0 ~actual:!bad_find)
   ;;
+end
+
+(* from_list is Exercise 3.3, a leftist-heap exercise, and deliberately not part of HEAP:
+   only the modules that actually implement it are held to this contract. *)
+module From_list_tests (H : HEAP_WITH_FROM_LIST with type Element.t = int) = struct
+  let of_list xs = List.fold_left (fun h x -> H.insert x h) H.empty xs
+
+  let drain h =
+    let rec go acc h =
+      if H.is_empty h then List.rev acc else go (H.find_min h :: acc) (H.delete_min h)
+    in
+    go [] h
+  ;;
+
+  let run name =
+    let t label = Printf.sprintf "%s: %s" name label in
+    check (t "from_list []") (H.is_empty (H.from_list []));
+    check_eq
+      (t "from_list [7]")
+      ~expect:[ 7 ]
+      ~actual:(drain (H.from_list [ 7 ]))
+      string_of_int_list;
+    (* An odd length is where a pairwise pass can drop the unpaired heap. *)
+    check_eq
+      (t "from_list of an odd number of elements")
+      ~expect:[ 1; 2; 3; 4; 5 ]
+      ~actual:(drain (H.from_list [ 3; 1; 5; 2; 4 ]))
+      string_of_int_list;
+    (* Randomised against List.sort. Sizes straddle the powers of two where the pairwise
+       passes leave an odd heap over. *)
+    Random.init 20260918;
+    let bad = ref 0 in
+    for _ = 0 to 299 do
+      let n = Random.int 40 in
+      let xs = List.init n (fun _ -> Random.int 50) in
+      if drain (H.from_list xs) <> List.sort compare xs then incr bad
+    done;
+    check_int (t "from_list then drain, 300 random lists") ~expect:0 ~actual:!bad
+  ;;
 
   (* ------------------------------------------------------- 3.3: from_list is O(n) *)
 
@@ -371,7 +401,7 @@ module Heap_tests (H : HEAP with type elem = int) = struct
   let from_list_cost n = count_only (fun () -> H.from_list (scrambled n))
   let fold_cost n = count_only (fun () -> of_list (scrambled n))
 
-  let run_from_list_cost name =
+  let run_cost name =
     let t label = Printf.sprintf "%s: %s" name label in
     let per n c = float_of_int c /. float_of_int n in
     let small = 1_000 in
@@ -421,44 +451,240 @@ module Heap_tests (H : HEAP with type elem = int) = struct
   ;;
 end
 
+(* Binomial heaps keep a different invariant, so they need a different instrument. There
+   is no spine to measure; the structure IS the binary representation of n, so a heap of
+   size n holds exactly popcount n trees -- one per 1 bit -- and at most floor(log2 (n+1))
+   of them.
+
+   remove_min_tree compares once per tree beyond the first, so find_min's comparison count
+   is (trees - 1). That reads the tree count from outside the sealed signature, the way
+   rank_of reads a spine length for leftist heaps. *)
+module Binomial_tests (H : HEAP with type Element.t = int) = struct
+  let of_list xs = List.fold_left (fun h x -> H.insert x h) H.empty xs
+  let trees h = count_only (fun () -> H.find_min h) + 1
+
+  let popcount n =
+    let rec go acc n = if n = 0 then acc else go (acc + (n land 1)) (n lsr 1) in
+    go 0 n
+  ;;
+
+  (* An insert links once per trailing 1 bit: the carry chain of a binary increment,
+     stopped by the first hole. *)
+  let trailing_ones n =
+    let rec go acc n = if n land 1 = 0 then acc else go (acc + 1) (n lsr 1) in
+    go 0 n
+  ;;
+
+  let run name =
+    let t label = Printf.sprintf "%s: %s" name label in
+    (* Checked at EVERY step of a drain, not merely after construction: a mislabelled tree
+       stays self-consistent until it is itself opened, so a single delete_min is not
+       enough to expose it. *)
+    let bad = ref 0
+    and first = ref "" in
+    Random.init 20260918;
+    for n = 1 to 120 do
+      let xs = List.init n (fun _ -> Random.int 1000) in
+      let h = ref (of_list xs)
+      and left = ref n in
+      while not (H.is_empty !h) do
+        if trees !h <> popcount !left
+        then (
+          incr bad;
+          if !first = ""
+          then
+            first
+            := Printf.sprintf
+                 " -- first at n=%d, %d left, %d trees, popcount %d"
+                 n
+                 !left
+                 (trees !h)
+                 (popcount !left));
+        h := H.delete_min !h;
+        decr left
+      done
+    done;
+    check
+      (t (Printf.sprintf "one tree per 1 bit of n, at every step of a drain%s" !first))
+      (!bad = 0);
+    (* That count is what makes every operation logarithmic. *)
+    let over = ref 0 in
+    List.iter
+      (fun n -> if trees (of_list (List.init n Fun.id)) > spine_bound n then incr over)
+      [ 1; 7; 8; 15; 16; 100; 1000; 10_000 ];
+    check_int (t "at most floor(log2 (n+1)) trees") ~expect:0 ~actual:!over;
+    let bad_ins = ref 0 in
+    List.iter
+      (fun n ->
+        let h = of_list (List.init n Fun.id) in
+        if count_only (fun () -> H.insert max_int h) <> trailing_ones n then incr bad_ins)
+      [ 1; 2; 3; 7; 8; 15; 31; 100; 255; 1000 ];
+    check_int (t "insert links once per trailing 1 bit of n") ~expect:0 ~actual:!bad_ins;
+    let bad_merge = ref 0 in
+    List.iter
+      (fun (n1, n2) ->
+        let a = of_list (List.init n1 Fun.id)
+        and b = of_list (List.init n2 (fun i -> i + n1)) in
+        if count_only (fun () -> H.merge a b) > spine_bound (n1 + n2) + 1
+        then incr bad_merge)
+      [ 1, 1; 7, 9; 63, 64; 100, 1000; 1023, 1023 ];
+    check_int (t "merge is O(log n)") ~expect:0 ~actual:!bad_merge
+  ;;
+end
+
 module L = LeftistHeap (Counting_int)
 module W = WeightBiasedLeftistHeap (Counting_int)
+module B = BinomialHeap (Counting_int)
+module R = RanklessBinomialHeap (Counting_int)
+
+(* Exercise 3.7 over a BINOMIAL base: that is the only setting where the functor's claim
+   bites, since the wrapped find_min costs one comparison per tree. *)
+module X = ExplicitMin (B)
 module Leftist = Heap_tests (L)
 module Weighted = Heap_tests (W)
+module Binom = Heap_tests (B)
+module Rankless = Heap_tests (R)
+module Explicit = Heap_tests (X)
+module Binom_struct = Binomial_tests (B)
+module Rankless_struct = Binomial_tests (R)
+module Leftist_from_list = From_list_tests (L)
 
 let test_leftist () =
-  section "LeftistHeap (3.1-3.3)";
-  Leftist.run "LeftistHeap"
+  section "LeftistHeap (3.1-3.2)";
+  Leftist.run_contract "LeftistHeap";
+  Leftist.run_structure "LeftistHeap"
 ;;
 
 let test_weighted () =
   section "WeightBiasedLeftistHeap (3.4)";
-  Weighted.run "WeightBiasedLeftistHeap"
+  Weighted.run_contract "WeightBiasedLeftistHeap";
+  Weighted.run_structure "WeightBiasedLeftistHeap"
 ;;
 
-let test_from_list_cost () =
-  section "from_list is O(n) (3.3)";
-  Leftist.run_from_list_cost "LeftistHeap";
-  Weighted.run_from_list_cost "WeightBiasedLeftistHeap"
+let test_binomial () =
+  section "BinomialHeap (3.2)";
+  Binom.run_contract "BinomialHeap";
+  Binom_struct.run "BinomialHeap"
 ;;
 
-(* The two heaps keep different invariants and build different trees, but nothing a caller
-   can observe may differ. *)
-let test_agreement () =
-  section "the two heaps agree";
+(* PERFORMANCE (3.5): "define findMin directly rather than via a call to removeMinTree".
+   Comparisons cannot tell the two apart -- both compare once per tree -- so the claim has
+   to be asserted as allocation. remove_min_tree rebuilds the residual list on the way
+   back up, which grows with the number of trees; a direct scan builds nothing, so its
+   cost stays flat as the heap grows. Only BinomialHeap is held to this: Rankless keeps
+   the remove_min_tree route on purpose, to exercise its new signature. *)
+let test_find_min_direct () =
+  section "BinomialHeap: find_min is allocation-free (3.5)";
+  let heap_of n = Binom.of_list (List.init n (fun i -> i * 7919 mod 100_000)) in
+  (* Guard against a vacuous check: if the probe cannot see allocation at all, everything
+     below passes for the wrong reason. Building a heap certainly allocates. *)
+  let probe = words (fun () -> heap_of 64) in
+  check
+    (Printf.sprintf
+       "the allocation probe registers work (building a heap costs %.0f words)"
+       probe)
+    (probe > 0.0);
+  (* one tree versus sixteen *)
+  let h_small = heap_of 1
+  and h_large = heap_of 65_535 in
+  let w_small = words (fun () -> B.find_min h_small)
+  and w_large = words (fun () -> B.find_min h_large) in
+  check
+    (Printf.sprintf
+       "find_min allocation does not grow with the tree count (%.0f -> %.0f words)"
+       w_small
+       w_large)
+    (w_large <= w_small +. 4.0);
+  let worst =
+    List.fold_left
+      (fun acc n ->
+        let h = heap_of n in
+        Float.max acc (words (fun () -> B.find_min h)))
+      0.0
+      [ 1; 7; 255; 4095; 65_535 ]
+  in
+  check
+    (Printf.sprintf "find_min allocates O(1) at every size (worst %.0f words)" worst)
+    (worst <= 16.0)
+;;
+
+let test_rankless () =
+  section "RanklessBinomialHeap (3.6)";
+  Rankless.run_contract "RanklessBinomialHeap";
+  Rankless_struct.run "RanklessBinomialHeap"
+;;
+
+(* 3.7 asks for find_min in O(1) while insert, merge and delete_min stay O(log n). The
+   first half is the claim worth asserting: zero comparisons at any size, against a base
+   that pays one per tree. *)
+let test_explicit_min () =
+  section "ExplicitMin (3.7)";
+  Explicit.run_contract "ExplicitMin";
   Random.init 20260918;
-  let bad = ref 0 in
+  let bad = ref 0
+  and base_paid = ref 0 in
+  List.iter
+    (fun n ->
+      let xs = List.init n (fun _ -> Random.int 1_000_000) in
+      let hx = Explicit.of_list xs
+      and hb = Binom.of_list xs in
+      if count_only (fun () -> X.find_min hx) <> 0 then incr bad;
+      base_paid := !base_paid + count_only (fun () -> B.find_min hb))
+    [ 1; 7; 15; 255; 4095; 65_535 ];
+  check_int
+    "ExplicitMin: find_min costs no comparisons at any size"
+    ~expect:0
+    ~actual:!bad;
+  check
+    (Printf.sprintf
+       "ExplicitMin: the wrapped binomial find_min really does pay (%d comparisons)"
+       !base_paid)
+    (!base_paid > 0);
+  (* insert and delete_min must stay logarithmic despite maintaining the cached min *)
+  let over = ref 0 in
+  List.iter
+    (fun n ->
+      let h = Explicit.of_list (List.init n Fun.id) in
+      if count_only (fun () -> X.insert max_int h) > spine_bound n + 1 then incr over;
+      if count_only (fun () -> X.delete_min h) > (2 * spine_bound n) + 2 then incr over)
+    [ 1; 7; 8; 100; 1000; 10_000 ];
+  check_int "ExplicitMin: insert and delete_min stay O(log n)" ~expect:0 ~actual:!over
+;;
+
+let test_from_list () =
+  section "from_list (3.3)";
+  Leftist_from_list.run "LeftistHeap";
+  Leftist_from_list.run_cost "LeftistHeap"
+;;
+
+(* Five implementations, five different shapes in memory, one observable behaviour. *)
+let drains : (string * (int list -> int list)) list =
+  [ ("LeftistHeap", fun xs -> Leftist.drain (Leftist.of_list xs))
+  ; ("WeightBiasedLeftistHeap", fun xs -> Weighted.drain (Weighted.of_list xs))
+  ; ("BinomialHeap", fun xs -> Binom.drain (Binom.of_list xs))
+  ; ("RanklessBinomialHeap", fun xs -> Rankless.drain (Rankless.of_list xs))
+  ; ("ExplicitMin", fun xs -> Explicit.drain (Explicit.of_list xs))
+  ]
+;;
+
+let test_agreement () =
+  section "all five heaps agree";
+  Random.init 20260918;
+  let bad = ref [] in
   for _ = 0 to 299 do
     let n = Random.int 60 in
     let xs = List.init n (fun _ -> Random.int 100) in
     let sorted = List.sort compare xs in
-    if Leftist.drain (L.from_list xs) <> sorted then incr bad;
-    if Weighted.drain (W.from_list xs) <> sorted then incr bad
+    List.iter (fun (nm, drain) -> if drain xs <> sorted then bad := nm :: !bad) drains
   done;
-  check_int
-    "leftist and weight-biased drain identically, 300 random lists"
-    ~expect:0
-    ~actual:!bad
+  check
+    (Printf.sprintf
+       "all %d implementations drain identically, 300 random lists%s"
+       (List.length drains)
+       (match !bad with
+        | [] -> ""
+        | b :: _ -> " -- " ^ b ^ " disagrees"))
+    (!bad = [])
 ;;
 
 (* ------------------------------------------------------------------- runner *)
@@ -476,7 +702,11 @@ let run name f =
 let () =
   run "LeftistHeap" test_leftist;
   run "WeightBiasedLeftistHeap" test_weighted;
-  run "from_list cost" test_from_list_cost;
+  run "BinomialHeap" test_binomial;
+  run "find_min is direct (3.5)" test_find_min_direct;
+  run "RanklessBinomialHeap" test_rankless;
+  run "ExplicitMin" test_explicit_min;
+  run "from_list" test_from_list;
   run "agreement" test_agreement;
   Printf.printf "\n%d checks, %d failures\n" !checks !failures;
   if !failures > 0 then exit 1
