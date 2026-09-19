@@ -544,30 +544,27 @@ module RedBlackSet (Element : ORDERED) :
     | t -> T t
   ;;
 
-  type went =
-    | Left
-    | Right
-    | Done
-
   let insert_further_split x s =
     let rec ins = function
-      | E -> T (R, E, x, E), Done
+      | E -> T (R, E, x, E), `Done
       | T (color, a, y, b) as s' ->
         if Element.lt x y
         then (
           let t, went = ins a in
-          match went with
-          | Left -> llbalance (color, t, y, b), Left
-          | Right -> lrbalance (color, t, y, b), Left
-          | Done -> T (color, t, y, b), Left)
+          ( (match went with
+             | `Left -> llbalance (color, t, y, b)
+             | `Right -> lrbalance (color, t, y, b)
+             | `Done -> T (color, t, y, b))
+          , `Left ))
         else if Element.lt y x
         then (
           let t, went = ins b in
-          match went with
-          | Left -> rlbalance (color, a, y, t), Right
-          | Right -> rrbalance (color, a, y, t), Right
-          | Done -> T (color, a, y, t), Right)
-        else s', Done
+          ( (match went with
+             | `Left -> rlbalance (color, a, y, t)
+             | `Right -> rrbalance (color, a, y, t)
+             | `Done -> T (color, a, y, t))
+          , `Right ))
+        else s', `Done
     in
     match ins s with
     | E, _ -> E
