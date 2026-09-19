@@ -82,6 +82,12 @@ let words f =
 
 let comparisons = ref 0
 
+(* Comparisons that answered true. A search tree's [member] spends one comparison to step
+   left (lt x y is true) and two to step right (lt x y false, then lt y x true), so a raw
+   comparison count conflates depth with direction. Counting only the true answers gives
+   exactly one per step, whichever way the search turned. See [path_to_gap] below. *)
+let steps = ref 0
+
 module Counting_int = struct
   type t = int
 
@@ -92,7 +98,9 @@ module Counting_int = struct
 
   let lt a b =
     incr comparisons;
-    a < b
+    let less = a < b in
+    if less then incr steps;
+    less
   ;;
 
   let leq a b =
@@ -687,6 +695,247 @@ let test_agreement () =
     (!bad = [])
 ;;
 
+(* ------------------------------------------ red-black trees (3.3) and 3.9 *)
+
+(* RedBlackSet seals [set], so a test cannot look at a tree -- the same situation as the
+   heaps above, and the same answer: measure it from outside through an instrumented
+   ORDERED.
+
+   The measurement is [path_to_gap]. Searching for an element that is NOT in the set walks
+   from the root to an empty slot and stops there, and [steps] counts one per node on that
+   path regardless of which way the search turned. So the number it returns is an exact
+   depth. Probing every gap therefore finds the deepest path in the tree, which is exactly
+   what Exercise 3.8 bounds: at most 2*floor(log2 (n+1)).
+
+   Node colours are not asserted anywhere here, and cannot be: they are invisible through
+   SET. Because from_ord_list fixes the shape from n alone, colouring every node black --
+   or every node red, or dropping the root-blackening -- leaves every measurement below
+   unchanged. What the colours buy is the depth bound as the tree keeps growing, so that
+   is what gets asserted instead. Pinning Invariants 1 and 2 down directly would mean
+   letting a test see the tree.
+
+   Exercise 3.9 wants from_ord_list in O(n). Both halves of that are asserted in a
+   deterministic form rather than by timing: it performs ZERO comparisons -- a sorted list
+   has already answered every question insert would ask -- and its allocation per element
+   does not grow with n. *)
+
+module Rb = RedBlackSet (Counting_int)
+
+let rb_of_list xs = List.fold_left (fun s x -> Rb.insert x s) Rb.empty xs
+
+(* Sets are built from even numbers so that every odd number is a gap to probe. *)
+let evens n = List.init n (fun i -> 2 * i)
+
+(* Nodes on the path from the root to the empty slot a failed search for [x] falls into. *)
+let path_to_gap x s =
+  steps := 0;
+  if Rb.member x s then invalid_arg "path_to_gap: element is present";
+  !steps
+;;
+
+(* The deepest path in a set holding [evens n]: probe all n+1 gaps, the two outside the
+   range included. *)
+let max_path n s =
+  List.init (n + 1) (fun i -> (2 * i) - 1)
+  |> List.fold_left (fun deepest x -> max deepest (path_to_gap x s)) 0
+;;
+
+(* Every path in a perfectly balanced tree of n nodes holds this many nodes, or one fewer. *)
+let perfect_depth n = if n = 0 then 0 else floor_log2 n + 1
+
+(* Exercise 3.8's bound on the depth of any node in a red-black tree of size n. *)
+let depth_bound n = 2 * spine_bound n
+
+let shuffle seed xs =
+  Random.init seed;
+  List.map snd (List.sort compare (List.map (fun x -> Random.bits (), x) xs))
+;;
+
+let rb_sizes = [ 0; 1; 2; 3; 4; 7; 8; 15; 16; 31; 32; 100; 500; 1000 ]
+
+let test_redblack () =
+  section "RedBlackSet (3.3)";
+  check "member on the empty set is false" (not (Rb.member 0 Rb.empty));
+  let s = rb_of_list (evens 50) in
+  check
+    "every inserted element is found"
+    (List.for_all (fun x -> Rb.member x s) (evens 50));
+  check
+    "elements never inserted are not found"
+    (List.init 51 (fun i -> (2 * i) - 1) |> List.for_all (fun x -> not (Rb.member x s)));
+  (* What a set holds cannot depend on the order the elements arrived in. *)
+  let s' = rb_of_list (shuffle 20260918 (evens 50)) in
+  check
+    "membership is independent of insertion order"
+    (List.init 103 (fun i -> i - 1)
+     |> List.for_all (fun x -> Rb.member x s = Rb.member x s'));
+  (* Re-inserting an element must leave the set alone. An [ins] whose equal case returns
+     the whole tree rather than the current subtree grafts the tree into itself here,
+     dropping elements and duplicating the rest. *)
+  let base = evens 7 in
+  let once = rb_of_list base in
+  let again =
+    List.init 20 Fun.id
+    |> List.fold_left (fun s _ -> List.fold_left (fun s x -> Rb.insert x s) s base) once
+  in
+  check
+    "re-inserting existing elements keeps every element"
+    (List.for_all (fun x -> Rb.member x again) base);
+  check
+    "re-inserting existing elements adds nothing"
+    (List.init 8 (fun i -> (2 * i) - 1) |> List.for_all (fun x -> not (Rb.member x again)));
+  check_int
+    "re-inserting existing elements leaves the shape alone"
+    ~expect:(max_path 7 once)
+    ~actual:(max_path 7 again);
+  (* Exercise 3.8, over orders that stress the shape differently. This is the assertion
+     that the two colour invariants exist to support: break balance and it fails. *)
+  let over = ref [] in
+  List.iter
+    (fun n ->
+      [ "ascending", evens n
+      ; "descending", List.rev (evens n)
+      ; "random", shuffle 20260918 (evens n)
+      ]
+      |> List.iter (fun (order, xs) ->
+        let d = max_path n (rb_of_list xs) in
+        if d > depth_bound n then over := (order, n, d) :: !over))
+    rb_sizes;
+  check
+    (Printf.sprintf
+       "depth stays within Exercise 3.8's 2*floor(log2 (n+1))%s"
+       (match !over with
+        | [] -> ""
+        | (order, n, d) :: _ ->
+          Printf.sprintf " -- %s n=%d reached %d, bound %d" order n d (depth_bound n)))
+    (!over = []);
+  (* member and insert are O(log n): at most two comparisons per level, over a path the
+     bound above already limits. *)
+  let costly = ref 0 in
+  List.iter
+    (fun n ->
+      let s = rb_of_list (evens n) in
+      if count_only (fun () -> Rb.member ((2 * n) - 1) s) > 2 * depth_bound n
+      then incr costly;
+      if count_only (fun () -> Rb.insert ((2 * n) + 1) s) > 2 * depth_bound n
+      then incr costly)
+    rb_sizes;
+  check_int "member and insert stay O(log n)" ~expect:0 ~actual:!costly
+;;
+
+let test_from_ord_list () =
+  section "from_ord_list (3.9)";
+  check "from_ord_list [] is empty" (not (Rb.member 0 (Rb.from_ord_list [])));
+  check "from_ord_list [x] holds x" (Rb.member 0 (Rb.from_ord_list [ 0 ]));
+  (* Correctness: everything given is present, everything else is not. *)
+  let wrong = ref 0 in
+  List.iter
+    (fun n ->
+      let xs = evens n in
+      let s = Rb.from_ord_list xs in
+      if not (List.for_all (fun x -> Rb.member x s) xs) then incr wrong;
+      if List.init (n + 1) (fun i -> (2 * i) - 1) |> List.exists (fun x -> Rb.member x s)
+      then incr wrong)
+    rb_sizes;
+  check_int
+    "from_ord_list holds exactly the elements it was given"
+    ~expect:0
+    ~actual:!wrong;
+  (* Indistinguishable from a fold of insert, through the whole interface. *)
+  let disagree = ref 0 in
+  List.iter
+    (fun n ->
+      let xs = evens n in
+      let built = Rb.from_ord_list xs
+      and folded = rb_of_list xs in
+      List.init ((2 * n) + 3) (fun i -> i - 1)
+      |> List.iter (fun x ->
+        if Rb.member x built <> Rb.member x folded then incr disagree))
+    rb_sizes;
+  check_int "from_ord_list agrees with a fold of insert" ~expect:0 ~actual:!disagree;
+  (* Stronger than Exercise 3.8: from_ord_list does not merely respect the red-black
+     bound, it produces a perfectly balanced tree. A sorted list fixes the shape exactly,
+     so anything less than optimal is a bug rather than a tolerable outcome. *)
+  let unbalanced = ref [] in
+  List.iter
+    (fun n ->
+      let d = max_path n (Rb.from_ord_list (evens n)) in
+      if d <> perfect_depth n then unbalanced := (n, d) :: !unbalanced)
+    rb_sizes;
+  check
+    (Printf.sprintf
+       "from_ord_list is perfectly balanced%s"
+       (match !unbalanced with
+        | [] -> ""
+        | (n, d) :: _ ->
+          Printf.sprintf " -- n=%d has depth %d, optimal %d" n d (perfect_depth n)))
+    (!unbalanced = []);
+  (* Exercise 3.9's O(n), first half. The list is already sorted, so from_ord_list has
+     nothing to ask: any comparison at all means it is still searching for a position it
+     was handed. This is the test that a fold of insert cannot pass. *)
+  let compared = ref [] in
+  List.iter
+    (fun n ->
+      let xs = evens n in
+      let c = count_only (fun () -> Rb.from_ord_list xs) in
+      if c <> 0 then compared := (n, c) :: !compared)
+    (rb_sizes @ [ 10_000 ]);
+  check
+    (Printf.sprintf
+       "from_ord_list performs no comparisons%s"
+       (match !compared with
+        | [] -> ""
+        | (n, c) :: _ -> Printf.sprintf " -- n=%d cost %d" n c))
+    (!compared = []);
+  let folded_cost = count_only (fun () -> rb_of_list (evens 1000)) in
+  check
+    (Printf.sprintf
+       "a fold of insert, by contrast, compares %d times at n=1000"
+       folded_cost)
+    (folded_cost > 1000);
+  (* Exercise 3.9's O(n), second half: allocation per element must not grow with n. The
+     list is built outside the closure so that only the construction is measured. *)
+  let per_element n =
+    let xs = evens n in
+    words (fun () -> Rb.from_ord_list xs) /. float_of_int n
+  in
+  let small = per_element 1000
+  and large = per_element 16_000 in
+  check
+    (Printf.sprintf
+       "from_ord_list allocates O(1) per element (%.1f words at n=1000, %.1f at n=16000)"
+       small
+       large)
+    (Float.abs (small -. large) < 0.5);
+  (* from_ord_list is a constructor, not a terminus: the tree it returns has to keep
+     behaving as elements continue to arrive one at a time. Seed with a sorted prefix,
+     insert the rest, and Exercise 3.8's bound must still hold. *)
+  let grown = ref [] in
+  List.iter
+    (fun (seed, extra) ->
+      let s =
+        List.init extra (fun i -> 2 * (seed + i))
+        |> List.fold_left (fun s x -> Rb.insert x s) (Rb.from_ord_list (evens seed))
+      in
+      let total = seed + extra in
+      let d = max_path total s in
+      if d > depth_bound total then grown := (seed, extra, d) :: !grown)
+    [ 1, 50; 10, 100; 100, 100; 100, 1000; 1000, 1000 ];
+  check
+    (Printf.sprintf
+       "a from_ord_list tree stays balanced as inserts continue%s"
+       (match !grown with
+        | [] -> ""
+        | (seed, extra, d) :: _ ->
+          Printf.sprintf
+            " -- %d seeded + %d inserted reached %d, bound %d"
+            seed
+            extra
+            d
+            (depth_bound (seed + extra))))
+    (!grown = [])
+;;
+
 (* ------------------------------------------------------------------- runner *)
 
 (* A regression can make a function raise where the test did not expect it. Report that as
@@ -708,6 +957,8 @@ let () =
   run "ExplicitMin" test_explicit_min;
   run "from_list" test_from_list;
   run "agreement" test_agreement;
+  run "RedBlackSet" test_redblack;
+  run "from_ord_list" test_from_ord_list;
   Printf.printf "\n%d checks, %d failures\n" !checks !failures;
   if !failures > 0 then exit 1
 ;;

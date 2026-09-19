@@ -399,7 +399,14 @@ module type SET = sig
   val insert : elem -> set -> set
 end
 
-module RedBlackSet (Element : ORDERED) : SET = struct
+module type SET_WITH_FROM_ORD_LIST = sig
+  include SET
+
+  val from_ord_list : elem list -> set
+end
+
+module RedBlackSet (Element : ORDERED) :
+  SET_WITH_FROM_ORD_LIST with type elem = Element.t = struct
   type elem = Element.t
 
   type color =
@@ -422,6 +429,7 @@ module RedBlackSet (Element : ORDERED) : SET = struct
 
   let balance = function
     | B, T (R, T (R, a, x, b), y, c), z, d
+    | B, T (R, a, x, T (R, b, y, c)), z, d
     | B, a, x, T (R, T (R, b, y, c), z, d)
     | B, a, x, T (R, b, y, T (R, c, z, d)) -> T (R, T (B, a, x, b), y, T (B, c, z, d))
     | body -> T body
@@ -430,15 +438,42 @@ module RedBlackSet (Element : ORDERED) : SET = struct
   let insert x s =
     let rec ins = function
       | E -> T (R, E, x, E)
-      | T (color, a, y, b) ->
+      | T (color, a, y, b) as s' ->
         if Element.lt x y
         then balance (color, ins a, y, b)
         else if Element.lt y x
         then balance (color, a, y, ins b)
-        else s
+        else s'
     in
     match ins s with
     | E -> E
     | T (_, a, y, b) -> T (B, a, y, b)
+  ;;
+
+  (* Exercise 3.9 Write a function fromOrdList of type Elem list -+ Tree that converts a
+     sorted list with no duplicates into a red-black tree. Your function should run in
+     O(n) time. *)
+
+  let from_ord_list xs =
+    let bit_length x =
+      let rec go acc x = if x = 0 then acc else go (acc + 1) (x lsr 1) in
+      go 0 x
+    in
+    let rec build xs c = function
+      | 0 -> E, xs
+      | n ->
+        let next_c = c / 2 in
+        let lhs, xs_lhs = build xs next_c (n / 2) in
+        (match xs_lhs with
+         | [] -> raise (Failure "from_ord_list: invalid length")
+         | x :: xs ->
+           let rhs, xs_rhs = build xs next_c ((n - 1) / 2) in
+           T ((if c = 0 then R else B), lhs, x, rhs), xs_rhs)
+    in
+    let n = List.length xs in
+    let cores = (1 lsl bit_length (n lsr 1)) - 1 in
+    match build xs cores n with
+    | T (_, E, x, E), _ -> T (B, E, x, E)
+    | s, _ -> s
   ;;
 end
