@@ -435,7 +435,7 @@ module RedBlackSet (Element : ORDERED) :
     | body -> T body
   ;;
 
-  let insert x s =
+  let insert_basic x s =
     let rec ins = function
       | E -> T (R, E, x, E)
       | T (color, a, y, b) as s' ->
@@ -475,5 +475,102 @@ module RedBlackSet (Element : ORDERED) :
     match build xs cores n with
     | T (_, E, x, E), _ -> T (B, E, x, E)
     | s, _ -> s
+  ;;
+
+  (* Exercise 3.10 The balance function currently performs several unnecessary tests. For
+     example, when the ins function recurses on the left child, there is no need for
+     balance to test for red-red violations involving the right child. *)
+
+  (* (a) Split balance into two functions, Ibalance and rbalance, that test for vio- 3.4
+         Chapter Notes 29 lations involving the left child and right child, respectively.
+         Replace the calls to balance in ins with calls to either Ibalance or rbalance. *)
+
+  let lbalance = function
+    | B, T (R, T (R, a, x, b), y, c), z, d | B, T (R, a, x, T (R, b, y, c)), z, d ->
+      T (R, T (B, a, x, b), y, T (B, c, z, d))
+    | body -> T body
+  ;;
+
+  let rbalance = function
+    | B, a, x, T (R, T (R, b, y, c), z, d) | B, a, x, T (R, b, y, T (R, c, z, d)) ->
+      T (R, T (B, a, x, b), y, T (B, c, z, d))
+    | body -> T body
+  ;;
+
+  let insert x s =
+    let rec ins = function
+      | E -> T (R, E, x, E)
+      | T (color, a, y, b) as s' ->
+        if Element.lt x y
+        then lbalance (color, ins a, y, b)
+        else if Element.lt y x
+        then rbalance (color, a, y, ins b)
+        else s'
+    in
+    match ins s with
+    | E -> E
+    | T (_, a, y, b) -> T (B, a, y, b)
+  ;;
+
+  (* (b) Extending the same logic one step further, one of the remaining tests on the
+     grandchildren is also unnecessary. Rewrite ins so that it never tests the color of
+     nodes not on the search path. *)
+
+  (* Implemented, measured, rejected. Returning which way the recursive call went costs a
+     tree * went pair -- one 3-word allocation per level of the descent: 61.0M words
+     against 44.4M for (a) over 300k random inserts, ~8% slower, giving back
+     everything (a) gained. With the direction carried in a ref instead, allocation and
+     time match (a) exactly, so the test (b) removes is worth nothing -- ocamlopt already
+     shares the common prefix of lbalance's two clauses. (a) stays: its saving needs the
+     invariant to justify, so no compiler can infer it. *)
+
+  let llbalance = function
+    | B, T (R, T (R, a, x, b), y, c), z, d -> T (R, T (B, a, x, b), y, T (B, c, z, d))
+    | t -> T t
+  ;;
+
+  let lrbalance = function
+    | B, T (R, a, x, T (R, b, y, c)), z, d -> T (R, T (B, a, x, b), y, T (B, c, z, d))
+    | t -> T t
+  ;;
+
+  let rlbalance = function
+    | B, a, x, T (R, T (R, b, y, c), z, d) -> T (R, T (B, a, x, b), y, T (B, c, z, d))
+    | t -> T t
+  ;;
+
+  let rrbalance = function
+    | B, a, x, T (R, b, y, T (R, c, z, d)) -> T (R, T (B, a, x, b), y, T (B, c, z, d))
+    | t -> T t
+  ;;
+
+  type went =
+    | Left
+    | Right
+    | Done
+
+  let insert_further_split x s =
+    let rec ins = function
+      | E -> T (R, E, x, E), Done
+      | T (color, a, y, b) as s' ->
+        if Element.lt x y
+        then (
+          let t, went = ins a in
+          match went with
+          | Left -> llbalance (color, t, y, b), Left
+          | Right -> lrbalance (color, t, y, b), Left
+          | Done -> T (color, t, y, b), Left)
+        else if Element.lt y x
+        then (
+          let t, went = ins b in
+          match went with
+          | Left -> rlbalance (color, a, y, t), Right
+          | Right -> rrbalance (color, a, y, t), Right
+          | Done -> T (color, a, y, t), Right)
+        else s', Done
+    in
+    match ins s with
+    | E, _ -> E
+    | T (_, a, y, b), _ -> T (B, a, y, b)
   ;;
 end

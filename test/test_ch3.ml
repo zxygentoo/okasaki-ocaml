@@ -769,6 +769,27 @@ let test_redblack () =
     "membership is independent of insertion order"
     (List.init 103 (fun i -> i - 1)
      |> List.for_all (fun x -> Rb.member x s = Rb.member x s'));
+  (* Against an independent oracle, over many shapes. Everything above builds sets whose
+     contents the test already knows by construction; this asks instead that whatever tree
+     an arbitrary insertion order produced still answers like the list it came from. *)
+  Random.init 20260919;
+  let disagrees = ref 0 in
+  for trial = 0 to 299 do
+    let n = 1 + Random.int 40 in
+    let xs =
+      if trial mod 3 = 0
+      then List.init n Fun.id (* ascending: the order that rebalances most *)
+      else List.init n (fun _ -> Random.int 60)
+    in
+    let s = rb_of_list xs in
+    for q = -2 to 62 do
+      if Rb.member q s <> List.mem q xs then incr disagrees
+    done
+  done;
+  check_int
+    "member agrees with List.mem over 300 random trees"
+    ~expect:0
+    ~actual:!disagrees;
   (* Re-inserting an element must leave the set alone. An [ins] whose equal case returns
      the whole tree rather than the current subtree grafts the tree into itself here,
      dropping elements and duplicating the rest. *)
@@ -907,6 +928,25 @@ let test_from_ord_list () =
        small
        large)
     (Float.abs (small -. large) < 0.5);
+  (* The exercise says "a sorted list with no duplicates", not "a range". Sparse gaps and
+     negative elements have to work the same, so check against an oracle rather than
+     against the construction. *)
+  Random.init 20260919;
+  let arbitrary = ref 0 in
+  List.iter
+    (fun n ->
+      let xs =
+        List.sort_uniq compare (List.init n (fun _ -> Random.int 100_000 - 50_000))
+      in
+      let s = Rb.from_ord_list xs in
+      let probes = List.init 400 (fun i -> i - 200) in
+      if List.exists (fun q -> Rb.member q s <> List.mem q xs) (xs @ probes)
+      then incr arbitrary)
+    [ 1; 2; 5; 50; 500 ];
+  check_int
+    "from_ord_list handles sparse and negative sorted lists"
+    ~expect:0
+    ~actual:!arbitrary;
   (* from_ord_list is a constructor, not a terminus: the tree it returns has to keep
      behaving as elements continue to arrive one at a time. Seed with a sorted prefix,
      insert the rest, and Exercise 3.8's bound must still hold. *)
@@ -936,6 +976,93 @@ let test_from_ord_list () =
     (!grown = [])
 ;;
 
+(* PERFORMANCE (3.3): member follows one path and builds nothing; insert copies one path
+   and nothing else. The first is what makes member cheap in space as well as time, the
+   second is what makes the structure persistent -- the old version keeps every node the
+   insert did not rebuild, which is only sound because those nodes are never mutated. Both
+   are visible through the seal with [words].
+
+   Exercise 3.10 is not tested here and cannot be: insert_basic and insert_further_split
+   are not in SET, so nothing outside the functor can reach them. The exported [insert] is
+   (a), and the sections above hold it to the same behaviour and the same bounds. *)
+
+let test_redblack_cost () =
+  section "RedBlackSet: persistence and cost (3.3)";
+  (* The defining property of a persistent structure: an insert leaves the old set whole. *)
+  let s = rb_of_list (evens 50) in
+  let s' = Rb.insert 99 s in
+  check
+    "insert leaves the original set unchanged"
+    ((not (Rb.member 99 s)) && Rb.member 99 s');
+  (* And not merely the previous version -- every version ever built stays correct, which
+     is the part that would break if insert rebuilt a node any earlier version shares. *)
+  let versions =
+    evens 40
+    |> List.fold_left
+         (fun (acc, s) x ->
+           let s = Rb.insert x s in
+           s :: acc, s)
+         ([], Rb.empty)
+    |> fst
+    |> List.rev
+  in
+  let stale = ref 0 in
+  List.iteri
+    (fun i v ->
+      (* version i was built from evens (i+1), so it holds those and nothing beyond *)
+      if not (List.for_all (fun x -> Rb.member x v) (evens (i + 1))) then incr stale;
+      if Rb.member (2 * (i + 1)) v then incr stale)
+    versions;
+  check_int "every intermediate version stays correct" ~expect:0 ~actual:!stale;
+  (* member only follows pointers, so it must allocate nothing whatsoever. *)
+  let searching = ref [] in
+  List.iter
+    (fun n ->
+      let s = rb_of_list (evens n) in
+      let w = words (fun () -> Rb.member ((2 * n) + 1) s) in
+      if w <> 0.0 then searching := (n, w) :: !searching)
+    [ 10; 100; 1000; 10_000 ];
+  check
+    (Printf.sprintf
+       "member allocates nothing%s"
+       (match !searching with
+        | [] -> ""
+        | (n, w) :: _ -> Printf.sprintf " -- n=%d allocated %.0f words" n w))
+    (!searching = []);
+  (* insert copies the search path and only the search path, so its cost is logarithmic:
+     ten thousand times as many elements must not cost ten thousand times as many words. *)
+  let cost n =
+    let s = rb_of_list (evens n) in
+    words (fun () -> Rb.insert ((2 * n) + 1) s)
+  in
+  let small = cost 10
+  and large = cost 100_000 in
+  check
+    (Printf.sprintf
+       "insert allocates O(log n) (%.0f words at n=10, %.0f at n=100000)"
+       small
+       large)
+    (large < 4.0 *. small);
+  (* That copying is not waste: it is exactly what the older versions keep pointing at. A
+     fresh insert has to allocate at least a node for each level it rebuilds. *)
+  check
+    (Printf.sprintf "a fresh insert really does copy the path (%.0f words)" large)
+    (large >= float_of_int (depth_bound 100_000));
+  (* A duplicate has no new node to thread in and no rotation to do, so it costs less --
+     but not nothing. RedBlackSet does not implement Exercise 2.3's trick of abandoning
+     the copy altogether, which is one of the optimisations the Hint to Practitioners
+     means. *)
+  let s = rb_of_list (evens 1000) in
+  let dup = words (fun () -> Rb.insert 0 s)
+  and fresh = words (fun () -> Rb.insert 2001 s) in
+  check
+    (Printf.sprintf
+       "a duplicate insert costs less than a fresh one (%.0f < %.0f)"
+       dup
+       fresh)
+    (dup < fresh)
+;;
+
 (* ------------------------------------------------------------------- runner *)
 
 (* A regression can make a function raise where the test did not expect it. Report that as
@@ -959,6 +1086,7 @@ let () =
   run "agreement" test_agreement;
   run "RedBlackSet" test_redblack;
   run "from_ord_list" test_from_ord_list;
+  run "RedBlackSet cost" test_redblack_cost;
   Printf.printf "\n%d checks, %d failures\n" !checks !failures;
   if !failures > 0 then exit 1
 ;;
