@@ -1087,6 +1087,6 @@ let () =
   run "RedBlackSet" test_redblack;
   run "from_ord_list" test_from_ord_list;
   run "RedBlackSet cost" test_redblack_cost;
-  Printf.printf "\n%d checks, %d failures\n" !checks !failures;
+  Printf.printf "\n%d checks, %d failures\n\n" !checks !failures;
   if !failures > 0 then exit 1
 ;;

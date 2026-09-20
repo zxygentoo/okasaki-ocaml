@@ -683,6 +683,6 @@ let () =
   run "create cost" test_create_cost;
   run "UnbalancedMap" test_map;
   run "UnbalancedMap comparisons" test_map_comparisons;
-  Printf.printf "\n%d checks, %d failures\n" !checks !failures;
+  Printf.printf "\n%d checks, %d failures\n\n" !checks !failures;
   if !failures > 0 then exit 1
 ;;
