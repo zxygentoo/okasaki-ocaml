@@ -11,14 +11,13 @@ end
 module BatchedQueue : QUEUE = struct
   type 'a queue = 'a list * 'a list
 
-  let empty = [], []
-  let is_empty (f, _) = List.is_empty f
-
   let checkf = function
     | [], r -> List.rev r, []
     | q -> q
   ;;
 
+  let empty = [], []
+  let is_empty (f, _) = List.is_empty f
   let snoc (f, r) x = checkf (f, x :: r)
 
   let head = function
@@ -52,13 +51,6 @@ end
 module Deque : DEQUE = struct
   type 'a queue = 'a list * 'a list
 
-  let empty = [], []
-
-  let is_empty = function
-    | [], [] -> true
-    | _ -> false
-  ;;
-
   let rec split_at k xs =
     match k, xs with
     | 0, _ | _, [] -> [], xs
@@ -70,14 +62,21 @@ module Deque : DEQUE = struct
   let checkf = function
     | [], [] -> [], []
     | [ x ], [] -> [ x ], []
+    | [], [ x ] -> [], [ x ]
     | f, [] ->
       let a, b = split_at (List.length f / 2) f in
       a, List.rev b
-    | [], [ x ] -> [], [ x ]
     | [], r ->
       let a, b = split_at (List.length r / 2) r in
       List.rev b, a
     | f, r -> f, r
+  ;;
+
+  let empty = [], []
+
+  let is_empty = function
+    | [], [] -> true
+    | _ -> false
   ;;
 
   let snoc (f, r) x = checkf (f, x :: r)
