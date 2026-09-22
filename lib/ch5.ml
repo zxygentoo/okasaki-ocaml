@@ -365,15 +365,14 @@ module BinaryPairingHeap (Element : ORDERED) : HEAP with module Element = Elemen
     | T (x, _, _) -> x
   ;;
 
-  let rec merge_pairs = function
-    | E -> E
-    | T (_, _, E) as h -> h
-    | T (x, a, T (y, b, rest)) ->
-      merge (merge (T (x, a, E)) (T (y, b, E))) (merge_pairs rest)
-  ;;
-
-  let delete_min = function
+  let delete_min h =
+    let rec go = function
+      | E -> E
+      | T (_, _, E) as h -> h
+      | T (x, a, T (y, b, rest)) -> merge (merge (T (x, a, E)) (T (y, b, E))) (go rest)
+    in
+    match h with
     | E -> raise (Failure "delete_min: empty heap")
-    | T (_, h, _) -> merge_pairs h
+    | T (_, h, _) -> go h
   ;;
 end
