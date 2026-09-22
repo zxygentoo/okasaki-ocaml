@@ -1,5 +1,6 @@
-(* Tests for Chapter 5: the batched queue of Figure 5.2, and the deque of Exercise 5.1.
-   Plain OCaml, no test framework, matching the earlier chapters.
+(* Tests for Chapter 5: the batched queue of Figure 5.2, the deque of Exercise 5.1, and
+   the splay heap of Figure 5.5 with Exercises 5.4 and 5.7. Plain OCaml, no test
+   framework, matching the earlier chapters.
 
    This is the first structure in the book whose costs are AMORTISED, and that changes
    what a cost test has to look like. "tail is O(1) amortised" is not a statement about
@@ -778,6 +779,553 @@ let test_deque () =
       "  SKIP  Deque: rebalance checks -- they build a deque of 100000 elements\n"
 ;;
 
+(* ------------------------------------------------------- splay heaps (5.4) *)
+
+(* "Although any individual operation can take as much as O(n) time, we will show that
+   every operation runs in O(log n) amortized time" (p.46). Both halves of that sentence
+   are asserted: this is the first structure in the book whose bound is a logarithm rather
+   than a constant, and the first whose single operations are linear by design.
+
+   HEAP seals the tree, so its shape is measured from outside, with two instruments that
+   see two different things. Comparisons see partition and nothing else: it asks
+   Element.leq of the nodes it visits, and "since we always take the left branch, there is
+   no need for comparisons" (p.49) in find_min or delete_min. Allocation sees the
+   rebuilding: every node on a restructured path is copied, in partition and in delete_min
+   alike, so words allocated is the length of the path that was rebuilt.
+
+   The amortised bound is asserted as the queue sections assert theirs, over whole
+   sequences from the empty heap, except that the cost per operation is divided by log2 n
+   as well. The constants are the book's. Theorem 5.2 bounds partition at 1 + 2 log2(#t)
+   recursive calls per insert amortised, each call making at most two comparisons; that is
+   doubled here to admit the two-pass partition of Exercise 5.4, whose smaller and bigger
+   each earn the bound separately. delete_min's O(log n) is Exercise 5.6 and its constant
+   is not derived in the book; the words bound is partition's with room for it. Cheap
+   sequences would pass a much tighter bound, so a second check asks that the cost per
+   operation per log2 n does not grow from n = 1000 to n = 100_000: that is the shape of
+   the claim, whatever the constant.
+
+   One O(n) is left unasserted on purpose: find_min on a spine, which p.51 says "there is
+   no way to amortize". It neither compares nor allocates, so no counter sees it.
+
+   The contract is the one test_ch3 holds its five heaps to, plus two checks aimed at
+   Exercise 5.4, where a partition can keep every drain of distinct elements sorted while
+   quietly losing an element equal to the pivot, or carrying a subtree to the wrong side
+   of its parent. *)
+
+let comparisons = ref 0
+
+module Counting_int = struct
+  type t = int
+
+  let eq a b =
+    incr comparisons;
+    a = b
+  ;;
+
+  let lt a b =
+    incr comparisons;
+    a < b
+  ;;
+
+  let leq a b =
+    incr comparisons;
+    a <= b
+  ;;
+end
+
+(* Comparisons performed by [f]. *)
+let count f =
+  comparisons := 0;
+  let r = f () in
+  r, !comparisons
+;;
+
+let count_only f = snd (count f)
+let log2 n = log (float_of_int n) /. log 2.
+
+module Heap_tests (H : HEAP with type Element.t = int) = struct
+  let of_list xs = List.fold_left (fun h x -> H.insert x h) H.empty xs
+
+  (* find_min/delete_min to exhaustion. That this comes out sorted is the whole
+     behavioural specification of a heap. *)
+  let drain h =
+    let rec go acc h =
+      if H.is_empty h then List.rev acc else go (H.find_min h :: acc) (H.delete_min h)
+    in
+    go [] h
+  ;;
+
+  let run_contract name =
+    let t label = Printf.sprintf "%s: %s" name label in
+    let eq label expect h =
+      surviving
+        (t label)
+        (fun () -> drain h)
+        (fun actual -> check_eq (t label) ~expect ~actual string_of_int_list)
+    in
+    check (t "empty is empty") (H.is_empty H.empty);
+    check (t "a singleton is not empty") (not (H.is_empty (H.insert 1 H.empty)));
+    check_raises
+      (t "find_min on empty raises")
+      (Failure "find_min: empty heap")
+      (fun () -> H.find_min H.empty);
+    check_raises
+      (t "delete_min on empty raises")
+      (Failure "delete_min: empty heap")
+      (fun () -> ignore (H.is_empty (H.delete_min H.empty)));
+    check_int (t "find_min of a singleton") ~expect:5 ~actual:(H.find_min (of_list [ 5 ]));
+    check
+      (t "delete_min of a singleton is empty")
+      (H.is_empty (H.delete_min (of_list [ 5 ])));
+    eq "drain is sorted" [ 1; 2; 3; 4; 5; 6; 7 ] (of_list [ 4; 2; 6; 1; 3; 5; 7 ]);
+    (* Aimed at Exercise 5.4. A drain of distinct elements cannot tell which side of the
+       partition an element equal to the pivot went to -- but it must go to one of them.
+       Sent to neither, it vanishes. The copy is met at the root, at the bottom of the
+       left spine and at the bottom of the right spine, so every branch of the partition
+       meets it. *)
+    eq "a repeated element is kept when it is the root" [ 5; 5 ] (of_list [ 5; 5 ]);
+    eq
+      "a repeated element is kept when it is deep on the left"
+      [ 1; 2; 3; 4; 5; 5 ]
+      (of_list [ 5; 4; 3; 2; 1; 5 ]);
+    eq
+      "a repeated element is kept when it is deep on the right"
+      [ 1; 1; 2; 3; 4; 5 ]
+      (of_list [ 1; 2; 3; 4; 5; 1 ]);
+    eq "duplicates are all kept" [ 1; 1; 1; 2; 2; 3 ] (of_list [ 2; 1; 3; 1; 2; 1 ]);
+    (* Also aimed at Exercise 5.4. A subtree carried to the wrong side of its parent keeps
+       every element, so only the order notices, and it notices first at the minimum:
+       find_min follows left branches, and a minimum that has been put on the right is not
+       where it looks. *)
+    surviving
+      (t "the minimum is still leftmost after ascending inserts")
+      (fun () -> H.find_min (of_list [ 1; 2; 3 ]))
+      (fun m ->
+        check_int
+          (t "the minimum is still leftmost after ascending inserts")
+          ~expect:1
+          ~actual:m);
+    surviving
+      (t "the minimum is still leftmost after descending inserts")
+      (fun () -> H.find_min (of_list [ 3; 2; 1 ]))
+      (fun m ->
+        check_int
+          (t "the minimum is still leftmost after descending inserts")
+          ~expect:1
+          ~actual:m);
+    eq
+      "merge is multiset union"
+      [ 1; 2; 3; 4; 5; 6 ]
+      (H.merge (of_list [ 1; 4; 6 ]) (of_list [ 2; 3; 5 ]));
+    eq
+      "merge with an empty right operand"
+      [ 1; 2; 3 ]
+      (H.merge (of_list [ 3; 1; 2 ]) H.empty);
+    eq
+      "merge with an empty left operand"
+      [ 1; 2; 3 ]
+      (H.merge H.empty (of_list [ 3; 1; 2 ]));
+    check (t "merge of two empties is empty") (H.is_empty (H.merge H.empty H.empty));
+    (* Randomised, against List.sort as the reference, with few distinct values so that
+       equal elements are everywhere. *)
+    Random.init 20260922;
+    let bad_insert = ref 0
+    and bad_merge = ref 0
+    and raised = ref 0 in
+    for _ = 0 to 299 do
+      let xs = List.init (Random.int 40) (fun _ -> Random.int 25)
+      and ys = List.init (Random.int 40) (fun _ -> Random.int 25) in
+      match
+        if drain (of_list xs) <> List.sort compare xs then incr bad_insert;
+        if drain (H.merge (of_list xs) (of_list ys)) <> List.sort compare (xs @ ys)
+        then incr bad_merge
+      with
+      | () -> ()
+      | exception Failure _ -> incr raised
+    done;
+    check_int
+      (t "no operation raises on a non-empty heap, 300 random runs")
+      ~expect:0
+      ~actual:!raised;
+    check_int (t "insert then drain, 300 random lists") ~expect:0 ~actual:!bad_insert;
+    check_int (t "merge then drain, 300 random pairs") ~expect:0 ~actual:!bad_merge;
+    (* Persistence: no operation may disturb its operands. A splay heap restructures on
+       every insert and delete_min, so this is the check that the restructuring builds new
+       nodes rather than reusing old ones in a new place. *)
+    let h = of_list [ 5; 3; 8; 1 ] in
+    let _ = H.insert 0 h
+    and _ = H.insert 4 h
+    and _ = H.delete_min h
+    and _ = H.merge h h in
+    eq "operands are untouched" [ 1; 3; 5; 8 ] h
+  ;;
+
+  (* ------------------------------------------------- amortised O(log n) per operation *)
+
+  (* Sequences from the empty heap, each single-threaded, each allocating nothing of its
+     own. They differ in the shape they force. Ascending inserts build a left spine of
+     depth n at O(1) each and leave every restructuring to the delete_mins; random inserts
+     keep the tree shallow on their own, so they measure the ordinary case. Random inserts
+     into a spine are not the test they look like: each one cuts a segment of the spine
+     off unrestructured, and the segments shorten by themselves, O(n log n) in all even
+     for a plain search tree. What separates splaying from a plain tree is walking the
+     SAME long path again and again: a left spine, then inserts that climb towards it from
+     below, each one walking the whole spine unless the walks before it have halved it. A
+     partition that does not restructure is quadratic there and one that does is linear.
+     The bigger half of the partition does that halving; its mirror -- a right spine, then
+     inserts descending towards it from above -- asks the same of the smaller half, which
+     is the half Exercise 5.4 has you write. *)
+  let drain_all h n =
+    let h = ref h in
+    for _ = 1 to n do
+      h := H.delete_min !h
+    done;
+    !h
+  ;;
+
+  let random_ints seed n bound =
+    Random.init seed;
+    List.init n (fun _ -> Random.int bound)
+  ;;
+
+  let sequences =
+    [ ( "n random inserts, then n delete_mins"
+      , 2
+      , fun n ->
+          let xs = random_ints 20260922 n 1_000_000 in
+          fun () -> drain_all (of_list xs) n )
+    ; ( "n ascending inserts, then n delete_mins"
+      , 2
+      , fun n () -> drain_all (of_list (upto n)) n )
+    ; ( "n descending inserts, then n delete_mins"
+      , 2
+      , fun n () -> drain_all (of_list (List.init n (fun i -> n - i))) n )
+    ; ( "a spine of n, then n random inserts"
+      , 2
+      , fun n ->
+          let xs = random_ints 20260923 n n in
+          fun () -> List.fold_left (fun h x -> H.insert x h) (of_list (upto n)) xs )
+    ; ( "a left spine of n, then n inserts climbing towards it from below"
+      , 2
+      , fun n () ->
+          let h = ref (of_list (List.init n (fun i -> n + i))) in
+          for i = 0 to n - 1 do
+            h := H.insert i !h
+          done;
+          !h )
+    ; ( "a right spine of n, then n inserts descending towards it from above"
+      , 2
+      , fun n () ->
+          let h = ref (of_list (List.init n (fun i -> n - 1 - i))) in
+          for i = 0 to n - 1 do
+            h := H.insert ((2 * n) - 1 - i) !h
+          done;
+          !h )
+    ; ( "inserts converging on the middle, then n delete_mins"
+      , 2
+      , fun n () ->
+          let h = ref H.empty in
+          for i = 0 to (n / 2) - 1 do
+            h := H.insert i !h;
+            h := H.insert (n - 1 - i) !h
+          done;
+          drain_all !h n )
+    ; ( "n equal inserts, then n delete_mins"
+      , 2
+      , fun n () -> drain_all (of_list (List.init n (fun _ -> 7))) n )
+    ]
+  ;;
+
+  (* Per operation, amortised: Theorem 5.2's 1 + 2 log2(#t) partition calls, two
+     comparisons each, doubled for a two-pass partition; and for words, the nodes those
+     calls copy, with room for delete_min's. #t is the size plus one. *)
+  let comparison_bound n = 4. +. (8. *. log2 (n + 1))
+  let word_bound n = 24. +. (32. *. log2 (n + 1))
+
+  (* True if every sequence stayed within the bounds. Sizes climb by tens, each guarded on
+     the one before: a quadratic that still fits under the bound at n = 1000 is caught at
+     n = 10_000, where it costs a fraction of a second, instead of at n = 100_000, where
+     it would take the better part of a minute to fail. *)
+  let run_amortised name =
+    let t label = Printf.sprintf "%s: %s" name label in
+    let ok = ref true in
+    List.iter
+      (fun (sequence, per_n, driver) ->
+        let within n =
+          let f = driver n in
+          let ops = float_of_int (per_n * n) in
+          let c = float_of_int (count_only f) /. ops in
+          let w = words f /. ops in
+          let fits = c <= comparison_bound n && w <= word_bound n in
+          check
+            (t
+               (Printf.sprintf
+                  "%s, amortised O(log n): %.1f comparisons and %.0f words per operation \
+                   at n=%d"
+                  sequence
+                  c
+                  w
+                  n))
+            fits;
+          c, w, fits
+        in
+        let rec climb first = function
+          | [] -> ()
+          | n :: larger ->
+            let c, w, fits = within n in
+            if not fits
+            then (
+              ok := false;
+              List.iter
+                (fun m ->
+                  Printf.printf
+                    "  SKIP  %s: %s at n=%d -- it is not O(log n) at n=%d\n"
+                    name
+                    sequence
+                    m
+                    n)
+                larger)
+            else (
+              match first with
+              | None -> climb (Some (n, c, w)) larger
+              | Some (n0, c0, w0) when larger = [] ->
+                (* Per operation per log2 n, a hundred times longer: the same or less,
+                   within noise. That is the shape of the claim whatever the constant. *)
+                let per_log v n = v /. log2 (n + 1) in
+                let flat v0 v = per_log v n <= (1.5 *. per_log v0 n0) +. 0.5 in
+                check
+                  (t
+                     (Printf.sprintf
+                        "%s, the cost per operation grows no faster than log n (%.2f -> \
+                         %.2f comparisons, %.1f -> %.1f words, per log2 n)"
+                        sequence
+                        (per_log c0 n0)
+                        (per_log c n)
+                        (per_log w0 n0)
+                        (per_log w n)))
+                  (flat c0 c && flat w0 w)
+              | first -> climb first larger)
+        in
+        climb None [ 1_000; 10_000; 100_000 ])
+      sequences;
+    !ok
+  ;;
+
+  (* ------------------------------------------------ single operations: linear *)
+
+  (* The other half of p.46. Ascending inserts build a left spine: each new element is the
+     maximum, so partition looks at the root, finds its right child empty, and stops, at
+     O(1) a time -- which is exactly why nothing has been restructured and the spine is n
+     deep. The first operation to walk it pays for all of that at once, and halves it
+     (p.47: "the depth of every node has been reduced by about half"). *)
+  let run_worst_case name =
+    let t label = Printf.sprintf "%s: %s" name label in
+    let n = 100_000 in
+    let spine, built = count (fun () -> of_list (upto n)) in
+    check
+      (t
+         (Printf.sprintf
+            "ascending inserts cost O(1) each (%d comparisons for %d)"
+            built
+            n))
+      (built <= 2 * n);
+    (* find_min and delete_min only ever go left: no comparisons, and find_min copies
+       nothing either. *)
+    check_int
+      (t "find_min compares nothing")
+      ~expect:0
+      ~actual:(count_only (fun () -> H.find_min spine));
+    check (t "find_min allocates nothing") (words (fun () -> H.find_min spine) <= 4.0);
+    check_int
+      (t "delete_min compares nothing")
+      ~expect:0
+      ~actual:(count_only (fun () -> H.delete_min spine));
+    (* delete_min rebuilds the whole spine ... *)
+    let first = words (fun () -> H.delete_min spine) in
+    check
+      (t
+         (Printf.sprintf
+            "the first delete_min on the spine is linear (%.0f words at n=%d)"
+            first
+            n))
+      (first >= 3.0 *. float_of_int n);
+    (* ... and the next one finds a path about half as long. Halved, not merely shorter: a
+       rebuild that did not restructure would cost the same again, and one that flattened
+       the path entirely would not be this algorithm. *)
+    let after = H.delete_min spine in
+    let second = words (fun () -> H.delete_min after) in
+    check
+      (t
+         (Printf.sprintf
+            "the delete_min after it walks about half the path (%.0f words)"
+            second))
+      (second >= 0.4 *. first && second <= 0.6 *. first);
+    (* The same for partition: an insert into the middle of the spine walks n/2 nodes
+       comparing as it goes, and the insert after it walks about half of that. *)
+    let c1 = count_only (fun () -> H.insert (n / 2) spine) in
+    check
+      (t
+         (Printf.sprintf
+            "inserting the median into the spine is linear (%d comparisons)"
+            c1))
+      (c1 >= (n / 2) - 2);
+    let mid = H.insert (n / 2) spine in
+    let c2 = count_only (fun () -> H.insert ((n / 2) + 1) mid) in
+    check
+      (t
+         (Printf.sprintf
+            "the insert after it walks about half the path (%d comparisons)"
+            c2))
+      (float_of_int c2 >= 0.4 *. float_of_int c1
+       && float_of_int c2 <= 0.6 *. float_of_int c1);
+    (* And in the mirror, where the walk goes right and the smaller half of the partition
+       does the restructuring: descending inserts build a right spine, and the median goes
+       in from the other side. *)
+    let right = of_list (List.init n (fun i -> n - 1 - i)) in
+    let c1 = count_only (fun () -> H.insert (n / 2) right) in
+    check
+      (t
+         (Printf.sprintf
+            "inserting the median into the right spine is linear (%d comparisons)"
+            c1))
+      (c1 >= (n / 2) - 2);
+    let mid = H.insert (n / 2) right in
+    let c2 = count_only (fun () -> H.insert ((n / 2) - 1) mid) in
+    check
+      (t
+         (Printf.sprintf
+            "the insert after it walks about half the path (%d comparisons)"
+            c2))
+      (float_of_int c2 >= 0.4 *. float_of_int c1
+       && float_of_int c2 <= 0.6 *. float_of_int c1)
+  ;;
+end
+
+module Splay = SplayHeap (Counting_int)
+module Splay_checks = Heap_tests (Splay)
+
+let test_splay () =
+  section "SplayHeap (5.4)";
+  let before = !failures in
+  Splay_checks.run_contract "SplayHeap";
+  if !failures > before
+  then
+    Printf.printf "  SKIP  SplayHeap: cost checks -- the contract above does not hold\n"
+  else if Splay_checks.run_amortised "SplayHeap"
+  then Splay_checks.run_worst_case "SplayHeap"
+  else
+    Printf.printf
+      "  SKIP  SplayHeap: worst-case checks -- they build a heap of 100000 elements\n"
+;;
+
+(* ----------------------------------------------- Exercise 5.7: sorting with a splay tree *)
+
+(* "Write a sorting function that inserts elements into a splay tree and then performs an
+   inorder traversal of the tree, dumping the elements into a list. Show that this
+   function takes only O(n) time on an already sorted list."
+
+   The showing is the exercise. What is asserted is the claim itself, in the only form a
+   test can give it: the cost per element of sorting an already sorted list is a constant,
+   and stays that constant from n = 1000 to n = 100_000. Whatever the sort does inside, a
+   step that is quadratic on the spine the sorted inserts build -- the obvious traversal
+   with @ is one -- shows up here as a per-element cost a hundred times larger at the
+   larger size. p.52 says splay heaps "excel on both increasing and decreasing sequences",
+   so the descending list is held to the same bound. Random input is the contrast: there
+   the sort is a comparison sort like any other and costs Theorem 5.2's O(log n) per
+   element, which is the bound the splay-heap sequences above use. *)
+
+let test_splay_sort () =
+  section "SplayHeap.sort (Exercise 5.7)";
+  let sort xs = Splay.sort xs in
+  let eq name expect xs =
+    surviving
+      name
+      (fun () -> sort xs)
+      (fun actual -> check_eq name ~expect ~actual string_of_int_list)
+  in
+  eq "sort of the empty list" [] [];
+  eq "sort of a singleton" [ 7 ] [ 7 ];
+  eq "sort" [ 1; 2; 3; 5; 8; 9 ] [ 5; 3; 8; 1; 9; 2 ];
+  eq "sort of a sorted list" [ 1; 2; 3; 4 ] [ 1; 2; 3; 4 ];
+  eq "sort of a reversed list" [ 1; 2; 3; 4 ] [ 4; 3; 2; 1 ];
+  eq "sort keeps duplicates" [ 1; 1; 2; 2; 3; 3 ] [ 2; 1; 3; 1; 2; 3 ];
+  Random.init 20260922;
+  let bad = ref 0 in
+  for _ = 0 to 299 do
+    let xs = List.init (Random.int 40) (fun _ -> Random.int 10) in
+    if sort xs <> List.sort compare xs then incr bad
+  done;
+  check_int "sort agrees with List.sort, 300 random lists" ~expect:0 ~actual:!bad;
+  (* Cost per element, at two sizes a hundred apart. *)
+  let per_element xs =
+    let n = float_of_int (List.length xs) in
+    let c = float_of_int (count_only (fun () -> sort xs)) /. n in
+    let w = words (fun () -> sort xs) /. n in
+    c, w
+  in
+  let small = 1_000
+  and large = 100_000 in
+  let linear name make =
+    let c1, w1 = per_element (make small) in
+    (* Inserting a new maximum, or a new minimum, looks at the root and stops: one
+       comparison. Sixty-four words is several nodes' worth per element, far more than a
+       linear sort needs and far less than a quadratic one spends at either size. *)
+    let fits = c1 <= 4.0 && w1 <= 64.0 in
+    check
+      (Printf.sprintf
+         "an already %s list costs O(1) per element (%.1f comparisons, %.0f words at \
+          n=%d)"
+         name
+         c1
+         w1
+         small)
+      fits;
+    (* Guarded, as every large size here is: a quadratic sort takes minutes at n=100000. *)
+    if not fits
+    then (
+      Printf.printf
+        "  SKIP  an already %s list at n=%d -- it is not O(1) per element at n=%d\n"
+        name
+        large
+        small;
+      None)
+    else (
+      let c2, w2 = per_element (make large) in
+      check
+        (Printf.sprintf
+           "and stays O(1) per element a hundred times longer (%.1f comparisons, %.0f \
+            words at n=%d)"
+           c2
+           w2
+           large)
+        (c2 <= 4.0 && w2 <= 64.0 && c2 <= (1.5 *. c1) +. 0.5 && w2 <= (1.5 *. w1) +. 4.0);
+      Some c2)
+  in
+  let sorted_large = linear "sorted" upto in
+  ignore (linear "reverse-sorted" (fun n -> List.init n (fun i -> n - i)));
+  (* Random input: O(log n) per element, no better, and it must really cost more than the
+     sorted case does, or the checks above have measured nothing. *)
+  let xs = Splay_checks.random_ints 20260924 large 1_000_000 in
+  let c, w = per_element xs in
+  check
+    (Printf.sprintf
+       "a random list costs O(log n) per element (%.1f comparisons, %.0f words at n=%d)"
+       c
+       w
+       large)
+    (c <= Splay_checks.comparison_bound large && w <= Splay_checks.word_bound large);
+  match sorted_large with
+  | None -> ()
+  | Some c_sorted ->
+    check
+      (Printf.sprintf
+         "the sorted list really is the cheap case (%.1f comparisons per element against \
+          %.1f)"
+         c_sorted
+         c)
+      (c >= 2.0 *. c_sorted)
+;;
+
 (* ------------------------------------------------------------------- runner *)
 
 (* A regression can make a function raise where the test did not expect it. Report that as
@@ -793,6 +1341,8 @@ let run name f =
 let () =
   run "BatchedQueue" test_batched;
   run "Deque" test_deque;
+  run "SplayHeap" test_splay;
+  run "SplayHeap.sort" test_splay_sort;
   Printf.printf "\n%d checks, %d failures\n\n" !checks !failures;
   if !failures > 0 then exit 1
 ;;
