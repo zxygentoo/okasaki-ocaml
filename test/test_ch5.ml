@@ -1,6 +1,7 @@
-(* Tests for Chapter 5: the batched queue of Figure 5.2, the deque of Exercise 5.1, and
-   the splay heap of Figure 5.5 with Exercises 5.4 and 5.7. Plain OCaml, no test
-   framework, matching the earlier chapters.
+(* Tests for Chapter 5: the batched queue of Figure 5.2, the deque of Exercise 5.1, the
+   splay heap of Figure 5.5 with Exercises 5.4 and 5.7, and the pairing heap of Figure 5.6
+   in both its representations (Exercise 5.8). Plain OCaml, no test framework, matching
+   the earlier chapters.
 
    This is the first structure in the book whose costs are AMORTISED, and that changes
    what a cost test has to look like. "tail is O(1) amortised" is not a statement about
@@ -843,6 +844,85 @@ let count f =
 let count_only f = snd (count f)
 let log2 n = log (float_of_int n) /. log 2.
 
+(* Per operation, amortised, for the O(log n) heaps of this chapter: Theorem 5.2's 1 + 2
+   log2(#t) partition calls, two comparisons each, doubled for a two-pass partition; and
+   for words, the nodes those calls copy, with room for delete_min's. #t is the size plus
+   one. Exercise 5.8(c) carries the same analysis, with the same potential, over to
+   pairing heaps, so they are held to the same line. *)
+let comparison_bound n = 4. +. (8. *. log2 (n + 1))
+let word_bound n = 24. +. (32. *. log2 (n + 1))
+
+(* Amortised O(log n), asserted as [run_sequences] asserts O(1): over whole sequences from
+   the empty structure, cost per operation, here measured in comparisons and words both
+   and compared to the bounds above. True if every sequence stayed within them. Sizes
+   climb by tens, each guarded on the one before: a quadratic that still fits under the
+   bound at n = 1000 is caught at n = 10_000, where it costs a fraction of a second,
+   instead of at n = 100_000, where it would take the better part of a minute to fail. *)
+let run_log_sequences name sequences =
+  let t label = Printf.sprintf "%s: %s" name label in
+  let ok = ref true in
+  List.iter
+    (fun (sequence, per_n, driver) ->
+      let within n =
+        let f = driver n in
+        let ops = float_of_int (per_n * n) in
+        let c = float_of_int (count_only f) /. ops in
+        let w = words f /. ops in
+        let fits = c <= comparison_bound n && w <= word_bound n in
+        check
+          (t
+             (Printf.sprintf
+                "%s, amortised O(log n): %.1f comparisons and %.0f words per operation \
+                 at n=%d"
+                sequence
+                c
+                w
+                n))
+          fits;
+        c, w, fits
+      in
+      let rec climb first = function
+        | [] -> ()
+        | n :: larger ->
+          let c, w, fits = within n in
+          if not fits
+          then (
+            ok := false;
+            List.iter
+              (fun m ->
+                Printf.printf
+                  "  SKIP  %s: %s at n=%d -- it is not O(log n) at n=%d\n"
+                  name
+                  sequence
+                  m
+                  n)
+              larger)
+          else (
+            match first with
+            | None -> climb (Some (n, c, w)) larger
+            | Some (n0, c0, w0) when larger = [] ->
+              (* Per operation per log2 n, a hundred times longer: the same or less,
+                 within noise. That is the shape of the claim whatever the constant. *)
+              let per_log v n = v /. log2 (n + 1) in
+              let flat v0 v = per_log v n <= (1.5 *. per_log v0 n0) +. 0.5 in
+              check
+                (t
+                   (Printf.sprintf
+                      "%s, the cost per operation grows no faster than log n (%.2f -> \
+                       %.2f comparisons, %.1f -> %.1f words, per log2 n)"
+                      sequence
+                      (per_log c0 n0)
+                      (per_log c n)
+                      (per_log w0 n0)
+                      (per_log w n)))
+                (flat c0 c && flat w0 w)
+            | first -> climb first larger)
+      in
+      climb None [ 1_000; 10_000; 100_000 ])
+    sequences;
+  !ok
+;;
+
 module Heap_tests (H : HEAP with type Element.t = int) = struct
   let of_list xs = List.fold_left (fun h x -> H.insert x h) H.empty xs
 
@@ -898,21 +978,15 @@ module Heap_tests (H : HEAP with type Element.t = int) = struct
        find_min follows left branches, and a minimum that has been put on the right is not
        where it looks. *)
     surviving
-      (t "the minimum is still leftmost after ascending inserts")
+      (t "the minimum is found after ascending inserts")
       (fun () -> H.find_min (of_list [ 1; 2; 3 ]))
       (fun m ->
-        check_int
-          (t "the minimum is still leftmost after ascending inserts")
-          ~expect:1
-          ~actual:m);
+        check_int (t "the minimum is found after ascending inserts") ~expect:1 ~actual:m);
     surviving
-      (t "the minimum is still leftmost after descending inserts")
+      (t "the minimum is found after descending inserts")
       (fun () -> H.find_min (of_list [ 3; 2; 1 ]))
       (fun m ->
-        check_int
-          (t "the minimum is still leftmost after descending inserts")
-          ~expect:1
-          ~actual:m);
+        check_int (t "the minimum is found after descending inserts") ~expect:1 ~actual:m);
     eq
       "merge is multiset union"
       [ 1; 2; 3; 4; 5; 6 ]
@@ -1036,80 +1110,7 @@ module Heap_tests (H : HEAP with type Element.t = int) = struct
     ]
   ;;
 
-  (* Per operation, amortised: Theorem 5.2's 1 + 2 log2(#t) partition calls, two
-     comparisons each, doubled for a two-pass partition; and for words, the nodes those
-     calls copy, with room for delete_min's. #t is the size plus one. *)
-  let comparison_bound n = 4. +. (8. *. log2 (n + 1))
-  let word_bound n = 24. +. (32. *. log2 (n + 1))
-
-  (* True if every sequence stayed within the bounds. Sizes climb by tens, each guarded on
-     the one before: a quadratic that still fits under the bound at n = 1000 is caught at
-     n = 10_000, where it costs a fraction of a second, instead of at n = 100_000, where
-     it would take the better part of a minute to fail. *)
-  let run_amortised name =
-    let t label = Printf.sprintf "%s: %s" name label in
-    let ok = ref true in
-    List.iter
-      (fun (sequence, per_n, driver) ->
-        let within n =
-          let f = driver n in
-          let ops = float_of_int (per_n * n) in
-          let c = float_of_int (count_only f) /. ops in
-          let w = words f /. ops in
-          let fits = c <= comparison_bound n && w <= word_bound n in
-          check
-            (t
-               (Printf.sprintf
-                  "%s, amortised O(log n): %.1f comparisons and %.0f words per operation \
-                   at n=%d"
-                  sequence
-                  c
-                  w
-                  n))
-            fits;
-          c, w, fits
-        in
-        let rec climb first = function
-          | [] -> ()
-          | n :: larger ->
-            let c, w, fits = within n in
-            if not fits
-            then (
-              ok := false;
-              List.iter
-                (fun m ->
-                  Printf.printf
-                    "  SKIP  %s: %s at n=%d -- it is not O(log n) at n=%d\n"
-                    name
-                    sequence
-                    m
-                    n)
-                larger)
-            else (
-              match first with
-              | None -> climb (Some (n, c, w)) larger
-              | Some (n0, c0, w0) when larger = [] ->
-                (* Per operation per log2 n, a hundred times longer: the same or less,
-                   within noise. That is the shape of the claim whatever the constant. *)
-                let per_log v n = v /. log2 (n + 1) in
-                let flat v0 v = per_log v n <= (1.5 *. per_log v0 n0) +. 0.5 in
-                check
-                  (t
-                     (Printf.sprintf
-                        "%s, the cost per operation grows no faster than log n (%.2f -> \
-                         %.2f comparisons, %.1f -> %.1f words, per log2 n)"
-                        sequence
-                        (per_log c0 n0)
-                        (per_log c n)
-                        (per_log w0 n0)
-                        (per_log w n)))
-                  (flat c0 c && flat w0 w)
-              | first -> climb first larger)
-        in
-        climb None [ 1_000; 10_000; 100_000 ])
-      sequences;
-    !ok
-  ;;
+  let run_amortised name = run_log_sequences name sequences
 
   (* ------------------------------------------------ single operations: linear *)
 
@@ -1313,7 +1314,7 @@ let test_splay_sort () =
        c
        w
        large)
-    (c <= Splay_checks.comparison_bound large && w <= Splay_checks.word_bound large);
+    (c <= comparison_bound large && w <= word_bound large);
   match sorted_large with
   | None -> ()
   | Some c_sorted ->
@@ -1324,6 +1325,435 @@ let test_splay_sort () =
          c_sorted
          c)
       (c >= 2.0 *. c_sorted)
+;;
+
+(* ------------------------------------------------------- pairing heaps (5.5) *)
+
+(* p.53: "it is easy to see that findMin, insert, and merge all run in O(1) worst-case
+   time. However, deleteMin can take up to O(n) time in the worst case. By drawing an
+   analogy to splay trees (see Exercise 5.8), we can show that insert, merge, and
+   deleteMin all run in O(log n) amortized time. It has been conjectured that insert and
+   merge actually run in O(1) amortized time, but no one has yet been able to prove or
+   disprove this claim."
+
+   One instrument is enough here, because a pairing heap does exactly one thing that costs
+   anything: merge compares the two roots once and makes the loser the leftmost child of
+   the winner. So the comparison count IS the merge count -- insert is one merge,
+   delete_min of a root with k children is k - 1 of them -- and nothing else compares at
+   all. Allocation tells the same story (a node and a cons per merge) and is kept as the
+   check that a merge does not quietly do more than that, such as walking a child list.
+
+   Two shapes recur. n ascending inserts leave the first element at the root with the
+   other n - 1 as its direct children, each a singleton: a star, and the delete_min that
+   follows has all of them to pair up. n descending inserts make each new element the
+   root, with the previous heap as its only child: a chain, where delete_min has one child
+   and nothing to merge.
+
+   Not asserted: the well-formedness invariant, "E never occurs in the child list of a T
+   node" (p.52) -- HEAP seals the tree, and a drain notices a lost element but not a stray
+
+   E. Not asserted either, because it is an open problem: the conjectured O(1) amortised
+   insert and merge. The sequences below hold them to the proven O(log n). *)
+
+module Pairing_tests (H : HEAP with type Element.t = int) = struct
+  let of_list xs = List.fold_left (fun h x -> H.insert x h) H.empty xs
+  let star n = of_list (upto n)
+  let chain n = of_list (List.init n (fun i -> n - i))
+
+  (* -------------------------------------------- find_min, insert, merge are O(1) *)
+
+  let run_worst_case name =
+    let t label = Printf.sprintf "%s: %s" name label in
+    let n = 100_000 in
+    let star = star n
+    and chain = chain n in
+    (* find_min reads the root. *)
+    check_int
+      (t "find_min compares nothing")
+      ~expect:0
+      ~actual:
+        (count_only (fun () -> H.find_min star) + count_only (fun () -> H.find_min chain));
+    check
+      (t "find_min allocates nothing")
+      (words (fun () -> H.find_min star) <= 4.0
+       && words (fun () -> H.find_min chain) <= 4.0);
+    (* insert is one merge, whatever the heap looks like and whichever way the comparison
+       goes: a new maximum onto the star, a new minimum onto it, anything onto the chain. *)
+    let inserts =
+      [ ("a larger element into the star", fun () -> H.insert n star)
+      ; ("a new minimum into the star", fun () -> H.insert (-1) star)
+      ; ("into the chain", fun () -> H.insert n chain)
+      ]
+    in
+    let bad =
+      List.filter (fun (_, f) -> count_only f <> 1 || words f > 16.0) (List.rev inserts)
+    in
+    check
+      (t
+         (Printf.sprintf
+            "insert is one comparison and O(1) words at n=%d%s"
+            n
+            (first_of
+               (fun (how, f) ->
+                 Printf.sprintf
+                   "%s: %d comparisons, %.0f words"
+                   how
+                   (count_only f)
+                   (words f))
+               bad)))
+      (bad = []);
+    (* merge is one comparison, whatever the two sizes. *)
+    let merges =
+      [ ("star with chain", fun () -> H.merge star chain)
+      ; ("chain with star", fun () -> H.merge chain star)
+      ; ("star with a singleton", fun () -> H.merge star (H.insert 5 H.empty))
+      ; ("a singleton with the star", fun () -> H.merge (H.insert 5 H.empty) star)
+      ]
+    in
+    let bad =
+      List.filter (fun (_, f) -> count_only f <> 1 || words f > 16.0) (List.rev merges)
+    in
+    check
+      (t
+         (Printf.sprintf
+            "merge is one comparison and O(1) words at n=%d%s"
+            n
+            (first_of
+               (fun (how, f) ->
+                 Printf.sprintf
+                   "%s: %d comparisons, %.0f words"
+                   how
+                   (count_only f)
+                   (words f))
+               bad)))
+      (bad = []);
+    (* --------------------------------------------------- delete_min is O(n) at worst *)
+    (* The star's root has n - 1 children, and pairing them up and merging the pairs is
+       n - 2 merges: the linear worst case the book states, and the guard that the
+       sequences below have something to amortise. The chain's root has one child, so the
+       same operation there merges nothing. *)
+    let c = count_only (fun () -> H.delete_min star) in
+    check
+      (t (Printf.sprintf "delete_min on the star is linear (%d comparisons at n=%d)" c n))
+      (c >= n - 2);
+    check_int
+      (t "delete_min on the chain compares nothing")
+      ~expect:0
+      ~actual:(count_only (fun () -> H.delete_min chain))
+  ;;
+
+  (* ------------------------------------------------- amortised O(log n) per operation *)
+
+  (* Drains of the shapes above, mixes, and -- since pairing heaps are "much faster for
+     applications that do [use merge]" (p.53) -- sequences that build the heap by merging
+     rather than inserting. *)
+  let drain_all h n =
+    let h = ref h in
+    for _ = 1 to n do
+      h := H.delete_min !h
+    done;
+    !h
+  ;;
+
+  let random_ints seed n bound =
+    Random.init seed;
+    List.init n (fun _ -> Random.int bound)
+  ;;
+
+  let sequences =
+    [ ( "n random inserts, then n delete_mins"
+      , 2
+      , fun n ->
+          let xs = random_ints 20260925 n 1_000_000 in
+          fun () -> drain_all (of_list xs) n )
+    ; ("the star of n, then n delete_mins", 2, fun n () -> drain_all (star n) n)
+    ; ("the chain of n, then n delete_mins", 2, fun n () -> drain_all (chain n) n)
+    ; ( "n equal inserts, then n delete_mins"
+      , 2
+      , fun n () -> drain_all (of_list (List.init n (fun _ -> 7))) n )
+    ; ( "sawtooth inserts, then n delete_mins"
+      , 2
+      , fun n () ->
+          drain_all (of_list (List.init n (fun i -> if i mod 2 = 0 then i else n - i))) n
+      )
+    ; ( "insert, insert, delete_min, n times over"
+      , 3
+      , fun n ->
+          let xs = Array.of_list (random_ints 20260926 (2 * n) 1_000_000) in
+          fun () ->
+            let h = ref H.empty in
+            for i = 0 to n - 1 do
+              h := H.insert xs.(2 * i) !h;
+              h := H.insert xs.((2 * i) + 1) !h;
+              h := H.delete_min !h
+            done;
+            !h )
+    ; ( "n singletons merged pairwise into one heap, then n delete_mins"
+      , 2
+      , fun n ->
+          let xs = random_ints 20260927 n 1_000_000 in
+          fun () ->
+            let rec pass = function
+              | a :: b :: rest -> H.merge a b :: pass rest
+              | short -> short
+            in
+            let rec rounds = function
+              | [] -> H.empty
+              | [ h ] -> h
+              | hs -> rounds (pass hs)
+            in
+            drain_all (rounds (List.map (fun x -> H.insert x H.empty) xs)) n )
+    ; ( "two random heaps of n/2 merged, then n delete_mins"
+      , 2
+      , fun n ->
+          let xs = random_ints 20260928 (n / 2) 1_000_000
+          and ys = random_ints 20260929 (n / 2) 1_000_000 in
+          fun () -> drain_all (H.merge (of_list xs) (of_list ys)) (2 * (n / 2)) )
+    ]
+  ;;
+
+  let run_amortised name = run_log_sequences name sequences
+end
+
+module Pairing = PairingHeap (Counting_int)
+module Pairing_contract = Heap_tests (Pairing)
+module Pairing_checks = Pairing_tests (Pairing)
+
+let test_pairing () =
+  section "PairingHeap (5.5)";
+  let before = !failures in
+  Pairing_contract.run_contract "PairingHeap";
+  (* Two heaps of this chapter, two shapes in memory, one behaviour. *)
+  Random.init 20260930;
+  let disagree = ref 0 in
+  for _ = 0 to 299 do
+    let xs = List.init (Random.int 60) (fun _ -> Random.int 30) in
+    if Pairing_contract.drain (Pairing_contract.of_list xs)
+       <> Splay_checks.drain (Splay_checks.of_list xs)
+    then incr disagree
+  done;
+  check_int
+    "PairingHeap and SplayHeap drain identically, 300 random lists"
+    ~expect:0
+    ~actual:!disagree;
+  if !failures > before
+  then
+    Printf.printf "  SKIP  PairingHeap: cost checks -- the contract above does not hold\n"
+  else if Pairing_checks.run_amortised "PairingHeap"
+  then Pairing_checks.run_worst_case "PairingHeap"
+  else
+    Printf.printf
+      "  SKIP  PairingHeap: worst-case checks -- they build a heap of 100000 elements\n"
+;;
+
+(* ------------------------------------------ Exercise 5.8(a): to_binary, the encoding *)
+
+(* "Write a function toBinary that converts pairing heaps from the existing representation
+   into the type BinTree." Convert exposes both of its types, so unlike everything else in
+   this chapter the trees can be built and read directly.
+
+   The encoding is fixed by the exercise text -- left field: leftmost child; right field:
+   the sibling to the immediate right; a missing one is E -- and it is a bijection between
+   multiway trees and binary trees whose root has no right sibling. So there are two kinds
+   of check. Hand-written cases pin the encoding itself, in particular which field the
+   children go into and that the leftmost child comes first. The random cases assert what
+   a bijection owes: a round trip through an inverse gives the tree back, nothing is lost
+   or duplicated, the root's right field is E, and -- the exercise's own remark -- a
+   heap-ordered multiway tree comes out half-ordered, "the element at each node is no
+   greater than any element in its left subtree". The right subtree is exempt from that on
+   purpose: it holds siblings, which are bounded by the parent, not by the node.
+
+   Not a claim the book makes, but a cost worth pinning: the conversion is one binary node
+   per multiway node, so words per node are constant, on a wide tree and on a deep one. *)
+
+module Conv = Convert (Counting_int)
+
+let test_to_binary () =
+  section "to_binary (Exercise 5.8a)";
+  let open Conv in
+  let rec show = function
+    | E2 -> "E"
+    | T2 (x, a, b) -> Printf.sprintf "T(%d,%s,%s)" x (show a) (show b)
+  in
+  let eq name ~expect h = check_eq name ~expect ~actual:(to_binary h) show in
+  eq "the empty heap" ~expect:E2 E1;
+  eq "a singleton" ~expect:(T2 (1, E2, E2)) (T1 (1, []));
+  (* Children go LEFT, siblings go RIGHT, the leftmost child first; the root's right field
+     is E. 1[3, 2] is what inserting 1, 2, 3 into a pairing heap builds. *)
+  eq
+    "1[3, 2]: children hang off the left field, leftmost first"
+    ~expect:(T2 (1, T2 (3, E2, T2 (2, E2, E2)), E2))
+    (T1 (1, [ T1 (3, []); T1 (2, []) ]));
+  eq
+    "1[6, 2[5], 9[8[7]]]: every node's children left, its right sibling right"
+    ~expect:
+      (T2
+         ( 1
+         , T2 (6, E2, T2 (2, T2 (5, E2, E2), T2 (9, T2 (8, T2 (7, E2, E2), E2), E2)))
+         , E2 ))
+    (T1 (1, [ T1 (6, []); T1 (2, [ T1 (5, []) ]); T1 (9, [ T1 (8, [ T1 (7, []) ]) ]) ]));
+  (* The inverse, written here: it fails loudly on a root with a sibling, which no
+     multiway tree encodes to. *)
+  let rec from_binary = function
+    | E2 -> E1
+    | T2 (x, a, E2) -> T1 (x, siblings a)
+    | T2 _ -> invalid_arg "from_binary: the root has a right sibling"
+  and siblings = function
+    | E2 -> []
+    | T2 (x, a, b) -> T1 (x, siblings a) :: siblings b
+  in
+  let rec elements1 = function
+    | E1 -> []
+    | T1 (x, hs) -> x :: List.concat_map elements1 hs
+  in
+  let rec elements2 = function
+    | E2 -> []
+    | T2 (x, a, b) -> (x :: elements2 a) @ elements2 b
+  in
+  let rec all p = function
+    | E2 -> true
+    | T2 (x, a, b) -> p x && all p a && all p b
+  in
+  let rec half_ordered = function
+    | E2 -> true
+    | T2 (x, a, b) -> all (fun y -> x <= y) a && half_ordered a && half_ordered b
+  in
+  let root_right_empty = function
+    | E2 | T2 (_, _, E2) -> true
+    | T2 _ -> false
+  in
+  (* Random heap-ordered multiway trees: every child's element is at least its parent's,
+     and E never appears in a child list. *)
+  let rec random_tree lo depth =
+    let x = lo + Random.int 4 in
+    let k = if depth = 0 then 0 else Random.int 4 in
+    T1 (x, List.init k (fun _ -> random_tree x (depth - 1)))
+  in
+  Random.init 20261002;
+  let not_bijective = ref 0
+  and lost = ref 0
+  and sibling_root = ref 0
+  and not_half = ref 0 in
+  for _ = 0 to 299 do
+    let h = random_tree 0 (Random.int 5) in
+    let b = to_binary h in
+    if try from_binary b <> h with
+       | Invalid_argument _ -> true
+    then incr not_bijective;
+    if List.sort compare (elements2 b) <> List.sort compare (elements1 h) then incr lost;
+    if not (root_right_empty b) then incr sibling_root;
+    if not (half_ordered b) then incr not_half
+  done;
+  check_int
+    "converting and back gives the tree again, 300 random trees"
+    ~expect:0
+    ~actual:!not_bijective;
+  check_int "every element survives, once" ~expect:0 ~actual:!lost;
+  check_int "the root's right field is always E" ~expect:0 ~actual:!sibling_root;
+  check_int "a heap-ordered tree comes out half-ordered" ~expect:0 ~actual:!not_half;
+  (* One binary node per multiway node, on a wide tree and on a deep one. *)
+  let star n = T1 (0, List.init n (fun i -> T1 (i + 1, []))) in
+  let rec chain n = if n = 0 then [] else [ T1 (n, chain (n - 1)) ] in
+  let per_node shape n =
+    let h = shape n in
+    words (fun () -> to_binary h) /. float_of_int n
+  in
+  List.iter
+    (fun (name, shape) ->
+      let small = per_node shape 1_000 in
+      (* A node is a few words. A conversion that copies chains is thousands per node
+         already at n=1000, and minutes of work at n=100000, so the large size is guarded. *)
+      if small > 32.0
+      then
+        check
+          (Printf.sprintf
+             "to_binary is linear on %s (%.1f words per node at n=1000)"
+             name
+             small)
+          false
+      else (
+        let large = per_node shape 100_000 in
+        check
+          (Printf.sprintf
+             "to_binary is linear on %s (%.1f words per node at n=1000, %.1f at n=100000)"
+             name
+             small
+             large)
+          (large <= small +. 0.5)))
+    [ "a star", star; ("a chain", fun n -> T1 (0, chain n)) ]
+;;
+
+(* ------------------------------------ Exercise 5.8(b): pairing heaps on binary trees *)
+
+(* "Reimplement pairing heaps using this new representation": the child-sibling encoding,
+   where a node's left field is its leftmost child and its right field the sibling to its
+   right, so that the right field of the root is always E. None of that is visible through
+   HEAP, and none of it needs to be. The encoding changes the shape in memory and nothing
+   else, so this heap owes exactly what the multiway one owes -- the same contract, the
+   same O(1) insert and merge, the same linear delete_min on the star, the same O(log n)
+   over sequences -- and one thing more. A faithful transcription performs the same merges
+   as the original, and every merge is one comparison, so on any sequence the two versions
+   compare exactly as often. That is the check that sees the encoding from outside: a
+   merge that recurses down a spine, or a delete_min that skips the pairing pass, cannot
+   match the count. *)
+
+module Binary_pairing = BinaryPairingHeap (Counting_int)
+module Binary_pairing_contract = Heap_tests (Binary_pairing)
+module Binary_pairing_checks = Pairing_tests (Binary_pairing)
+
+let test_binary_pairing () =
+  section "BinaryPairingHeap (Exercise 5.8b)";
+  let before = !failures in
+  Binary_pairing_contract.run_contract "BinaryPairingHeap";
+  (* The same heap in two shapes. *)
+  Random.init 20261001;
+  let disagree = ref 0 in
+  for _ = 0 to 299 do
+    let xs = List.init (Random.int 60) (fun _ -> Random.int 30) in
+    match Binary_pairing_contract.drain (Binary_pairing_contract.of_list xs) with
+    | got ->
+      if got <> Pairing_contract.drain (Pairing_contract.of_list xs) then incr disagree
+    | exception Failure _ -> incr disagree
+  done;
+  check_int
+    "BinaryPairingHeap and PairingHeap drain identically, 300 random lists"
+    ~expect:0
+    ~actual:!disagree;
+  let contract_holds = !failures = before in
+  (* And the same merges: the two functors build their sequences from the same seeds, so
+     pairing them up compares like with like. This pins the transcription to the multiway
+     version's merge order and tie-breaking; a heap that is correct but merges in another
+     order is reported here, with the two counts. *)
+  let bad =
+    List.filter_map
+      (fun ((name, _, multiway), (_, _, binary)) ->
+        match count_only (multiway 1_000), count_only (binary 1_000) with
+        | m, b when m = b -> None
+        | m, b -> Some (name, m, b)
+        | exception Failure _ -> Some (name, 0, -1))
+      (List.combine Pairing_checks.sequences Binary_pairing_checks.sequences)
+  in
+  check
+    (Printf.sprintf
+       "BinaryPairingHeap performs exactly the multiway version's comparisons, sequence \
+        by sequence%s"
+       (first_of
+          (fun (name, m, b) ->
+            if b < 0
+            then Printf.sprintf "%s: raised" name
+            else Printf.sprintf "%s: %d against %d" name b m)
+          bad))
+    (bad = []);
+  if not contract_holds
+  then
+    Printf.printf
+      "  SKIP  BinaryPairingHeap: cost checks -- the contract above does not hold\n"
+  else if Binary_pairing_checks.run_amortised "BinaryPairingHeap"
+  then Binary_pairing_checks.run_worst_case "BinaryPairingHeap"
+  else
+    Printf.printf
+      "  SKIP  BinaryPairingHeap: worst-case checks -- they build a heap of 100000 \
+       elements\n"
 ;;
 
 (* ------------------------------------------------------------------- runner *)
@@ -1343,6 +1773,9 @@ let () =
   run "Deque" test_deque;
   run "SplayHeap" test_splay;
   run "SplayHeap.sort" test_splay_sort;
+  run "PairingHeap" test_pairing;
+  run "to_binary" test_to_binary;
+  run "BinaryPairingHeap" test_binary_pairing;
   Printf.printf "\n%d checks, %d failures\n\n" !checks !failures;
   if !failures > 0 then exit 1
 ;;

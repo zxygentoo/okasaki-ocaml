@@ -250,3 +250,130 @@ struct
     List.fold_left (fun h x -> insert x h) E xs |> go [] |> List.rev
   ;;
 end
+
+module PairingHeap (Element : ORDERED) : HEAP with module Element = Element = struct
+  module Element = Element
+
+  type heap =
+    | E
+    | T of Element.t * heap list
+
+  let empty = E
+
+  let is_empty = function
+    | E -> true
+    | _ -> false
+  ;;
+
+  let merge h1 h2 =
+    match h1, h2 with
+    | _, E -> h1
+    | E, _ -> h2
+    | T (x, hs1), T (y, hs2) ->
+      if Element.leq x y then T (x, h2 :: hs1) else T (y, h1 :: hs2)
+  ;;
+
+  let insert x h = merge (T (x, [])) h
+
+  let find_min = function
+    | E -> raise (Failure "find_min: empty heap")
+    | T (x, _) -> x
+  ;;
+
+  let rec merge_pairs = function
+    | [] -> E
+    | [ h ] -> h
+    | h1 :: h2 :: hs -> merge (merge h1 h2) (merge_pairs hs)
+  ;;
+
+  let delete_min = function
+    | E -> raise (Failure "delete_min: empty heap")
+    | T (_, hs) -> merge_pairs hs
+  ;;
+end
+
+(* Exercise 5.8 Binary trees are often more convenient than multiway trees. Fortunately,
+   there is an easy way to represent any multiway tree as a binary tree. Simply convert
+   every multiway node into a binary node whose left child represents the leftmost child
+   of the multiway node and whose right child represents the sibling to the immediate
+   right of the multiway node. If either the leftmost child or the right sibling of the
+   multiway node is missing, then the corresponding field in the binary node is empty.
+   (Note that this implies that the right child of the root is always empty in the binary
+   representation.) Applying this transformation to pairing heaps yields half-ordered
+   binary trees in which the element at each node is no greater than any element in its
+   left subtree. *)
+
+(* (a) Write a function toBinary that converts pairing heaps from the existing
+       representation into the type
+
+   datatype BinTree = E' | T of Elem.T x BinTree x BinTree
+*)
+module Convert (Element : ORDERED) = struct
+  type heap1 =
+    | E1
+    | T1 of Element.t * heap1 list
+
+  type heap2 =
+    | E2
+    | T2 of Element.t * heap2 * heap2
+
+  let to_binary h1 =
+    let rec go = function
+      | [] -> E2
+      | E1 :: hs -> go hs
+      | T1 (x, hs1) :: hs2 -> T2 (x, go hs1, go hs2)
+    in
+    match h1 with
+    | E1 -> E2
+    | T1 (x, hs) -> T2 (x, go hs, E2)
+  ;;
+end
+
+(* (b) Reimplement pairing heaps using this new representation.
+
+   (c) Adapt the analysis of splay trees to prove that deleteMin and merge run in O(log n)
+   amortized time for this new representation (and hence for the old representation as
+   well). Use the same potential function as for splay trees.
+*)
+
+module BinaryPairingHeap (Element : ORDERED) : HEAP with module Element = Element = struct
+  module Element = Element
+
+  type heap =
+    | E
+    | T of Element.t * heap * heap
+
+  let empty = E
+
+  let is_empty = function
+    | E -> true
+    | _ -> false
+  ;;
+
+  let merge h1 h2 =
+    match h1, h2 with
+    | _, E -> h1
+    | E, _ -> h2
+    | T (x, ha, _), T (y, hb, _) ->
+      if Element.leq x y then T (x, T (y, hb, ha), E) else T (y, T (x, ha, hb), E)
+  ;;
+
+  let insert x h = merge (T (x, E, E)) h
+
+  let find_min = function
+    | E -> raise (Failure "find_min: empty heap")
+    | T (x, _, _) -> x
+  ;;
+
+  let rec merge_pairs = function
+    | E -> E
+    | T (_, _, E) as h -> h
+    | T (x, a, T (y, b, rest)) ->
+      merge (merge (T (x, a, E)) (T (y, b, E))) (merge_pairs rest)
+  ;;
+
+  let delete_min = function
+    | E -> raise (Failure "delete_min: empty heap")
+    | T (_, h, _) -> merge_pairs h
+  ;;
+end
