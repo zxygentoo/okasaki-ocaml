@@ -36,13 +36,11 @@ module LeftistHeap (Element : ORDERED) :
   HEAP_WITH_FROM_LIST with module Element = Element = struct
   module Element = Element
 
-  type elem = Element.t
-
   type heap =
     | Empty
     | Heap of
         { rank : int
-        ; value : elem
+        ; value : Element.t
         ; left : heap
         ; right : heap
         }
@@ -129,13 +127,11 @@ module WeightBiasedLeftistHeap (Element : ORDERED) : HEAP with module Element = 
 struct
   module Element = Element
 
-  type elem = Element.t
-
   type heap =
     | Empty
     | Heap of
         { size : int
-        ; value : elem
+        ; value : Element.t
         ; left : heap
         ; right : heap
         }
@@ -199,8 +195,7 @@ end
 module BinomialHeap (Element : ORDERED) : HEAP with module Element = Element = struct
   module Element = Element
 
-  type elem = Element.t
-  type tree = Node of int * elem * tree list
+  type tree = Node of int * Element.t * tree list
   type heap = tree list
 
   let empty = []
@@ -282,8 +277,7 @@ module RanklessBinomialHeap (Element : ORDERED) : HEAP with module Element = Ele
 struct
   module Element = Element
 
-  type elem = Element.t
-  type tree = Node of (elem * tree list)
+  type tree = Node of (Element.t * tree list)
   type heap = (int * tree) list
 
   let empty = []
@@ -351,11 +345,9 @@ end
 module ExplicitMin (H : HEAP) : HEAP with module Element = H.Element = struct
   module Element = H.Element
 
-  type elem = H.Element.t
-
   type heap =
     | Empty
-    | Heap of (elem * H.heap)
+    | Heap of (H.Element.t * H.heap)
 
   let empty = Empty
 
