@@ -200,7 +200,7 @@ module BinomialHeap (Element : ORDERED) : HEAP with module Element = Element = s
   module Element = Element
 
   type elem = Element.t
-  type tree = Node of (int * elem * tree list)
+  type tree = Node of int * elem * tree list
   type heap = tree list
 
   let empty = []
