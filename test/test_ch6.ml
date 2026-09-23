@@ -1,7 +1,8 @@
 (* Tests for Chapter 6: the banker's queue of Figure 6.1 (section 6.3.2), the lazy
-   binomial heap of Figure 6.2 (section 6.4.1) and the physicist's queue of Figure 6.3
-   (section 6.4.2). Plain OCaml, no test framework, matching the earlier chapters. The
-   banker's queue first; the others have their own preambles further down.
+   binomial heap of Figure 6.2 (section 6.4.1), the physicist's queue of Figure 6.3
+   (section 6.4.2) and the sortable collections of Figure 6.5 (section 6.4.3). Plain
+   OCaml, no test framework, matching the earlier chapters. The banker's queue first; the
+   others have their own preambles further down.
 
    Figure 6.1 promises what Figure 5.2 promised, every operation in O(1) amortised time,
    and keeps the promise where Figure 5.2 cannot: when a queue is used more than once.
@@ -820,7 +821,7 @@ let budgets o =
 ;;
 
 (* Comparisons and words spent by [f], which reports what it did. *)
-let heap_cost f =
+let counted f =
   comparisons := 0;
   let before = Gc.minor_words () in
   let ops = Sys.opaque_identity (f ()) in
@@ -1150,7 +1151,7 @@ module Heap_tests (H : HEAP with type Element.t = int) = struct
         let within label n =
           within_budget
             (t (Printf.sprintf "%s, %s at n=%d" sequence label n))
-            (heap_cost (driver n))
+            (counted (driver n))
         in
         if not (within "amortised, within budget" 1_000)
         then (
@@ -1178,7 +1179,7 @@ module Heap_tests (H : HEAP with type Element.t = int) = struct
       ignore
         (within_budget
            (t label)
-           (heap_cost (fun () ->
+           (counted (fun () ->
               for _ = 1 to d do
                 ignore (Sys.opaque_identity (f ()))
               done;
@@ -1230,7 +1231,7 @@ module Heap_tests (H : HEAP with type Element.t = int) = struct
         let worst = ref (0, (0.0, 0.0)) in
         for k = 0 to last do
           let (), cw =
-            heap_cost (fun () ->
+            counted (fun () ->
               for _ = 1 to d do
                 f v.(k)
               done)
@@ -1279,7 +1280,7 @@ module Heap_tests (H : HEAP with type Element.t = int) = struct
                "a random trace of %d operations, each on a random earlier version, all \
                 forced"
                n))
-         (heap_cost (fun () ->
+         (counted (fun () ->
             for i = 1 to n do
               let q = v.(from.(i - 1)) in
               v.(i)
@@ -1407,6 +1408,365 @@ let test_physicists () =
       "  SKIP  PhysicistsQueue: worst-case and persistence checks -- not O(1) in one thread\n"
 ;;
 
+(* ---------------------------------------------------- BottomUpMergeSort (6.4.3) *)
+
+(* Figure 6.5 keeps a collection as the snapshot of a bottom-up mergesort taken just
+   before its cleanup phase: one sorted segment per 1 bit of the size, the whole list of
+   them suspended, so that similar collections -- xs and x :: xs, the section's example
+   -- share every merge but the cleanup. The claims, by the physicist's method: add is
+   O(log n) amortised, and the text is exact about it, 2B' - 1 steps where B' is the
+   number of 1 bits in the new size; sort is O(n) amortised, at most 2n for forcing the
+   segments and 2n - k - 1 for merging them, so 4n. A step is one element moved by mrg,
+   and mrg compares at most once per element it moves, so the step budgets are
+   comparison budgets as they stand, with no constant in them. Words see three per step,
+   a cons, plus the tuple and the suspension of each add; the budget allows eight per
+   step and 32 per operation, room for a mrg written with an accumulator and a reverse.
+
+   As with the heap, nothing runs until a sort looks, so every driver ends with one; and
+   the sequences are joined by traces, where the section's point is made: sorting x :: xs
+   after xs costs the cleanup and the one add, and never the mergesort again. *)
+
+type sortable_ops =
+  { adds : int
+  ; sorts : int
+  ; elements : int (* the largest collection in the trace *)
+  }
+
+(* The comparison and word budgets of a trace: per add, the book's 2B' - 1 with B' as
+   large as the sizes in play allow; per sort, 4n. *)
+let sortable_budgets o =
+  let l = floor_log2 (o.elements + 1) in
+  let steps = float_of_int ((o.adds * ((2 * l) + 1)) + (o.sorts * 4 * o.elements)) in
+  steps, (8. *. steps) +. (32. *. float_of_int (o.adds + o.sorts))
+;;
+
+let sortable_over_budget (ops, (c, w)) =
+  let cb, wb = sortable_budgets ops in
+  Float.max (c /. cb) (w /. wb)
+;;
+
+let sortable_within name ((ops, (c, w)) as trace) =
+  let cb, wb = sortable_budgets ops in
+  let fine = sortable_over_budget trace <= 1.0 in
+  check
+    (Printf.sprintf
+       "%s: %.0f comparisons and %.0f words, budget %.0f and %.0f"
+       name
+       c
+       w
+       cb
+       wb)
+    fine;
+  fine
+;;
+
+module Sortable_tests (S : SORTABLE with type Element.t = int) = struct
+  let of_list xs = List.fold_left (fun s x -> S.add x s) S.empty xs
+
+  (* Run whatever the collection has put off: only a sort looks. *)
+  let force s = ignore (Sys.opaque_identity (S.sort s))
+
+  let run_contract name =
+    let t label = Printf.sprintf "%s: %s" name label in
+    let eq label expect s =
+      surviving
+        (t label)
+        (fun () -> S.sort s)
+        (fun actual -> check_eq (t label) ~expect ~actual string_of_int_list)
+    in
+    eq "sort of empty is empty" [] S.empty;
+    eq "sort of a singleton" [ 5 ] (of_list [ 5 ]);
+    eq "sort sorts" [ 1; 2; 3; 4; 5; 6; 7 ] (of_list [ 4; 2; 6; 1; 3; 5; 7 ]);
+    eq "duplicates are all kept" [ 1; 1; 1; 2; 2; 3 ] (of_list [ 2; 1; 3; 1; 2; 1 ]);
+    eq "ascending input" (upto 20) (of_list (upto 20));
+    eq "descending input" (upto 20) (of_list (List.rev (upto 20)));
+    (* Sizes on either side of a power of two: every bit set, one bit set, and one more. *)
+    eq "31 elements" (upto 31) (of_list (List.rev (upto 31)));
+    eq "32 elements" (upto 32) (of_list (List.rev (upto 32)));
+    eq "33 elements" (upto 33) (of_list (List.rev (upto 33)));
+    (* Randomised, against List.sort, with few distinct values so that equal elements are
+       everywhere. *)
+    Random.init 20260925;
+    let bad = ref 0
+    and raised = ref 0 in
+    for _ = 0 to 299 do
+      let xs = List.init (Random.int 200) (fun _ -> Random.int 50) in
+      match S.sort (of_list xs) = List.sort compare xs with
+      | true -> ()
+      | false -> incr bad
+      | exception Failure _ -> incr raised
+    done;
+    check_int (t "no sort raises, 300 random lists") ~expect:0 ~actual:!raised;
+    check_int (t "sort agrees with List.sort, 300 random lists") ~expect:0 ~actual:!bad;
+    (* Persistence, in the section's own terms: xs' serves xs, x :: xs and y :: xs. *)
+    let xs' = of_list [ 5; 3; 8; 1; 9; 2 ] in
+    eq "xs" [ 1; 2; 3; 5; 8; 9 ] xs';
+    eq "x :: xs, from the same collection" [ 1; 2; 3; 4; 5; 8; 9 ] (S.add 4 xs');
+    eq "y :: xs, from the same collection" [ 0; 1; 2; 3; 5; 8; 9 ] (S.add 0 xs');
+    eq "xs again, untouched" [ 1; 2; 3; 5; 8; 9 ] xs'
+  ;;
+
+  (* ----------------------------------- what an operation does when applied *)
+
+  (* p.75: "Of course, all this is done lazily." add builds a suspension and does nothing
+     else, on any collection; the one with every bit of its size set is the adversary,
+     since the add it is given, once run, merges every segment there is. The work is
+     still there, once, at the first sort, and the second sort of the same collection
+     finds a single segment and nothing to merge. *)
+  let run_unshared name =
+    let t label = Printf.sprintf "%s: %s" name label in
+    let k = 16 in
+    let n = (1 lsl k) - 1 in
+    let c = of_list (upto n) in
+    (* The first sort of a fresh collection is the mergesort itself: every merge of two
+       runs of m compares at least m times, and the segments of a collection with every
+       bit set add up to at least (n/2)(log2 n - 2) of those, before the cleanup. *)
+    let first, _ = spent (fun () -> force c) in
+    check
+      (t
+         (Printf.sprintf
+            "the first sort after %d adds runs the mergesort, %.0f comparisons"
+            n
+            first))
+      (first >= float_of_int n /. 2. *. float_of_int (k - 2));
+    let add_c, add_w = spent (fun () -> S.add 0 c) in
+    check_int
+      (t "add compares nothing when applied, on the collection with every bit set")
+      ~expect:0
+      ~actual:(int_of_float add_c);
+    check
+      (t (Printf.sprintf "and allocates a suspension and nothing more (%.0f words)" add_w))
+      (add_w <= 32.0);
+    let c' = S.add 0 c in
+    let merged, _ = spent (fun () -> force c') in
+    check
+      (t
+         (Printf.sprintf
+            "the sort after it runs the merges the add put off, %.0f comparisons"
+            merged))
+      (merged >= float_of_int n /. 2.);
+    let again, again_w = spent (fun () -> force c') in
+    check_int
+      (t "a second sort of that collection compares nothing: one segment, nothing to merge")
+      ~expect:0
+      ~actual:(int_of_float again);
+    check
+      (t (Printf.sprintf "and allocates nothing (%.0f words)" again_w))
+      (again_w <= 32.0)
+  ;;
+
+  (* ---------------------------------------- sequences: one thread, from empty *)
+
+  let sequences =
+    [ ( "n ascending adds, then one sort"
+      , fun n () ->
+          force (of_list (upto n));
+          { adds = n; sorts = 1; elements = n } )
+    ; ( "n random adds, then one sort"
+      , fun n ->
+          Random.init 20260925;
+          let xs = List.init n (fun _ -> Random.int 1_000_000) in
+          fun () ->
+            force (of_list xs);
+            { adds = n; sorts = 1; elements = n } )
+    ; ( "n descending adds, then one sort"
+      , fun n () ->
+          force (of_list (List.rev (upto n)));
+          { adds = n; sorts = 1; elements = n } )
+    ; ( "n equal adds, then one sort"
+      , fun n () ->
+          force (of_list (List.init n (fun _ -> 7)));
+          { adds = n; sorts = 1; elements = n } )
+    ; ( "n adds, then the same sort twice"
+      , fun n () ->
+          let c = of_list (upto n) in
+          force c;
+          force c;
+          { adds = n; sorts = 2; elements = n } )
+    ; ( "a sort after every tenth of the adds"
+      , fun n () ->
+          let c = ref S.empty in
+          for i = 1 to n do
+            c := S.add i !c;
+            if i mod (n / 10) = 0 then force !c
+          done;
+          { adds = n; sorts = 10; elements = n } )
+    ; ( "n adds, then ten sorts each of one more add"
+      , fun n () ->
+          let c = of_list (upto n) in
+          for i = 1 to 10 do
+            force (S.add (n + i) c)
+          done;
+          { adds = n + 10; sorts = 10; elements = n + 1 } )
+    ]
+  ;;
+
+  (* True if every sequence stayed within budget; the large size guarded on the small
+     one, as before. *)
+  let run_sequences name =
+    let t label = Printf.sprintf "%s: %s" name label in
+    let ok = ref true in
+    List.iter
+      (fun (sequence, driver) ->
+        let within label n =
+          sortable_within
+            (t (Printf.sprintf "%s, %s at n=%d" sequence label n))
+            (counted (driver n))
+        in
+        if not (within "amortised, within budget" 1_000)
+        then (
+          ok := false;
+          Printf.printf
+            "  SKIP  %s: %s at n=100000 -- it is over budget at n=1000\n"
+            name
+            sequence)
+        else if not (within "still within budget a hundred times longer" 100_000)
+        then ok := false)
+      sequences;
+    !ok
+  ;;
+
+  (* ------------------------------- traces: several futures of one collection *)
+
+  let run_traces name =
+    let t label = Printf.sprintf "%s: %s" name label in
+    let k = 16 in
+    let n = (1 lsl k) - 1 in
+    let c = of_list (upto n) in
+    force c;
+    let d = 200 in
+    let trace label ~adds ~sorts f =
+      ignore
+        (sortable_within
+           (t label)
+           (counted (fun () ->
+              for _ = 1 to d do
+                ignore (Sys.opaque_identity (f ()))
+              done;
+              { adds = d * adds; sorts = d * sorts; elements = n + 2 })))
+    in
+    (* The section's point. xs' is sorted; every x :: xs' from it costs a cleanup and one
+       add, and each of those adds merges every segment there is once it is looked at. *)
+    trace
+      (Printf.sprintf "%d adds onto one collection with every bit set, nothing forced" d)
+      ~adds:1
+      ~sorts:0
+      (fun () -> S.add 0 c);
+    trace "sort of each of them" ~adds:1 ~sorts:1 (fun () -> S.sort (S.add 0 c));
+    (* The trace an add that forced its argument at once would fail. *)
+    trace
+      "an add on top of each of them, nothing forced"
+      ~adds:2
+      ~sorts:0
+      (fun () -> S.add 1 (S.add 0 c));
+    trace "sort of each of those" ~adds:2 ~sorts:1 (fun () ->
+      S.sort (S.add 1 (S.add 0 c)));
+    (* The cleanup phase, again and again: one segment per bit, merged smallest to
+       largest, and nothing else left to do. *)
+    trace
+      "sort of the one collection, again and again"
+      ~adds:0
+      ~sorts:1
+      (fun () -> S.sort c);
+    (* The shortest futures from every version of a build, one run from each unmeasured
+       first, since the version's own history is due for the merges it put off. *)
+    let n = 2_000 in
+    let v = Array.make (n + 1) S.empty in
+    for i = 1 to n do
+      v.(i) <- S.add i v.(i - 1)
+    done;
+    let d = 20 in
+    let opaque x = ignore (Sys.opaque_identity x) in
+    List.iter
+      (fun (run, f, per) ->
+        let ops = { adds = d * per.adds; sorts = d * per.sorts; elements = n } in
+        let worst = ref (0, (0.0, 0.0)) in
+        Array.iteri
+          (fun k q ->
+            f q;
+            let (), cw =
+              counted (fun () ->
+                for _ = 1 to d do
+                  f q
+                done)
+            in
+            if sortable_over_budget (ops, cw) > sortable_over_budget (ops, snd !worst)
+            then worst := k, cw)
+          v;
+        let k, cw = !worst in
+        ignore
+          (sortable_within
+             (t
+                (Printf.sprintf
+                   "%s, %d times over from each version of a build, dearest from #%d"
+                   run
+                   d
+                   k))
+             (ops, cw)))
+      [ "sort", (fun q -> opaque (S.sort q)), { adds = 0; sorts = 1; elements = 0 }
+      ; ( "sort of an add"
+        , (fun q -> opaque (S.sort (S.add 0 q)))
+        , { adds = 1; sorts = 1; elements = 0 } )
+      ; "add", (fun q -> opaque (S.add 0 q)), { adds = 1; sorts = 0; elements = 0 }
+      ];
+    (* n operations, each on a version chosen at random among all built so far, three
+       adds to every sort, and every version sorted at the end. *)
+    let n = 100_000 in
+    Random.init 20260925;
+    let from = Array.init n (fun i -> Random.int (i + 1)) in
+    let kind = Array.init n (fun _ -> Random.int 4) in
+    let v = Array.make (n + 1) S.empty in
+    let size = Array.make (n + 1) 0 in
+    let adds = ref 0
+    and sorts = ref 0
+    and largest = ref 0 in
+    ignore
+      (sortable_within
+         (t
+            (Printf.sprintf
+               "a random trace of %d operations, each on a random earlier version, all \
+                sorted"
+               n))
+         (counted (fun () ->
+            for i = 1 to n do
+              let j = from.(i - 1) in
+              if kind.(i - 1) = 3
+              then (
+                incr sorts;
+                force v.(j);
+                v.(i) <- v.(j);
+                size.(i) <- size.(j))
+              else (
+                incr adds;
+                v.(i) <- S.add i v.(j);
+                size.(i) <- size.(j) + 1;
+                if size.(i) > !largest then largest := size.(i))
+            done;
+            Array.iter force v;
+            { adds = !adds; sorts = !sorts + n + 1; elements = !largest })))
+  ;;
+end
+
+module Mergesort = BottomUpMergeSort (Counting_int)
+module Sortable_checks = Sortable_tests (Mergesort)
+
+let test_mergesort () =
+  section "BottomUpMergeSort (6.4.3)";
+  let before = !failures in
+  Sortable_checks.run_contract "BottomUpMergeSort";
+  if !failures > before
+  then
+    Printf.printf
+      "  SKIP  BottomUpMergeSort: cost checks -- the contract above does not hold\n"
+  else (
+    Sortable_checks.run_unshared "BottomUpMergeSort";
+    if Sortable_checks.run_sequences "BottomUpMergeSort"
+    then Sortable_checks.run_traces "BottomUpMergeSort, persistently"
+    else
+      Printf.printf
+        "  SKIP  BottomUpMergeSort: persistence checks -- over budget in one thread\n")
+;;
+
 (* ------------------------------------------------------------------- runner *)
 
 (* A regression can make a function raise where the test did not expect it. Report that as
@@ -1424,6 +1784,7 @@ let () =
   run "Theorem 6.1" test_theorem;
   run "LazyBinomialHeap" test_lazy_binomial;
   run "PhysicistsQueue" test_physicists;
+  run "BottomUpMergeSort" test_mergesort;
   Printf.printf "\n%d checks, %d failures\n\n" !checks !failures;
   if !failures > 0 then exit 1
 ;;
