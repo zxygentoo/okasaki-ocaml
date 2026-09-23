@@ -210,3 +210,43 @@ struct
     mrg_all [] (Lazy.force segs)
   ;;
 end
+
+module LazyPairingHeap (Element : ORDERED) : HEAP with module Element = Element = struct
+  module Element = Element
+
+  type heap =
+    | E
+    | T of Element.t * heap * heap lazy_t
+
+  let empty = E
+
+  let is_empty = function
+    | E -> true
+    | _ -> false
+  ;;
+
+  let rec merge a b =
+    match a, b with
+    | a, E -> a
+    | E, b -> b
+    | T (x, _, _), T (y, _, _) -> if Element.leq x y then link a b else link b a
+
+  and link a b =
+    match a with
+    | E -> raise (Failure "merge")
+    | T (x, E, m) -> T (x, b, m)
+    | T (x, a', m) -> T (x, E, lazy (merge (merge b a') (Lazy.force m)))
+  ;;
+
+  let insert x a = merge (T (x, E, lazy E)) a
+
+  let find_min = function
+    | E -> raise (Failure "find_min: empty heap")
+    | T (x, _, _) -> x
+  ;;
+
+  let delete_min = function
+    | E -> raise (Failure "delete_min: empty heap")
+    | T (_, a, (lazy b)) -> merge a b
+  ;;
+end

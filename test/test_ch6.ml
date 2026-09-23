@@ -1,8 +1,9 @@
 (* Tests for Chapter 6: the banker's queue of Figure 6.1 (section 6.3.2), the lazy
    binomial heap of Figure 6.2 (section 6.4.1), the physicist's queue of Figure 6.3
-   (section 6.4.2) and the sortable collections of Figure 6.5 (section 6.4.3). Plain
-   OCaml, no test framework, matching the earlier chapters. The banker's queue first; the
-   others have their own preambles further down.
+   (section 6.4.2), the sortable collections of Figure 6.5 (section 6.4.3) and the lazy
+   pairing heap of Figure 6.6 (section 6.5). Plain OCaml, no test framework, matching the
+   earlier chapters. The banker's queue first; the others have their own preambles
+   further down.
 
    Figure 6.1 promises what Figure 5.2 promised, every operation in O(1) amortised time,
    and keeps the promise where Figure 5.2 cannot: when a queue is used more than once.
@@ -1767,6 +1768,456 @@ let test_mergesort () =
         "  SKIP  BottomUpMergeSort: persistence checks -- over budget in one thread\n")
 ;;
 
+(* ------------------------------------------------------- LazyPairingHeap (6.5) *)
+
+(* Figure 6.6 is the pairing heap of Figure 5.6 with the children of a node held as a
+   suspended mergePairs of them, extended two at a time, plus an odd field for the child
+   without a partner. p.79 is candid about what is claimed: "we conjecture that the new
+   implementation is asymptotically as efficient in a persistent setting as the original
+   implementation of pairing heaps is in an ephemeral setting". So the sequences hold it
+   to the line test_ch5 holds the original to, O(log n) amortised per operation with the
+   same comparison budget, and then ask what the original could not be asked: the same
+   heap used twice. p.79 again: "If we were to delete the minimum element of the same
+   heap twice, mergePairs would be called twice, duplicating work and destroying any
+   hope of amortized efficiency."
+
+   As in test_ch5, the comparison count is the merge count, since a merge compares the
+   two roots once and does nothing else that costs; and the merges happen in the same
+   order as before, so the count is the same. What link does not do is force: it wraps
+   the old suspension in a new one and leaves both alone. The words per merge have
+   grown, a node and, when the odd field was taken, a closure and a lazy block, twelve
+   where the eager heap spent seven, so the word budget is doubled. Worst cases are the
+   original's: find_min, insert and merge O(1), delete_min up to O(n). *)
+
+let pairing_comparisons n = 4. +. (8. *. log2 (n + 1))
+let pairing_words n = 48. +. (64. *. log2 (n + 1))
+
+module Pairing_tests (H : HEAP with type Element.t = int) = struct
+  module Base = Heap_tests (H)
+
+  let of_list = Base.of_list
+  let star n = of_list (upto n)
+  let chain n = of_list (List.init n (fun i -> n - i))
+
+  (* -------------------------------------------- find_min, insert, merge are O(1) *)
+
+  let run_worst_case name =
+    let t label = Printf.sprintf "%s: %s" name label in
+    let n = 100_000 in
+    let star = star n
+    and chain = chain n in
+    let describe = function
+      | [] -> ""
+      | (how, f) :: _ ->
+        let c, w = spent f in
+        Printf.sprintf " -- %s: %.0f comparisons, %.0f words" how c w
+    in
+    (* find_min reads the root. *)
+    check_int
+      (t "find_min compares nothing")
+      ~expect:0
+      ~actual:
+        (count_only (fun () -> H.find_min star) + count_only (fun () -> H.find_min chain));
+    check
+      (t "find_min allocates nothing")
+      (snd (spent (fun () -> H.find_min star)) <= 4.0
+       && snd (spent (fun () -> H.find_min chain)) <= 4.0);
+    (* insert is one merge, whatever the heap looks like and whichever way the comparison
+       goes, and the merge forces nothing: a node and at most one suspension. *)
+    let inserts =
+      [ ("a larger element into the star", fun () -> H.insert n star)
+      ; ("a new minimum into the star", fun () -> H.insert (-1) star)
+      ; ("into the chain", fun () -> H.insert n chain)
+      ]
+    in
+    let bad =
+      List.filter
+        (fun (_, f) ->
+          let c, w = spent f in
+          c <> 1.0 || w > 32.0)
+        inserts
+    in
+    check
+      (t
+         (Printf.sprintf
+            "insert is one comparison and O(1) words at n=%d%s"
+            n
+            (describe bad)))
+      (bad = []);
+    let merges =
+      [ ("star with chain", fun () -> H.merge star chain)
+      ; ("chain with star", fun () -> H.merge chain star)
+      ; ("star with a singleton", fun () -> H.merge star (H.insert 5 H.empty))
+      ; ("a singleton with the star", fun () -> H.merge (H.insert 5 H.empty) star)
+      ; ("the star with itself", fun () -> H.merge star star)
+      ]
+    in
+    let bad =
+      List.filter
+        (fun (_, f) ->
+          let c, w = spent f in
+          c <> 1.0 || w > 32.0)
+        merges
+    in
+    check
+      (t
+         (Printf.sprintf
+            "merge is one comparison and O(1) words at n=%d%s"
+            n
+            (describe bad)))
+      (bad = []);
+    (* --------------------------------------------------- delete_min is O(n) at worst *)
+    (* The star's root has n - 1 children, and pairing them up and merging the pairs is
+       about n merges: the linear worst case, and the guard that the sequences below have
+       something to amortise. The chain's root has one child, so the same operation there
+       merges nothing. *)
+    let c = count_only (fun () -> H.delete_min star) in
+    check
+      (t (Printf.sprintf "delete_min on the star is linear (%d comparisons at n=%d)" c n))
+      (c >= n - 3);
+    check_int
+      (t "delete_min on the chain compares nothing")
+      ~expect:0
+      ~actual:(count_only (fun () -> H.delete_min chain));
+    (* And this is the section: the children were paired up inside a suspension, and the
+       suspension remembers. *)
+    let again = count_only (fun () -> H.delete_min star) in
+    check
+      (t
+         (Printf.sprintf
+            "a second delete_min of the same star finds the pairing done (%d comparisons)"
+            again))
+      (again <= 2)
+  ;;
+
+  (* ------------------------------------------------- amortised O(log n) per operation *)
+
+  let drain_all h n =
+    let h = ref h in
+    for _ = 1 to n do
+      h := H.delete_min !h
+    done;
+    ignore (Sys.opaque_identity (H.is_empty !h))
+  ;;
+
+  let random_ints seed n bound =
+    Random.init seed;
+    List.init n (fun _ -> Random.int bound)
+  ;;
+
+  (* test_ch5's sequences: drains of the shapes above, mixes, and heaps built by merging
+     rather than inserting. A delete_min forces, so a drain leaves nothing put off. *)
+  let sequences =
+    [ ( "n random inserts, then n delete_mins"
+      , 2
+      , fun n ->
+          let xs = random_ints 20260925 n 1_000_000 in
+          fun () -> drain_all (of_list xs) n )
+    ; ("the star of n, then n delete_mins", 2, fun n () -> drain_all (star n) n)
+    ; ("the chain of n, then n delete_mins", 2, fun n () -> drain_all (chain n) n)
+    ; ( "n equal inserts, then n delete_mins"
+      , 2
+      , fun n () -> drain_all (of_list (List.init n (fun _ -> 7))) n )
+    ; ( "sawtooth inserts, then n delete_mins"
+      , 2
+      , fun n () ->
+          drain_all (of_list (List.init n (fun i -> if i mod 2 = 0 then i else n - i))) n
+      )
+    ; ( "insert, insert, delete_min, n times over"
+      , 3
+      , fun n ->
+          let xs = Array.of_list (random_ints 20260926 (2 * n) 1_000_000) in
+          fun () ->
+            let h = ref H.empty in
+            for i = 0 to n - 1 do
+              h := H.insert xs.(2 * i) !h;
+              h := H.insert xs.((2 * i) + 1) !h;
+              h := H.delete_min !h
+            done;
+            ignore (Sys.opaque_identity (H.is_empty !h)) )
+    ; ( "n singletons merged pairwise into one heap, then n delete_mins"
+      , 2
+      , fun n ->
+          let xs = random_ints 20260927 n 1_000_000 in
+          fun () ->
+            let rec pass = function
+              | a :: b :: rest -> H.merge a b :: pass rest
+              | short -> short
+            in
+            let rec rounds = function
+              | [] -> H.empty
+              | [ h ] -> h
+              | hs -> rounds (pass hs)
+            in
+            drain_all (rounds (List.map (fun x -> H.insert x H.empty) xs)) n )
+    ; ( "two random heaps of n/2 merged, then n delete_mins"
+      , 2
+      , fun n ->
+          let xs = random_ints 20260928 (n / 2) 1_000_000
+          and ys = random_ints 20260929 (n / 2) 1_000_000 in
+          fun () -> drain_all (H.merge (of_list xs) (of_list ys)) (2 * (n / 2)) )
+    ]
+  ;;
+
+  (* Per operation, against the bounds above, at n = 1000 and n = 100_000, the second
+     guarded on the first; then the shape of the claim whatever the constant: per
+     operation per log2 n, a hundred times longer costs the same or less, within noise. *)
+  let run_sequences name =
+    let t label = Printf.sprintf "%s: %s" name label in
+    let ok = ref true in
+    List.iter
+      (fun (sequence, per_n, driver) ->
+        let measure n =
+          let f = driver n in
+          let ops = float_of_int (per_n * n) in
+          let c, w = spent f in
+          let c = c /. ops
+          and w = w /. ops in
+          let fits = c <= pairing_comparisons n && w <= pairing_words n in
+          check
+            (t
+               (Printf.sprintf
+                  "%s, amortised O(log n): %.2f comparisons and %.1f words per operation \
+                   at n=%d, budget %.2f and %.1f"
+                  sequence
+                  c
+                  w
+                  n
+                  (pairing_comparisons n)
+                  (pairing_words n)))
+            fits;
+          c, w, fits
+        in
+        let c0, w0, fits0 = measure 1_000 in
+        if not fits0
+        then (
+          ok := false;
+          Printf.printf
+            "  SKIP  %s: %s at n=100000 -- it is over budget at n=1000\n"
+            name
+            sequence)
+        else (
+          let c, w, fits = measure 100_000 in
+          if not fits
+          then ok := false
+          else (
+            let per_log v n = v /. log2 (n + 1) in
+            let flat v0 v = per_log v 100_000 <= (1.5 *. per_log v0 1_000) +. 0.5 in
+            check
+              (t
+                 (Printf.sprintf
+                    "%s, the cost per operation grows no faster than log n (%.2f -> %.2f \
+                     comparisons, %.1f -> %.1f words, per log2 n)"
+                    sequence
+                    (per_log c0 1_000)
+                    (per_log c 100_000)
+                    (per_log w0 1_000)
+                    (per_log w 100_000)))
+              (flat c0 c && flat w0 w))))
+      sequences;
+    !ok
+  ;;
+
+  (* ------------------------------------------ traces: several futures of one heap *)
+
+  let run_traces name =
+    let t label = Printf.sprintf "%s: %s" name label in
+    let within label ~ops ~n (c, w) =
+      let ops = float_of_int ops in
+      let cb = pairing_comparisons n
+      and wb = pairing_words n in
+      check
+        (t
+           (Printf.sprintf
+              "%s: %.2f comparisons and %.1f words per operation, budget %.2f and %.1f"
+              label
+              (c /. ops)
+              (w /. ops)
+              cb
+              wb))
+        (c /. ops <= cb && w /. ops <= wb)
+    in
+    let n = 100_000 in
+    let star = star n in
+    let d = 10_000 in
+    let repeat f =
+      spent (fun () ->
+        for _ = 1 to d do
+          ignore (Sys.opaque_identity (f ()))
+        done)
+    in
+    (* p.79's scenario, exactly: the minimum of the same heap deleted d times over. The
+       first pays for the pairing (the worst case above); the rest find it done, and each
+       is one merge of the odd child with the result: at most two comparisons. *)
+    ignore (H.delete_min star);
+    let c, _ = repeat (fun () -> H.delete_min star) in
+    check
+      (t
+         (Printf.sprintf
+            "%d more delete_mins of the same star, at most two comparisons each (%.0f in \
+             all)"
+            d
+            c))
+      (c <= 2. *. float_of_int d);
+    (* The same with a step in between: an insert, or a merge, on top of the shared star,
+       and then the delete_min. Each future has a suspension of its own, but that
+       suspension ends in the shared one, and finds it done. *)
+    within
+      (Printf.sprintf "delete_min of each of %d inserts into the star" d)
+      ~ops:(2 * d)
+      ~n
+      (repeat (fun () -> H.delete_min (H.insert n star)));
+    within
+      "delete_min of each of d merges of the star with a singleton"
+      ~ops:(2 * d)
+      ~n
+      (repeat (fun () -> H.delete_min (H.merge star (H.insert 5 H.empty))));
+    within
+      "delete_min of each of d merges of the star with itself"
+      ~ops:(2 * d)
+      ~n
+      (repeat (fun () -> H.delete_min (H.merge star star)));
+    (* The whole drain, ten times over from the same star. *)
+    let d = 10 in
+    within
+      "the whole drain of the star, ten times over"
+      ~ops:(d * n)
+      ~n
+      (spent (fun () ->
+         for _ = 1 to d do
+           drain_all star n
+         done));
+    (* The shortest futures from every version of a drain and of a build, one run from
+       each unmeasured first, since the version's own history is due for what it put
+       off. *)
+    let n = 2_000 in
+    let build = Array.make (n + 1) H.empty in
+    for i = 1 to n do
+      build.(i) <- H.insert i build.(i - 1)
+    done;
+    let drain = Array.make (n + 1) H.empty in
+    drain.(0) <- build.(n);
+    for i = 1 to n do
+      drain.(i) <- H.delete_min drain.(i - 1)
+    done;
+    let d = 20 in
+    let opaque x = ignore (Sys.opaque_identity x) in
+    let runs =
+      [ "delete_min", (fun q -> opaque (H.delete_min q)), 1, 1
+      ; "find_min of a delete_min", (fun q -> opaque (H.find_min (H.delete_min q))), 2, 2
+      ; "delete_min of an insert", (fun q -> opaque (H.delete_min (H.insert 0 q))), 2, 0
+      ; ( "delete_min of a merge with itself"
+        , (fun q -> opaque (H.delete_min (H.merge q q)))
+        , 2
+        , 1 )
+      ]
+    in
+    List.iter
+      (fun (versions, size, what) ->
+        List.iter
+          (fun (run, f, per, needs) ->
+            let worst = ref (0, (0.0, 0.0)) in
+            Array.iteri
+              (fun k q ->
+                if size k >= needs
+                then (
+                  f q;
+                  let cw =
+                    spent (fun () ->
+                      for _ = 1 to d do
+                        f q
+                      done)
+                  in
+                  if fst cw > fst (snd !worst) then worst := k, cw))
+              versions;
+            let k, cw = !worst in
+            within
+              (Printf.sprintf
+                 "%s, %d times over from each version of a %s, dearest from #%d"
+                 run
+                 d
+                 what
+                 k)
+              ~ops:(d * per)
+              ~n
+              cw)
+          runs)
+      [ build, Fun.id, "build"; drain, (fun k -> n - k), "drain" ];
+    (* n operations, each on a version chosen at random among all built so far, and the
+       minimum of every version deleted at the end. *)
+    let n = 100_000 in
+    Random.init 20260926;
+    let from = Array.init n (fun i -> Random.int (i + 1)) in
+    let other = Array.init n (fun i -> Random.int (i + 1)) in
+    let kind = Array.init n (fun _ -> Random.int 4) in
+    let v = Array.make (n + 1) H.empty in
+    let size = Array.make (n + 1) 0 in
+    let ops = ref 0
+    and largest = ref 0 in
+    let cw =
+      spent (fun () ->
+        for i = 1 to n do
+          let j = from.(i - 1) in
+          incr ops;
+          (match kind.(i - 1) with
+           | 0 | 1 ->
+             v.(i) <- H.insert i v.(j);
+             size.(i) <- size.(j) + 1
+           | 2 ->
+             let o = other.(i - 1) in
+             v.(i) <- H.merge v.(j) v.(o);
+             size.(i) <- size.(j) + size.(o)
+           | _ ->
+             if size.(j) = 0
+             then (
+               v.(i) <- H.insert i v.(j);
+               size.(i) <- 1)
+             else (
+               v.(i) <- H.delete_min v.(j);
+               size.(i) <- size.(j) - 1));
+          if size.(i) > !largest then largest := size.(i)
+        done;
+        Array.iteri
+          (fun i q ->
+            if size.(i) > 0
+            then (
+              incr ops;
+              opaque (H.delete_min q)))
+          v)
+    in
+    within
+      (Printf.sprintf
+         "a random trace of %d operations, each on a random earlier version, every \
+          version's minimum deleted at the end"
+         n)
+      ~ops:!ops
+      ~n:!largest
+      cw
+  ;;
+end
+
+module Lazy_pairing = LazyPairingHeap (Counting_int)
+module Lazy_pairing_contract = Heap_tests (Lazy_pairing)
+module Lazy_pairing_checks = Pairing_tests (Lazy_pairing)
+
+let test_lazy_pairing () =
+  section "LazyPairingHeap (6.5)";
+  let before = !failures in
+  Lazy_pairing_contract.run_contract "LazyPairingHeap";
+  if !failures > before
+  then
+    Printf.printf
+      "  SKIP  LazyPairingHeap: cost checks -- the contract above does not hold\n"
+  else if Lazy_pairing_checks.run_sequences "LazyPairingHeap"
+  then (
+    Lazy_pairing_checks.run_worst_case "LazyPairingHeap";
+    Lazy_pairing_checks.run_traces "LazyPairingHeap, persistently")
+  else
+    Printf.printf
+      "  SKIP  LazyPairingHeap: worst-case and persistence checks -- over budget in one \
+       thread\n"
+;;
+
 (* ------------------------------------------------------------------- runner *)
 
 (* A regression can make a function raise where the test did not expect it. Report that as
@@ -1785,6 +2236,7 @@ let () =
   run "LazyBinomialHeap" test_lazy_binomial;
   run "PhysicistsQueue" test_physicists;
   run "BottomUpMergeSort" test_mergesort;
+  run "LazyPairingHeap" test_lazy_pairing;
   Printf.printf "\n%d checks, %d failures\n\n" !checks !failures;
   if !failures > 0 then exit 1
 ;;
