@@ -1,6 +1,7 @@
-(* Tests for Chapter 6: the banker's queue of Figure 6.1 (section 6.3.2) and the lazy
-   binomial heap of Figure 6.2 (section 6.4.1). Plain OCaml, no test framework, matching
-   the earlier chapters. The queue first; the heap's own preamble is further down.
+(* Tests for Chapter 6: the banker's queue of Figure 6.1 (section 6.3.2), the lazy
+   binomial heap of Figure 6.2 (section 6.4.1) and the physicist's queue of Figure 6.3
+   (section 6.4.2). Plain OCaml, no test framework, matching the earlier chapters. The
+   banker's queue first; the others have their own preambles further down.
 
    Figure 6.1 promises what Figure 5.2 promised, every operation in O(1) amortised time,
    and keeps the promise where Figure 5.2 cannot: when a queue is used more than once.
@@ -149,14 +150,16 @@ end
 
 (* A clock is read before and after a run, and the difference is what the run cost. Words
    are allocation, as in test_ch5; steps are the counting stream's. Sys.opaque_identity
-   stops the optimiser discarding a result and with it the allocation being measured. *)
-let words () = Gc.minor_words ()
-let steps () = float_of_int !Counting_stream.steps
+   stops the optimiser discarding a result and with it the allocation being measured.
+   Both clocks count in integers: a clock returning a float would box its reading, and
+   the two words of that box would land inside the measurement. *)
+let words () = int_of_float (Gc.minor_words ())
+let steps () = !Counting_stream.steps
 
 let cost clock f =
   let before = clock () in
   let r = Sys.opaque_identity (f ()) in
-  r, clock () -. before
+  r, float_of_int (clock () - before)
 ;;
 
 (* What a run did, for its budget. *)
@@ -177,7 +180,7 @@ let tails n = { snocs = 0; tails = n; heads = 0 }
 type bound =
   { units : string
   ; claim : string
-  ; clock : unit -> float
+  ; clock : unit -> int
   ; budget : ops -> float
   ; show : ops -> float -> string
   ; reverse_floor : int -> float
@@ -503,40 +506,47 @@ module Queue_tests (Q : QUEUE) = struct
     v
   ;;
 
-  (* The shortest futures there are, d times over from every version of a drain: a
-     rotation and then the operation that would force what it suspended. For each kind of
-     run, the version it was dearest from and what it cost there. *)
-  let short_runs bound ~n ~d =
-    let v = versions n in
+  (* The shortest futures there are, d times over from every version in [v] whose size
+     ([size k] for the k-th) allows them: a rotation and then the operation that would
+     force what it suspended. One run from each version goes unmeasured first: a version
+     may have put off work that its own history is due to pay for, and memoisation then
+     shares it with every run after. For each kind of run, the version it was dearest
+     from and what it cost there. *)
+  let short_runs bound v ~size ~d =
     let opaque x = ignore (Sys.opaque_identity x) in
     let runs =
-      [ ( "tail"
-        , (fun q -> opaque (Q.tail q))
-        , { snocs = 0; tails = 1; heads = 0 }
-        , n - 1 )
+      [ "tail", (fun q -> opaque (Q.tail q)), { snocs = 0; tails = 1; heads = 0 }, 1
       ; ( "tail then head"
         , (fun q -> opaque (Q.head (Q.tail q)))
         , { snocs = 0; tails = 1; heads = 1 }
-        , n - 2 )
+        , 2 )
       ; ( "snoc then head"
         , (fun q -> opaque (Q.head (Q.snoc q 0)))
         , { snocs = 1; tails = 0; heads = 1 }
-        , n )
+        , 0 )
+      ; ( "snoc then tail"
+        , (fun q -> opaque (Q.tail (Q.snoc q 0)))
+        , { snocs = 1; tails = 1; heads = 0 }
+        , 0 )
       ]
     in
     List.map
-      (fun (run, f, per, last) ->
+      (fun (run, f, per, needs) ->
         let ops = { snocs = d * per.snocs; tails = d * per.tails; heads = d * per.heads } in
         let worst = ref (0, 0.0) in
-        for k = 0 to last do
-          let _, c =
-            cost bound.clock (fun () ->
-              for _ = 1 to d do
-                f v.(k)
-              done)
-          in
-          if c > snd !worst then worst := k, c
-        done;
+        Array.iteri
+          (fun k q ->
+            if size k >= needs
+            then (
+              f q;
+              let _, c =
+                cost bound.clock (fun () ->
+                  for _ = 1 to d do
+                    f q
+                  done)
+              in
+              if c > snd !worst then worst := k, c))
+          v;
         run, fst !worst, ops, snd !worst)
       runs
   ;;
@@ -607,14 +617,35 @@ module Queue_tests (Q : QUEUE) = struct
     within
       "the whole drain repeated 10 times from one queue"
       (cost bound.clock (branch_at_the_start ~n ~d:10));
-    (* Every branch point, with the shortest futures. Rotating early is what makes these
-       cheap: a rotation is never forced by the operation after it, unless it was tiny. *)
+    (* Every branch point of a drain, with the shortest futures. Rotating early is what
+       makes these cheap: a rotation is never forced by the operation after it, unless it
+       was tiny. *)
     List.iter
       (fun (run, k, ops, c) ->
         within
-          (Printf.sprintf "%s, 50 times over from each version, dearest from #%d" run k)
+          (Printf.sprintf
+             "%s, 50 times over from each version of a drain, dearest from #%d"
+             run
+             k)
           (ops, c))
-      (short_runs bound ~n ~d:50);
+      (short_runs bound (versions n) ~size:(fun k -> n - k) ~d:50);
+    (* And every branch point of a build: the queue after k snocs, for every k. A drain
+       only ever shrinks, so its versions have all seen a rotation some time ago; a
+       build's are the ones on the brink of the next. *)
+    let n = 2_000 in
+    let build = Array.make (n + 1) Q.empty in
+    for i = 1 to n do
+      build.(i) <- Q.snoc build.(i - 1) i
+    done;
+    List.iter
+      (fun (run, k, ops, c) ->
+        within
+          (Printf.sprintf
+             "%s, 20 times over from each version of a build, dearest from #%d"
+             run
+             k)
+          (ops, c))
+      (short_runs bound build ~size:Fun.id ~d:20);
     within
       "a random trace of 100000 operations, each on a random earlier version"
       (cost bound.clock (random_trace 100_000))
@@ -1296,6 +1327,86 @@ let test_lazy_binomial () =
         "  SKIP  LazyBinomialHeap: persistence checks -- over budget in one thread\n")
 ;;
 
+(* ------------------------------------------------------ PhysicistsQueue (6.4.2) *)
+
+(* Figure 6.3 is the banker's queue done over with monolithic suspensions: a suspended
+   front list in place of the front stream, a plain list for the rear, and a working copy
+   of the front's prefix so that head never has to force anything. Theorem 6.2 puts snoc
+   at two and tail at four, amortised, and section 6.4's method makes the same promise as
+   before about persistence, so the checks are the queue checks above, run once more.
+
+   Nothing here is a functor, so allocation is the only clock. What it sees is the append
+   and the reverse of a rotation, three words a cell each, and the tuple, cons and
+   suspension of every operation; what it cannot see is the walk down the front that the
+   suspended tl's do when they are finally run, since tl allocates nothing. The traces
+   still catch a forcing policy that is wrong, because a wrong policy re-runs an append
+   or a reverse somewhere, and that is visible.
+
+   Worst cases are this queue's own. head reads the working copy and nothing else, so it
+   is O(1) worst-case and allocation-free, which is what the copy is for. snoc is not:
+   the snoc that rotates forces the front first (p.72: "let val f = force f"), and pays
+   for whatever the front had put off. The banker's snoc never forced anything. *)
+
+module Physicists_tests = Queue_tests (PhysicistsQueue)
+
+let test_physicists_worst_case () =
+  let n = 100_000 in
+  (* head, on every version of a drain, and on a version fresh from a rotation. *)
+  let q = ref (Physicists_tests.of_list (upto n))
+  and dearest_head = ref 0.0
+  and dearest_is_empty = ref 0.0 in
+  for _ = 1 to n do
+    dearest_head := Float.max !dearest_head (snd (cost words (fun () -> PhysicistsQueue.head !q)));
+    dearest_is_empty
+    := Float.max !dearest_is_empty (snd (cost words (fun () -> PhysicistsQueue.is_empty !q)));
+    q := PhysicistsQueue.tail !q
+  done;
+  check
+    (Printf.sprintf
+       "PhysicistsQueue: head allocates nothing, on every version of a drain of %d (dearest \
+        %.0f words)"
+       n
+       !dearest_head)
+    (!dearest_head = 0.0);
+  check
+    (Printf.sprintf
+       "PhysicistsQueue: is_empty allocates nothing either (dearest %.0f words)"
+       !dearest_is_empty)
+    (!dearest_is_empty = 0.0);
+  (* snoc: the dearest of n consecutive snocs is the one that rotates, and it is linear. *)
+  let q = ref PhysicistsQueue.empty
+  and dearest_snoc = ref 0.0 in
+  for i = 1 to n do
+    let q', w = cost words (fun () -> PhysicistsQueue.snoc !q i) in
+    dearest_snoc := Float.max !dearest_snoc w;
+    q := q'
+  done;
+  check
+    (Printf.sprintf
+       "PhysicistsQueue: the snoc that rotates pays for the front it forces, linear (%.0f \
+        words at n=%d)"
+       !dearest_snoc
+       n)
+    (!dearest_snoc >= float_of_int n /. 2.)
+;;
+
+let test_physicists () =
+  section "PhysicistsQueue (6.4.2)";
+  let before = !failures in
+  Physicists_tests.run_contract "PhysicistsQueue";
+  if !failures > before
+  then
+    Printf.printf
+      "  SKIP  PhysicistsQueue: cost checks -- the contract above does not hold\n"
+  else if Physicists_tests.run_sequences amortised_words "PhysicistsQueue"
+  then (
+    test_physicists_worst_case ();
+    Physicists_tests.run_traces amortised_words "PhysicistsQueue, persistently")
+  else
+    Printf.printf
+      "  SKIP  PhysicistsQueue: worst-case and persistence checks -- not O(1) in one thread\n"
+;;
+
 (* ------------------------------------------------------------------- runner *)
 
 (* A regression can make a function raise where the test did not expect it. Report that as
@@ -1312,6 +1423,7 @@ let () =
   run "BankersQueue" test_bankers;
   run "Theorem 6.1" test_theorem;
   run "LazyBinomialHeap" test_lazy_binomial;
+  run "PhysicistsQueue" test_physicists;
   Printf.printf "\n%d checks, %d failures\n\n" !checks !failures;
   if !failures > 0 then exit 1
 ;;

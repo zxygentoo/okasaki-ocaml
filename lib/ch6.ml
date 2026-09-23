@@ -131,3 +131,40 @@ module LazyBinomialHeap (Element : ORDERED) : HEAP with module Element = Element
     lazy (mrg (List.rev ts) h')
   ;;
 end
+
+module PhysicistsQueue : QUEUE = struct
+  type 'a queue = 'a list * int * 'a list lazy_t * int * 'a list
+
+  let empty = [], 0, lazy [], 0, []
+
+  let is_empty = function
+    | _, 0, _, _, _ -> true
+    | _ -> false
+  ;;
+
+  let checkw = function
+    | [], lenf, f, lenr, r -> Lazy.force f, lenf, f, lenr, r
+    | q -> q
+  ;;
+
+  let check ((_, lenf, f, lenr, r) as q) =
+    if lenr <= lenf
+    then checkw q
+    else (
+      let f' = Lazy.force f in
+      checkw (f', lenf + lenr, lazy (f' @ List.rev r), 0, []))
+  ;;
+
+  let snoc (w, lenf, f, lenr, r) x = check (w, lenf, f, lenr + 1, x :: r)
+
+  let head = function
+    | [], _, _, _, _ -> raise (Failure "head: empty queue")
+    | x :: _, _, _, _, _ -> x
+  ;;
+
+  let tail = function
+    | [], _, _, _, _ -> raise (Failure "tail: empty queue")
+    | _ :: w, lenf, f, lenr, r ->
+      check (w, lenf - 1, lazy (List.tl (Lazy.force f)), lenr, r)
+  ;;
+end
