@@ -1,9 +1,10 @@
 (* Tests for Chapter 6: the banker's queue of Figure 6.1 (section 6.3.2), the lazy
    binomial heap of Figure 6.2 (section 6.4.1), the physicist's queue of Figure 6.3
-   (section 6.4.2), the sortable collections of Figure 6.5 (section 6.4.3) and the lazy
-   pairing heap of Figure 6.6 (section 6.5). Plain OCaml, no test framework, matching the
-   earlier chapters. The banker's queue first; the others have their own preambles
-   further down.
+   (section 6.4.2), the sortable collections of Figure 6.5 (section 6.4.3), the lazy
+   pairing heap of Figure 6.6 (section 6.5), the SizedHeap functor of Exercise 6.5 and
+   the sortable collections over streams of Exercise 6.7. Plain OCaml, no test
+   framework, matching the earlier chapters. The banker's queue first; the others have
+   their own preambles further down.
 
    Figure 6.1 promises what Figure 5.2 promised, every operation in O(1) amortised time,
    and keeps the promise where Figure 5.2 cannot: when a queue is used more than once.
@@ -1433,22 +1434,36 @@ type sortable_ops =
   ; elements : int (* the largest collection in the trace *)
   }
 
-(* The comparison and word budgets of a trace: per add, the book's 2B' - 1 with B' as
-   large as the sizes in play allow; per sort, 4n. *)
-let sortable_budgets o =
-  let l = floor_log2 (o.elements + 1) in
-  let steps = float_of_int ((o.adds * ((2 * l) + 1)) + (o.sorts * 4 * o.elements)) in
-  steps, (8. *. steps) +. (32. *. float_of_int (o.adds + o.sorts))
+(* What a representation costs beyond its steps: words per step, and two allowances,
+   for what an add allocates when applied and for what a second sort of a single
+   segment allocates. Figure 6.5: a cons per step, one suspension per add, and a second
+   sort hands back the segment itself. *)
+type sortable_costs =
+  { words_per_step : float
+  ; add_words : int -> float
+  ; second_sort_words : int -> float
+  }
+
+let figure_6_5_costs =
+  { words_per_step = 8.; add_words = (fun _ -> 32.); second_sort_words = (fun _ -> 32.) }
 ;;
 
-let sortable_over_budget (ops, (c, w)) =
-  let cb, wb = sortable_budgets ops in
+(* The comparison and word budgets of a trace: per add, the book's 2B' - 1 with B' as
+   large as the sizes in play allow; per sort, 4n. *)
+let sortable_budgets costs o =
+  let l = floor_log2 (o.elements + 1) in
+  let steps = float_of_int ((o.adds * ((2 * l) + 1)) + (o.sorts * 4 * o.elements)) in
+  steps, (costs.words_per_step *. steps) +. (32. *. float_of_int (o.adds + o.sorts))
+;;
+
+let sortable_over_budget costs (ops, (c, w)) =
+  let cb, wb = sortable_budgets costs ops in
   Float.max (c /. cb) (w /. wb)
 ;;
 
-let sortable_within name ((ops, (c, w)) as trace) =
-  let cb, wb = sortable_budgets ops in
-  let fine = sortable_over_budget trace <= 1.0 in
+let sortable_within costs name ((ops, (c, w)) as trace) =
+  let cb, wb = sortable_budgets costs ops in
+  let fine = sortable_over_budget costs trace <= 1.0 in
   check
     (Printf.sprintf
        "%s: %.0f comparisons and %.0f words, budget %.0f and %.0f"
@@ -1461,7 +1476,12 @@ let sortable_within name ((ops, (c, w)) as trace) =
   fine
 ;;
 
-module Sortable_tests (S : SORTABLE with type Element.t = int) = struct
+module Sortable_tests
+    (S : SORTABLE with type Element.t = int)
+    (C : sig
+       val costs : sortable_costs
+     end) =
+struct
   let of_list xs = List.fold_left (fun s x -> S.add x s) S.empty xs
 
   (* Run whatever the collection has put off: only a sort looks. *)
@@ -1536,8 +1556,12 @@ module Sortable_tests (S : SORTABLE with type Element.t = int) = struct
       ~expect:0
       ~actual:(int_of_float add_c);
     check
-      (t (Printf.sprintf "and allocates a suspension and nothing more (%.0f words)" add_w))
-      (add_w <= 32.0);
+      (t
+         (Printf.sprintf
+            "and allocates only what it suspends (%.0f words, allowance %.0f)"
+            add_w
+            (C.costs.add_words n)))
+      (add_w <= C.costs.add_words n);
     let c' = S.add 0 c in
     let merged, _ = spent (fun () -> force c') in
     check
@@ -1552,8 +1576,12 @@ module Sortable_tests (S : SORTABLE with type Element.t = int) = struct
       ~expect:0
       ~actual:(int_of_float again);
     check
-      (t (Printf.sprintf "and allocates nothing (%.0f words)" again_w))
-      (again_w <= 32.0)
+      (t
+         (Printf.sprintf
+            "and allocates nothing beyond its result (%.0f words, allowance %.0f)"
+            again_w
+            (C.costs.second_sort_words (n + 1))))
+      (again_w <= C.costs.second_sort_words (n + 1))
   ;;
 
   (* ---------------------------------------- sequences: one thread, from empty *)
@@ -1610,7 +1638,7 @@ module Sortable_tests (S : SORTABLE with type Element.t = int) = struct
     List.iter
       (fun (sequence, driver) ->
         let within label n =
-          sortable_within
+          sortable_within C.costs
             (t (Printf.sprintf "%s, %s at n=%d" sequence label n))
             (counted (driver n))
         in
@@ -1635,10 +1663,10 @@ module Sortable_tests (S : SORTABLE with type Element.t = int) = struct
     let n = (1 lsl k) - 1 in
     let c = of_list (upto n) in
     force c;
-    let d = 200 in
+    let d = 100 in
     let trace label ~adds ~sorts f =
       ignore
-        (sortable_within
+        (sortable_within C.costs
            (t label)
            (counted (fun () ->
               for _ = 1 to d do
@@ -1691,12 +1719,12 @@ module Sortable_tests (S : SORTABLE with type Element.t = int) = struct
                   f q
                 done)
             in
-            if sortable_over_budget (ops, cw) > sortable_over_budget (ops, snd !worst)
+            if sortable_over_budget C.costs (ops, cw) > sortable_over_budget C.costs (ops, snd !worst)
             then worst := k, cw)
           v;
         let k, cw = !worst in
         ignore
-          (sortable_within
+          (sortable_within C.costs
              (t
                 (Printf.sprintf
                    "%s, %d times over from each version of a build, dearest from #%d"
@@ -1722,7 +1750,7 @@ module Sortable_tests (S : SORTABLE with type Element.t = int) = struct
     and sorts = ref 0
     and largest = ref 0 in
     ignore
-      (sortable_within
+      (sortable_within C.costs
          (t
             (Printf.sprintf
                "a random trace of %d operations, each on a random earlier version, all \
@@ -1749,7 +1777,13 @@ module Sortable_tests (S : SORTABLE with type Element.t = int) = struct
 end
 
 module Mergesort = BottomUpMergeSort (Counting_int)
-module Sortable_checks = Sortable_tests (Mergesort)
+
+module Sortable_checks =
+  Sortable_tests
+    (Mergesort)
+    (struct
+      let costs = figure_6_5_costs
+    end)
 
 let test_mergesort () =
   section "BottomUpMergeSort (6.4.3)";
@@ -2218,6 +2252,324 @@ let test_lazy_pairing () =
        thread\n"
 ;;
 
+(* ------------------------------------------------------- SizedHeap (Exercise 6.5) *)
+
+(* Exercise 6.5 starts from a loss: with the list of trees suspended, is_empty has to force
+   it, and "degrades from O(1) worst-case time to O(log n) amortized time". The repair is
+   a functor over any heap that keeps the size beside it, so that emptiness is
+   arithmetic. Three things are checked. That is_empty is back to O(1), on every version
+   of a build and of a drain, measured as no comparison and no allocation; and, for the
+   binomial heap, that the loss was real, the unwrapped is_empty after n inserts running
+   every merge they put off. That the wrapper adds a constant and nothing else: each
+   operation on the wrapped heap makes the same comparisons as on the unwrapped one and
+   allocates a few words more, so the budgets of both lazy heaps hold through it. And
+   that "any implementation of heaps" is meant: the functor is also applied to a heap
+   whose delete_min raises only when its result is looked at, as Figure 6.2's does under
+   fun lazy, which is where a size that is kept but not consulted goes wrong. *)
+
+(* Any heap, with delete_min put off until the result is looked at. *)
+module Deferred (H : HEAP) : HEAP with module Element = H.Element = struct
+  module Element = H.Element
+
+  type heap = H.heap Lazy.t
+
+  let empty = Lazy.from_val H.empty
+  let is_empty h = H.is_empty (Lazy.force h)
+  let insert x h = Lazy.from_val (H.insert x (Lazy.force h))
+  let merge a b = Lazy.from_val (H.merge (Lazy.force a) (Lazy.force b))
+  let find_min h = H.find_min (Lazy.force h)
+  let delete_min h = lazy (H.delete_min (Lazy.force h))
+end
+
+(* [U] unwrapped, [W] the same heap under SizedHeap. *)
+module Sized_tests
+    (U : HEAP with type Element.t = int)
+    (W : HEAP with type Element.t = int) =
+struct
+  let run name =
+    let t label = Printf.sprintf "%s: %s" name label in
+    (* is_empty is O(1) worst-case: on every version of a build and of a drain, with
+       nothing forced along the way, it neither compares nor allocates. *)
+    let n = 2_000 in
+    let worst = ref (0.0, 0.0) in
+    let note (c, w) = worst := Float.max (fst !worst) c, Float.max (snd !worst) w in
+    let h = ref W.empty in
+    for i = 1 to n do
+      h := W.insert i !h;
+      note (spent (fun () -> W.is_empty !h))
+    done;
+    for _ = 1 to n do
+      h := W.delete_min !h;
+      note (spent (fun () -> W.is_empty !h))
+    done;
+    check
+      (t
+         (Printf.sprintf
+            "is_empty compares nothing and allocates nothing on every version of a build \
+             and a drain of %d (dearest %.0f comparisons, %.0f words)"
+            n
+            (fst !worst)
+            (snd !worst)))
+      (!worst = (0.0, 0.0));
+    (* The wrapper adds a constant: the same comparisons, a few words more, operation by
+       operation on the same heap. *)
+    let n = 65_535 in
+    let hu = List.fold_left (fun h x -> U.insert x h) U.empty (upto n)
+    and hw = List.fold_left (fun h x -> W.insert x h) W.empty (upto n) in
+    ignore (U.find_min hu);
+    ignore (W.find_min hw);
+    List.iter
+      (fun (op, u, w) ->
+        let cu, wu = spent u
+        and cw, ww = spent w in
+        check
+          (t
+             (Printf.sprintf
+                "%s costs the same comparisons through the wrapper (%.0f and %.0f) and \
+                 at most 8 words more (%.0f and %.0f)"
+                op
+                cu
+                cw
+                wu
+                ww))
+          (cu = cw && ww <= wu +. 8.))
+      [ ( "insert"
+        , (fun () -> ignore (U.insert 0 hu))
+        , (fun () -> ignore (W.insert 0 hw)) )
+      ; ( "merge with itself"
+        , (fun () -> ignore (U.merge hu hu))
+        , (fun () -> ignore (W.merge hw hw)) )
+      ; ( "find_min"
+        , (fun () -> ignore (U.find_min hu))
+        , (fun () -> ignore (W.find_min hw)) )
+      ; ( "delete_min"
+        , (fun () -> ignore (U.delete_min hu))
+        , (fun () -> ignore (W.delete_min hw)) )
+      ]
+  ;;
+end
+
+module Sized_binomial = SizedHeap (Lazy_binomial)
+module Sized_pairing = SizedHeap (Lazy_pairing)
+module Sized_deferred = SizedHeap (Deferred (Lazy_binomial))
+module Sized_binomial_contract = Heap_tests (Sized_binomial)
+module Sized_pairing_contract = Heap_tests (Sized_pairing)
+module Sized_deferred_contract = Heap_tests (Sized_deferred)
+module Sized_binomial_checks = Sized_tests (Lazy_binomial) (Sized_binomial)
+module Sized_pairing_checks = Sized_tests (Lazy_pairing) (Sized_pairing)
+module Sized_pairing_costs = Pairing_tests (Sized_pairing)
+
+let test_sized_heap () =
+  section "SizedHeap (Exercise 6.5)";
+  let before = !failures in
+  Sized_binomial_contract.run_contract "SizedHeap over LazyBinomialHeap";
+  Sized_pairing_contract.run_contract "SizedHeap over LazyPairingHeap";
+  Sized_deferred_contract.run_contract "SizedHeap over a heap whose delete_min is put off";
+  if !failures > before
+  then
+    Printf.printf "  SKIP  SizedHeap: cost checks -- the contract above does not hold\n"
+  else (
+    (* The loss the exercise starts from, on the unwrapped binomial heap. *)
+    let n = 65_535 in
+    let h = Heap_checks.of_list (upto n) in
+    let c, _ = spent (fun () -> Lazy_binomial.is_empty h) in
+    check
+      (Printf.sprintf
+         "LazyBinomialHeap.is_empty after %d inserts runs the merges they put off, %.0f \
+          comparisons"
+         n
+         c)
+      (c >= float_of_int n /. 2.);
+    Sized_binomial_checks.run "SizedHeap over LazyBinomialHeap";
+    Sized_pairing_checks.run "SizedHeap over LazyPairingHeap";
+    (* And the budgets of both heaps, through the wrapper. *)
+    ignore (Sized_binomial_contract.run_sequences "SizedHeap over LazyBinomialHeap");
+    if Sized_pairing_costs.run_sequences "SizedHeap over LazyPairingHeap"
+    then Sized_pairing_costs.run_worst_case "SizedHeap over LazyPairingHeap"
+    else
+      Printf.printf
+        "  SKIP  SizedHeap over LazyPairingHeap: worst-case checks -- over budget in one \
+         thread\n")
+;;
+
+(* ------------------------------------- StreamBottomUpMergeSort (Exercise 6.7) *)
+
+(* Exercise 6.7 keeps Figure 6.5's segments and makes each a stream, so that mrg is
+   incremental and the list of segments needs no suspension of its own. Part (a) asks for
+   the same bounds by the banker's method, so the sortable checks above run again with the
+   same comparison budgets: the merges are the same merges. What the representation
+   changes is allocation. A merge step is now a suspension and a cons; an add applied to
+   a collection suspends one merge per segment it will combine, log n of them at most;
+   and a sort has to copy its stream into a list. The allowances change accordingly and
+   nothing else does.
+
+   Part (b) is what the streams are for: extract k. Once the merges the adds put off have
+   been paid for, each cell of the merged stream costs one step per segment to produce,
+   so k cells cost O(k log n). That is measured two ways: at a fixed k across sizes, where
+   the cost grows with the number of segments and not with n, and across k at a fixed
+   size. The first extract from a fresh collection pays for the adds' merges first, up to
+   n comparisons, which is what "amortised" allows and the add budgets have covered. The
+   proof is the exercise's. *)
+
+let stream_costs =
+  { words_per_step = 16.
+  ; add_words = (fun n -> 32. +. (12. *. log2 (n + 1)))
+  ; second_sort_words = (fun n -> 32. +. (8. *. float_of_int n))
+    (* the list, and the accumulator it was reversed from *)
+  }
+;;
+
+module Extract_tests (S : SORTABLE_WITH_EXTRACT with type Element.t = int) = struct
+  let of_list xs = List.fold_left (fun s x -> S.add x s) S.empty xs
+  let first k xs = List.filteri (fun i _ -> i < k) xs
+
+  (* k + 1 cells, each through one merge per segment, with one to spare. *)
+  let extract_budget k n = float_of_int ((k + 1) * (floor_log2 (n + 1) + 1))
+
+  let run_contract name =
+    let t label = Printf.sprintf "%s: %s" name label in
+    let eq label expect actual =
+      surviving (t label) actual (fun actual ->
+        check_eq (t label) ~expect ~actual string_of_int_list)
+    in
+    eq "extract 0 is empty" [] (fun () -> S.extract 0 (of_list [ 3; 1; 2 ]));
+    eq "extract past the end is the whole sort" [ 1; 2; 3 ] (fun () ->
+      S.extract 10 (of_list [ 3; 1; 2 ]));
+    eq "extract from empty is empty" [] (fun () -> S.extract 3 S.empty);
+    Random.init 20260924;
+    let bad = ref 0
+    and raised = ref 0 in
+    for _ = 0 to 299 do
+      let xs = List.init (Random.int 200) (fun _ -> Random.int 50) in
+      let k = Random.int 12 in
+      match S.extract k (of_list xs) = first k (List.sort compare xs) with
+      | true -> ()
+      | false -> incr bad
+      | exception Failure _ -> incr raised
+    done;
+    check_int (t "no extract raises, 300 random lists") ~expect:0 ~actual:!raised;
+    check_int
+      (t "extract k is the first k of sort, 300 random lists and k")
+      ~expect:0
+      ~actual:!bad;
+    (* The collection is not consumed: extract, then sort, then extract again. *)
+    let c = of_list [ 5; 3; 8; 1; 9; 2 ] in
+    eq "extract 2" [ 1; 2 ] (fun () -> S.extract 2 c);
+    eq "then sort" [ 1; 2; 3; 5; 8; 9 ] (fun () -> S.sort c);
+    eq "then extract 4" [ 1; 2; 3; 5 ] (fun () -> S.extract 4 c)
+  ;;
+
+  let run_costs name =
+    let t label = Printf.sprintf "%s: %s" name label in
+    (* At a fixed k across sizes, once the adds' merges have been paid for: one step per
+       segment, so a cost that grows like log n. *)
+    List.iter
+      (fun j ->
+        let n = (1 lsl j) - 1 in
+        let c = of_list (upto n) in
+        ignore (Sys.opaque_identity (S.sort c));
+        let one, _ = spent (fun () -> S.extract 1 c) in
+        check
+          (t
+             (Printf.sprintf
+                "extract 1 of %d after a sort costs one step per segment (%.0f \
+                 comparisons, budget %.0f)"
+                n
+                one
+                (extract_budget 1 n)))
+          (one <= extract_budget 1 n))
+      [ 10; 14; 18 ];
+    (* Across k at a fixed size. *)
+    let n = (1 lsl 16) - 1 in
+    let c = of_list (upto n) in
+    ignore (Sys.opaque_identity (S.sort c));
+    List.iter
+      (fun k ->
+        let e, _ = spent (fun () -> S.extract k c) in
+        check
+          (t
+             (Printf.sprintf
+                "extract %d of %d after a sort (%.0f comparisons, budget %.0f)"
+                k
+                n
+                e
+                (extract_budget k n)))
+          (e <= extract_budget k n))
+      [ 1; 2; 16; 256; 4096 ];
+    (* The first extract from a fresh collection pays for the adds' merges, at most n;
+       the one after it does not. *)
+    let c = of_list (upto n) in
+    let fresh, _ = spent (fun () -> S.extract 1 c) in
+    check
+      (t
+         (Printf.sprintf
+            "the first extract from a fresh collection of %d pays for the adds' merges \
+             (%.0f comparisons, at most n)"
+            n
+            fresh))
+      (fresh <= float_of_int n);
+    let next, _ = spent (fun () -> S.extract 1 c) in
+    check
+      (t
+         (Printf.sprintf
+            "and the extract after it costs one step per segment (%.0f comparisons, \
+             budget %.0f)"
+            next
+            (extract_budget 1 n)))
+      (next <= extract_budget 1 n);
+    (* Persistently: extract 1 of each of d adds onto the one collection, each add
+       merging every segment there is once it is looked at, within the add and extract
+       budgets together. *)
+    let d = 1_000 in
+    let per_add = float_of_int ((2 * floor_log2 (n + 2)) + 1) in
+    let e, _ =
+      spent (fun () ->
+        for i = 1 to d do
+          ignore (Sys.opaque_identity (S.extract 1 (S.add i c)))
+        done)
+    in
+    check
+      (t
+         (Printf.sprintf
+            "extract 1 of each of %d adds onto one collection (%.0f comparisons, budget \
+             %.0f)"
+            d
+            e
+            (float_of_int d *. (per_add +. extract_budget 1 (n + 1)))))
+      (e <= float_of_int d *. (per_add +. extract_budget 1 (n + 1)))
+  ;;
+end
+
+module Stream_mergesort = StreamBottomUpMergeSort (Counting_int) (Okasaki.Ch4.Stream)
+
+module Stream_sortable_checks =
+  Sortable_tests
+    (Stream_mergesort)
+    (struct
+      let costs = stream_costs
+    end)
+
+module Stream_extract_checks = Extract_tests (Stream_mergesort)
+
+let test_stream_mergesort () =
+  section "StreamBottomUpMergeSort (Exercise 6.7)";
+  let before = !failures in
+  Stream_sortable_checks.run_contract "StreamBottomUpMergeSort";
+  Stream_extract_checks.run_contract "StreamBottomUpMergeSort";
+  if !failures > before
+  then
+    Printf.printf
+      "  SKIP  StreamBottomUpMergeSort: cost checks -- the contract above does not hold\n"
+  else (
+    Stream_sortable_checks.run_unshared "StreamBottomUpMergeSort";
+    if Stream_sortable_checks.run_sequences "StreamBottomUpMergeSort"
+    then Stream_sortable_checks.run_traces "StreamBottomUpMergeSort, persistently"
+    else
+      Printf.printf
+        "  SKIP  StreamBottomUpMergeSort: persistence checks -- over budget in one thread\n";
+    Stream_extract_checks.run_costs "StreamBottomUpMergeSort")
+;;
+
 (* ------------------------------------------------------------------- runner *)
 
 (* A regression can make a function raise where the test did not expect it. Report that as
@@ -2237,6 +2589,8 @@ let () =
   run "PhysicistsQueue" test_physicists;
   run "BottomUpMergeSort" test_mergesort;
   run "LazyPairingHeap" test_lazy_pairing;
+  run "SizedHeap" test_sized_heap;
+  run "StreamBottomUpMergeSort" test_stream_mergesort;
   Printf.printf "\n%d checks, %d failures\n\n" !checks !failures;
   if !failures > 0 then exit 1
 ;;

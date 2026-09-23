@@ -132,6 +132,52 @@ module LazyBinomialHeap (Element : ORDERED) : HEAP with module Element = Element
   ;;
 end
 
+(* Exercise 6.5 An unfortunate consequence of suspending the list of trees is that the
+   running time of isEmpty degrades from 0(1) worst-case time to O(log n) amortized time.
+   Restore the 0(1) running time of isEmpty by explicitly maintaining the size of every
+   heap. Rather than modifying this implementation directly, implement a functor
+   SizedHeap, similar to the ExplicitMin functor of Exercise 3.7, that transforms any
+   implementation of heaps into one that explicitly maintains the size. *)
+
+module SizedHeap (H : HEAP) : HEAP with module Element = H.Element = struct
+  module Element = H.Element
+
+  type heap =
+    | Empty
+    | Heap of int * H.heap
+
+  let empty = Empty
+
+  let is_empty = function
+    | Empty -> true
+    | _ -> false
+  ;;
+
+  let insert x = function
+    | Empty -> Heap (1, H.insert x H.empty)
+    | Heap (sz, h) -> Heap (sz + 1, H.insert x h)
+  ;;
+
+  let merge h1 h2 =
+    match h1, h2 with
+    | _, Empty -> h1
+    | Empty, _ -> h2
+    | Heap (sz1, h1'), Heap (sz2, h2') -> Heap (sz1 + sz2, H.merge h1' h2')
+  ;;
+
+  let find_min = function
+    | Empty -> raise (Failure "find_min: empty heap")
+    | Heap (_, h) -> H.find_min h
+  ;;
+
+  let delete_min = function
+    | Empty -> raise (Failure "delete_min: empty heap")
+    | Heap (sz, h) ->
+      let h' = H.delete_min h in
+      if sz = 1 then Empty else Heap (sz - 1, h')
+  ;;
+end
+
 module PhysicistsQueue : QUEUE = struct
   type 'a queue = 'a list * int * 'a list lazy_t * int * 'a list
 
@@ -209,6 +255,62 @@ struct
     in
     mrg_all [] (Lazy.force segs)
   ;;
+end
+
+module type SORTABLE_WITH_EXTRACT = sig
+  include SORTABLE
+
+  val extract : int -> sortable -> Element.t list
+end
+
+(* Exercise 6.7 Change the representation from a suspended list of lists to a list of
+   streams. *)
+
+module StreamBottomUpMergeSort (Element : ORDERED) (Stream : STREAM) :
+  SORTABLE_WITH_EXTRACT with module Element = Element = struct
+  module Element = Element
+  open Stream
+
+  type sortable = int * Element.t stream list
+
+  let rec mrg a b =
+    lazy
+      (match Lazy.force a, Lazy.force b with
+       | a', Nil -> a'
+       | Nil, b' -> b'
+       | Cons (x, xs), Cons (y, ys) ->
+         if Element.leq x y then Cons (x, mrg xs b) else Cons (y, mrg a ys))
+  ;;
+
+  let rec mrg_all a b =
+    match a, b with
+    | _, [] -> a
+    | _, s :: ss -> mrg_all (mrg a s) ss
+  ;;
+
+  let empty = 0, []
+
+  let add x (size, segs) =
+    let rec add_seg s ss sz =
+      if sz mod 2 = 0 then s :: ss else add_seg (mrg s (List.hd ss)) (List.tl ss) (sz / 2)
+    in
+    size + 1, add_seg (lazy (Cons (x, lazy Nil))) segs size
+  ;;
+
+  let to_list s =
+    let rec go acc = function
+      | (lazy Nil) -> List.rev acc
+      | (lazy (Cons (x, xs))) -> go (x :: acc) xs
+    in
+    go [] s
+  ;;
+
+  let sort (_, segs) = mrg_all (lazy Nil) segs |> to_list
+
+  (* (b) Write a function to extract the k smallest elements from a sortable collection.
+     Prove that your function runs in no more than O(k log n) amortized time. *)
+
+  let extract k (_, s) = mrg_all (lazy Nil) s |> take k |> to_list
 end
 
 module LazyPairingHeap (Element : ORDERED) : HEAP with module Element = Element = struct
