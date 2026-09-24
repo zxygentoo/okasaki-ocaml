@@ -21,7 +21,14 @@ module type QUEUE = sig
   val tail : 'a queue -> 'a queue
 end
 
-module RealTimeQueue (Strem : STREAM) : QUEUE = struct
+module type QUEUE_WITH_SIZES = sig
+  include QUEUE
+
+  val size_sr : 'a queue -> int
+  val size_fr : 'a queue -> int
+end
+
+module RealTimeQueue (Strem : STREAM) : QUEUE_WITH_SIZES = struct
   module S = Strem
 
   type 'a queue = 'a S.stream * 'a list * 'a S.stream
@@ -59,4 +66,15 @@ module RealTimeQueue (Strem : STREAM) : QUEUE = struct
     | (lazy S.Nil), _, _ -> raise (Failure "tail: empty queue")
     | (lazy (S.Cons (_, f'))), r, s -> exec (f', r, s)
   ;;
+
+  (* Exercise 7.2 Compute the size of a queue from the sizes of s and r. How much faster
+     might such a function run than one that measures the sizes of f andr? *)
+
+  let rec qlen = function
+    | (lazy S.Nil) -> 0
+    | (lazy (S.Cons (_, q))) -> 1 + qlen q
+  ;;
+
+  let size_sr (_, r, s) = qlen s + (2 * List.length r)
+  let size_fr (f, r, _) = qlen f + List.length r
 end

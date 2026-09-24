@@ -1,5 +1,6 @@
-(* Tests for Chapter 7: the real-time queue of Figure 7.1 (section 7.2). Plain OCaml, no
-   test framework, matching the earlier chapters.
+(* Tests for Chapter 7: the real-time queue of Figure 7.1 (section 7.2), and the size
+   functions of Exercise 7.2 on top of it. Plain OCaml, no test framework, matching the
+   earlier chapters.
 
    Figure 7.1 promises what no queue before it could: every operation in O(1) WORST-CASE
    time, and still when used persistently. Chapter 5 asserted amortised bounds over whole
@@ -547,12 +548,16 @@ module Contract = Queue_tests (Q)
 module Costs = Worst_case (Q)
 
 (* What a queue costs means nothing until it behaves like one, and a queue that raises
-   half way through a sequence would take the rest of the section down with it. *)
+   half way through a sequence would take the rest of the section down with it. The sizes
+   of Exercise 7.2 wait on the contract too. *)
+let contract_holds = ref false
+
 let test_real_time () =
   section "RealTimeQueue (7.2)";
   let before = !failures in
   Contract.run_contract "RealTimeQueue";
-  if !failures > before
+  contract_holds := !failures = before;
+  if not !contract_holds
   then
     Printf.printf
       "  SKIP  RealTimeQueue: cost checks -- the contract above does not hold\n"
@@ -563,6 +568,222 @@ let test_real_time () =
     else
       Printf.printf
         "  SKIP  RealTimeQueue: persistence checks -- not real-time in one thread\n")
+;;
+
+(* ------------------------------------------------------ sizes (Exercise 7.2) *)
+
+(* Exercise 7.2 asks for the size of a queue from |s| and |r| alone. The invariant |s| =
+   |f| - |r| gives |f| = |s| + |r|, so |f| + |r| is |s| + 2|r|. Its second question, how
+   much faster that runs than counting f and r, is a matter of cells walked: |s| + |r| =
+   |f| of them against |f| + |r|, with the list walked once either way. The saving is the
+   |r| cells of the front that the schedule has already passed: none of the front just
+   after a rotation, all of it just before the next. Cells walked is a count the seal
+   hides and allocation cannot see, so that comparison is not measured here. Two things
+   are.
+
+   The first is what makes the formula valid at all. It gives the right answer exactly
+   when the invariant holds, so agreement with a list model after every operation, and on
+   every version of a queue, is the invariant asserted from outside for the first time in
+   this file. The second is the one cost fact about the formula the clock can see.
+   Counting s walks the schedule to its end and forces every cell on it, which is the very
+   work the schedule meant to spread over the next |s| operations. Section 7.1 says
+   forcing early "does no harm since it can only make an algorithm run faster", and so it
+   is: those operations then find their cells memoised and allocate nothing beyond a cons
+   and a triple, while the same operations on an untouched twin of the queue pay for their
+   rotate steps as usual. *)
+
+module Size_tests (Q : QUEUE_WITH_SIZES) = struct
+  let of_list xs = List.fold_left Q.snoc Q.empty xs
+
+  let drain q =
+    let rec go acc q =
+      if Q.is_empty q then List.rev acc else go (Q.head q :: acc) (Q.tail q)
+    in
+    go [] q
+  ;;
+
+  let run_sizes name =
+    let t label = Printf.sprintf "%s: %s" name label in
+    let both label expect q =
+      surviving
+        (t label)
+        (fun () -> Q.size_sr q, Q.size_fr q)
+        (fun (sr, fr) ->
+          check_int (t (label ^ ", from s and r")) ~expect ~actual:sr;
+          check_int (t (label ^ ", from f and r")) ~expect ~actual:fr)
+    in
+    both "empty has size 0" 0 Q.empty;
+    both "a singleton has size 1" 1 (Q.snoc Q.empty 1);
+    both "a queue drained to nothing has size 0" 0 (Q.tail (Q.tail (of_list [ 1; 2 ])));
+    (* Every size from 0 to n, visited on the way up and on the way down, both sizes taken
+       at every step. The sizes either side of a rotation are the ones the formula has to
+       get right; and taking a size in the middle of a run is itself a test, since it
+       forces the schedule ahead of the operations that were going to. *)
+    let n = 100 in
+    let wrong = ref [] in
+    let at step expect q =
+      let sr = Q.size_sr q
+      and fr = Q.size_fr q in
+      if sr <> expect || fr <> expect then wrong := (step, expect, sr, fr) :: !wrong
+    in
+    surviving
+      (t "sizes along a build and a drain")
+      (fun () ->
+        let q = ref Q.empty in
+        for i = 1 to n do
+          q := Q.snoc !q i;
+          at ("snoc " ^ string_of_int i) i !q
+        done;
+        for i = 1 to n do
+          q := Q.tail !q;
+          at ("tail " ^ string_of_int i) (n - i) !q
+        done)
+      (fun () ->
+        check
+          (t
+             (Printf.sprintf
+                "both sizes are right after every step of a build and a drain of %d%s"
+                n
+                (match List.rev !wrong with
+                 | [] -> ""
+                 | (step, e, sr, fr) :: _ ->
+                   Printf.sprintf
+                     " -- after %s expected %d, got %d from s and r, %d from f and r"
+                     step
+                     e
+                     sr
+                     fr)))
+          (!wrong = []));
+    (* Random runs against the list model, as in the contract, both sizes checked after
+       every operation. *)
+    Random.init 20260924;
+    let bad = ref 0
+    and raised = ref 0 in
+    for _ = 0 to 299 do
+      let q = ref Q.empty
+      and size = ref 0 in
+      try
+        for i = 0 to 59 do
+          if !size = 0 || Random.int 3 > 0
+          then (
+            q := Q.snoc !q i;
+            incr size)
+          else (
+            q := Q.tail !q;
+            decr size);
+          if Q.size_sr !q <> !size || Q.size_fr !q <> !size then incr bad
+        done
+      with
+      | Failure _ -> incr raised
+    done;
+    check_int
+      (t "both sizes agree with a list model after every operation, 300 random runs")
+      ~expect:0
+      ~actual:!bad;
+    check_int (t "no operation raises in those runs") ~expect:0 ~actual:!raised;
+    (* Persistence: every version of a build and of a drain keeps its own size after later
+       versions have been made from it. *)
+    let n = 64 in
+    let build = Array.make (n + 1) Q.empty in
+    for i = 1 to n do
+      build.(i) <- Q.snoc build.(i - 1) i
+    done;
+    let drain = Array.make (n + 1) Q.empty in
+    drain.(0) <- build.(n);
+    for i = 1 to n do
+      drain.(i) <- Q.tail drain.(i - 1)
+    done;
+    let stale = ref 0 in
+    for k = 0 to n do
+      if Q.size_sr build.(k) <> k || Q.size_fr build.(k) <> k then incr stale;
+      if Q.size_sr drain.(k) <> n - k || Q.size_fr drain.(k) <> n - k then incr stale
+    done;
+    check_int
+      (t
+         (Printf.sprintf
+            "every version of a build and a drain of %d still reports its own size"
+            n))
+      ~expect:0
+      ~actual:!stale
+  ;;
+
+  (* The most an operation may allocate when every suspension it forces is already
+     memoised: a cons onto the rear and a triple, and the triple at most twice over, 11
+     words; the snocs measured here take 7. Nothing else in an operation of Figure 7.1
+     allocates. *)
+  let memoised = 12.0
+
+  (* After 2^k - 1 snocs the queue has just started a rotation: r is empty and the
+     schedule is the whole of the new front, none of it forced. Counting s from there
+     walks all of it. *)
+  let run_forcing name =
+    let t label = Printf.sprintf "%s: %s" name label in
+    let n = 15 in
+    let walked = of_list (upto n)
+    and untouched = of_list (upto n) in
+    let counted, walking = cost (fun () -> Q.size_sr walked) in
+    check_int (t "the count itself is right") ~expect:n ~actual:counted;
+    check
+      (t
+         (Printf.sprintf
+            "counting s at the start of a rotation of %d cells forces the schedule to \
+             its end, %.0f words: more than any one operation may"
+            n
+            walking))
+      (walking > constant);
+    (* n snocs from each queue, one per schedule cell, each on the clock. *)
+    let snocs q =
+      let q = ref q
+      and worst = ref 0.0
+      and total = ref 0.0 in
+      for i = 1 to n do
+        let q', c = cost (fun () -> Q.snoc !q i) in
+        q := q';
+        worst := Float.max !worst c;
+        total := !total +. c
+      done;
+      !q, !worst, !total
+    in
+    let walked', w_worst, w_total = snocs walked in
+    let _, _, u_total = snocs untouched in
+    check
+      (t
+         (Printf.sprintf
+            "the %d snocs after it find every schedule cell memoised, dearest %.0f words"
+            n
+            w_worst))
+      (w_worst <= memoised);
+    check
+      (t
+         (Printf.sprintf
+            "the same %d snocs on an untouched twin do that work instead, %.0f words \
+             against %.0f"
+            n
+            u_total
+            w_total))
+      (u_total > w_total);
+    (* And no harm done: the queue that was counted still behaves. *)
+    surviving
+      (t "the counted queue still drains in order")
+      (fun () -> drain walked')
+      (fun actual ->
+        check_eq
+          (t "the counted queue still drains in order")
+          ~expect:(upto n @ List.init n (fun i -> i + 1))
+          ~actual
+          string_of_int_list)
+  ;;
+end
+
+module Sizes = Size_tests (Q)
+
+let test_sizes () =
+  section "Exercise 7.2";
+  if not !contract_holds
+  then Printf.printf "  SKIP  Exercise 7.2 -- the contract does not hold\n"
+  else (
+    Sizes.run_sizes "Exercise 7.2";
+    Sizes.run_forcing "Exercise 7.2")
 ;;
 
 (* ------------------------------------------------------------------- runner *)
@@ -579,6 +800,7 @@ let run name f =
 
 let () =
   run "RealTimeQueue" test_real_time;
+  run "Exercise 7.2" test_sizes;
   Printf.printf "\n%d checks, %d failures\n\n" !checks !failures;
   if !failures > 0 then exit 1
 ;;
