@@ -21,8 +21,8 @@ module type STREAM = sig
   val reverse : 'a stream -> 'a stream
 end
 
-module BankersQueue (S : STREAM) : QUEUE = struct
-  module S = S
+module BankersQueue (Stream : STREAM) : QUEUE = struct
+  module S = Stream
 
   type 'a queue = int * 'a S.stream * int * 'a S.stream
 
