@@ -21,8 +21,8 @@ module type STREAM = sig
   val reverse : 'a stream -> 'a stream
 end
 
-module BankersQueue (Stream : STREAM) : QUEUE = struct
-  module S = Stream
+module BankersQueue (S : STREAM) : QUEUE = struct
+  module S = S
 
   type 'a queue = int * 'a S.stream * int * 'a S.stream
 
@@ -67,8 +67,8 @@ module type HEAP = sig
   val delete_min : heap -> heap (* raises Failure if heap is empty *)
 end
 
-module LazyBinomialHeap (Element : ORDERED) : HEAP with module Element = Element = struct
-  module Element = Element
+module LazyBinomialHeap (E : ORDERED) : HEAP with module Element = E = struct
+  module Element = E
 
   type tree = Node of int * Element.t * tree list
   type heap = tree list lazy_t
@@ -233,9 +233,9 @@ module type SORTABLE = sig
   val sort : sortable -> Element.t list
 end
 
-module BottomUpMergeSort (Element : ORDERED) : SORTABLE with module Element = Element =
+module BottomUpMergeSort (E : ORDERED) : SORTABLE with module Element = E =
 struct
-  module Element = Element
+  module Element = E
 
   type sortable = int * Element.t list list lazy_t
 
@@ -321,8 +321,8 @@ module StreamBottomUpMergeSort (E : ORDERED) (Stream : STREAM) :
   let extract k (_, s) = mrg_all (lazy S.Nil) s |> S.take k |> to_list
 end
 
-module LazyPairingHeap (Element : ORDERED) : HEAP with module Element = Element = struct
-  module Element = Element
+module LazyPairingHeap (E : ORDERED) : HEAP with module Element = E = struct
+  module Element = E
 
   type heap =
     | E

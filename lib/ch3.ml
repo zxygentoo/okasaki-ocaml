@@ -32,9 +32,8 @@ end
    leftist property is that the right spine of any node is always the shortest path to an
    empty node. *)
 
-module LeftistHeap (Element : ORDERED) :
-  HEAP_WITH_FROM_LIST with module Element = Element = struct
-  module Element = Element
+module LeftistHeap (E : ORDERED) : HEAP_WITH_FROM_LIST with module Element = E = struct
+  module Element = E
 
   type heap =
     | Empty
@@ -123,9 +122,8 @@ end
 
 (* (b) Modify the implementation in Figure 3.2 to obtain weight-biased leftist heaps. *)
 
-module WeightBiasedLeftistHeap (Element : ORDERED) : HEAP with module Element = Element =
-struct
-  module Element = Element
+module WeightBiasedLeftistHeap (E : ORDERED) : HEAP with module Element = E = struct
+  module Element = E
 
   type heap =
     | Empty
@@ -192,8 +190,8 @@ struct
   ;;
 end
 
-module BinomialHeap (Element : ORDERED) : HEAP with module Element = Element = struct
-  module Element = Element
+module BinomialHeap (E : ORDERED) : HEAP with module Element = E = struct
+  module Element = E
 
   type tree = Node of int * Element.t * tree list
   type heap = tree list
@@ -273,9 +271,8 @@ end
 
    Reimplement binomial heaps with this new representation. *)
 
-module RanklessBinomialHeap (Element : ORDERED) : HEAP with module Element = Element =
-struct
-  module Element = Element
+module RanklessBinomialHeap (E : ORDERED) : HEAP with module Element = E = struct
+  module Element = E
 
   type tree = Node of (Element.t * tree list)
   type heap = (int * tree) list

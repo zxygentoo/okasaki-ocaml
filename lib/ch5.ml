@@ -135,9 +135,8 @@ module type HEAP_WITH_SORT = sig
   val sort : Element.t list -> Element.t list
 end
 
-module SplayHeap (Element : ORDERED) : HEAP_WITH_SORT with module Element = Element =
-struct
-  module Element = Element
+module SplayHeap (E : ORDERED) : HEAP_WITH_SORT with module Element = E = struct
+  module Element = E
 
   type heap =
     | E
@@ -251,8 +250,8 @@ struct
   ;;
 end
 
-module PairingHeap (Element : ORDERED) : HEAP with module Element = Element = struct
-  module Element = Element
+module PairingHeap (E : ORDERED) : HEAP with module Element = E = struct
+  module Element = E
 
   type heap =
     | E
@@ -336,8 +335,8 @@ end
    well). Use the same potential function as for splay trees.
 *)
 
-module BinaryPairingHeap (Element : ORDERED) : HEAP with module Element = Element = struct
-  module Element = Element
+module BinaryPairingHeap (E : ORDERED) : HEAP with module Element = E = struct
+  module Element = E
 
   type heap =
     | E
