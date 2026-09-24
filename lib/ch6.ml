@@ -334,17 +334,16 @@ module LazyPairingHeap (E : ORDERED) : HEAP with module Element = E = struct
     | _ -> false
   ;;
 
-  let rec merge a b =
+  let[@ocaml.warning "-partial-match"] rec link a b =
+    match a with
+    | T (x, E, m) -> T (x, b, m)
+    | T (x, a', m) -> T (x, E, lazy (merge (merge b a') (Lazy.force m)))
+
+  and merge a b =
     match a, b with
     | a, E -> a
     | E, b -> b
     | T (x, _, _), T (y, _, _) -> if Element.leq x y then link a b else link b a
-
-  and link a b =
-    match a with
-    | E -> raise (Failure "merge")
-    | T (x, E, m) -> T (x, b, m)
-    | T (x, a', m) -> T (x, E, lazy (merge (merge b a') (Lazy.force m)))
   ;;
 
   let insert x a = merge (T (x, E, lazy E)) a
