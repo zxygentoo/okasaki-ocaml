@@ -30,19 +30,19 @@ module BankersQueue (S : STREAM) : QUEUE = struct
   let is_empty (lenf, _, _, _) = lenf = 0
 
   let check ((lenf, f, lenr, r) as q) =
-    if lenr <= lenf then q else lenf + lenr, S.(f ++ reverse r), 0, lazy Nil
+    if lenr <= lenf then q else lenf + lenr, S.(f ++ reverse r), 0, lazy S.Nil
   ;;
 
-  let snoc (lenf, f, lenr, r) x = check (lenf, f, lenr + 1, lazy (Cons (x, r)))
+  let snoc (lenf, f, lenr, r) x = check (lenf, f, lenr + 1, lazy (S.Cons (x, r)))
 
   let head = function
     | _, (lazy S.Nil), _, _ -> raise (Failure "head: empty queue")
-    | _, (lazy (Cons (x, _))), _, _ -> x
+    | _, (lazy (S.Cons (x, _))), _, _ -> x
   ;;
 
   let tail = function
     | _, (lazy S.Nil), _, _ -> raise (Failure "tail: empty queue")
-    | lenf, (lazy (Cons (_, f))), lenr, r -> check (lenf - 1, f, lenr, r)
+    | lenf, (lazy (S.Cons (_, f))), lenr, r -> check (lenf - 1, f, lenr, r)
   ;;
 end
 
@@ -285,8 +285,8 @@ module StreamBottomUpMergeSort (E : ORDERED) (Stream : STREAM) :
       (match Lazy.force a, Lazy.force b with
        | a', S.Nil -> a'
        | S.Nil, b' -> b'
-       | Cons (x, xs), Cons (y, ys) ->
-         if Element.leq x y then Cons (x, mrg xs b) else Cons (y, mrg a ys))
+       | S.Cons (x, xs), S.Cons (y, ys) ->
+         if Element.leq x y then S.Cons (x, mrg xs b) else S.Cons (y, mrg a ys))
   ;;
 
   let rec mrg_all a b =
@@ -301,23 +301,23 @@ module StreamBottomUpMergeSort (E : ORDERED) (Stream : STREAM) :
     let rec add_seg s ss sz =
       if sz mod 2 = 0 then s :: ss else add_seg (mrg s (List.hd ss)) (List.tl ss) (sz / 2)
     in
-    size + 1, add_seg (lazy (Cons (x, lazy Nil))) segs size
+    size + 1, add_seg (lazy (S.Cons (x, lazy S.Nil))) segs size
   ;;
 
   let to_list s =
     let rec go acc = function
       | (lazy S.Nil) -> List.rev acc
-      | (lazy (Cons (x, xs))) -> go (x :: acc) xs
+      | (lazy (S.Cons (x, xs))) -> go (x :: acc) xs
     in
     go [] s
   ;;
 
-  let sort (_, segs) = mrg_all (lazy Nil) segs |> to_list
+  let sort (_, segs) = mrg_all (lazy S.Nil) segs |> to_list
 
   (* (b) Write a function to extract the k smallest elements from a sortable collection.
      Prove that your function runs in no more than O(k log n) amortized time. *)
 
-  let extract k (_, s) = mrg_all (lazy Nil) s |> S.take k |> to_list
+  let extract k (_, s) = mrg_all (lazy S.Nil) s |> S.take k |> to_list
 end
 
 module LazyPairingHeap (E : ORDERED) : HEAP with module Element = E = struct
