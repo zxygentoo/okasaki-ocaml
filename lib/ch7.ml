@@ -187,11 +187,6 @@ module ScheduledBinomialHeap (Elem : ORDERED) (Stream : STREAM) :
     x
   ;;
 
-  let rec list_to_stream = function
-    | [] -> lazy S.Nil
-    | x :: xs -> lazy (S.Cons (x, list_to_stream xs))
-  ;;
-
   (* Exercise 7.4 Write an efficient, specialized version of mrg, called mrgWithList, so
      that deleteMin can call
 
@@ -202,13 +197,22 @@ module ScheduledBinomialHeap (Elem : ORDERED) (Stream : STREAM) :
      mrg (listToStream (map ONE (rev c)), ds')
   *)
 
+  let rec mrg_with_list xs ds =
+    match xs, ds with
+    | [], _ -> ds
+    | x :: xs, (lazy S.Nil) -> Lazy.from_val (S.Cons (One x, mrg_with_list xs ds))
+    | x :: xs', (lazy (S.Cons (Zero, ds'))) ->
+      Lazy.from_val (S.Cons (One x, mrg_with_list xs' ds'))
+    | x :: xs', (lazy (S.Cons (One t, ds'))) ->
+      Lazy.from_val (S.Cons (Zero, ins_tree (link x t) (mrg_with_list xs' ds')))
+  ;;
+
   let delete_min (ds, _) =
     let Node (_, c), ds' =
       try remove_min_tree ds with
       | Failure _ -> raise (Failure "delete_min: empty heap")
     in
-    let ds'' = mrg (list_to_stream (List.map (fun x -> One x) (List.rev c))) ds' in
-    normalize ds'', []
+    normalize (mrg_with_list (List.rev c) ds'), []
   ;;
 end
 
