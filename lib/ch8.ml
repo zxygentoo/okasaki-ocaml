@@ -53,23 +53,30 @@ module HoodMelvilleQueue = struct
     | st -> st
   ;;
 
-  let catch_up q =
-    match q.state |> step |> step with
+  (* Exercise 8.2 Prove that calling exec twice at the beginning of each rotation, and
+     once for every remaining insertion or deletion is enough to finish the rotation on
+     time. Modify the code accordingly. *)
+
+  let commit q = function
     | D newf -> { q with f = newf; state = I }
     | newstate -> { q with state = newstate }
   ;;
 
+  let step_up q = q.state |> step |> commit q
+
   let start_rebuild { lenf; f; lenr; r } =
-    catch_up
+    let q =
       { lenf = lenf + lenr
       ; f
       ; state = R { k = 0; f; f' = []; r; r' = [] }
       ; lenr = 0
       ; r = []
       }
+    in
+    q.state |> step |> step |> commit q
   ;;
 
-  let check q = if q.lenr <= q.lenf then catch_up q else start_rebuild q
+  let check q = if q.lenf >= q.lenr then step_up q else start_rebuild q
   let empty = { lenf = 0; f = []; state = I; lenr = 0; r = [] }
   let is_empty q = q.lenf = 0
   let snoc q x = check { q with lenr = q.lenr + 1; r = x :: q.r }
