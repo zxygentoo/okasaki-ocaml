@@ -1,6 +1,7 @@
 (* Tests for Chapter 8: the Hood-Melville real-time queue of Figure 8.1 (section 8.2.1),
    on the schedule of Exercise 8.2 and with the single diff field of Exercise 8.3. Plain
-   OCaml, no test framework, matching the earlier chapters.
+   OCaml, no test framework, matching the earlier chapters. The red-black set carried into
+   section 8.1 for Exercise 8.1 has its own preamble further down.
 
    Figure 8.1 makes the promise of Figure 7.1, every operation in O(1) WORST-CASE time and
    still when used persistently, without laziness. Section 8.2 calls the technique global
@@ -637,6 +638,580 @@ let test_hood_melville () =
         "  SKIP  HoodMelvilleQueue: persistence checks -- not real-time in one thread\n")
 ;;
 
+(* ------------------------------------------- red-black trees (8.1, Exercise 8.1) *)
+
+(* Section 8.1 introduces batched rebuilding, and its second example is the red-black tree
+   of Section 3.3 with deletion: mark a deleted node instead of removing it, keep
+   estimates of how many nodes are valid and how many are not, and rebuild the whole tree
+   from its valid elements, by Exercise 3.9, once the invalid ones grow past a fixed
+   fraction. Exercise 8.1 asks for that. The set below is Section 3.3's, copied here as
+   the starting point, and these checks are its baseline: everything test_ch3 asserted of
+   the original, run against the copy before a boolean field, the estimates and delete
+   arrive, and kept running after they do. The checks that belong to delete, and to the
+   batched rebuild it triggers, follow in their own section below.
+
+   As in test_ch3, SET seals the tree, so its shape is measured from outside through an
+   instrumented ORDERED. A search for an element that is NOT in the set walks from the
+   root to an empty slot, and counting only the comparisons that answered true gives
+   exactly one per node on that path, whichever way the search turned. Probing every gap
+   finds the deepest path, which Exercise 3.8 bounds by 2*floor(log2 (n+1)). Node colours
+   are invisible and are not asserted; the depth bound is what they exist to support.
+
+   One check is new: the copy answers exactly as Chapter 3's original, gap for gap. The
+   two are the same code today, and pinning that down means that when insert is touched
+   for the estimates, its shape is known not to have moved. *)
+
+let comparisons = ref 0
+
+(* Comparisons that answered true: one per node on a search path, whichever way the search
+   turned, since a step left is one true lt and a step right is one false lt then one true
+   one. *)
+let steps = ref 0
+
+module Counting_int = struct
+  type t = int
+
+  let eq a b =
+    incr comparisons;
+    a = b
+  ;;
+
+  let lt a b =
+    incr comparisons;
+    let less = a < b in
+    if less then incr steps;
+    less
+  ;;
+
+  let leq a b =
+    incr comparisons;
+    a <= b
+  ;;
+end
+
+(* Comparisons performed by [f]. *)
+let count_only f =
+  comparisons := 0;
+  ignore (Sys.opaque_identity (f ()));
+  !comparisons
+;;
+
+(* floor (log2 n), for n >= 1. *)
+let floor_log2 n =
+  let rec go acc n = if n <= 1 then acc else go (acc + 1) (n / 2) in
+  go 0 n
+;;
+
+(* Exercise 3.8's bound on the depth of any node in a red-black tree of size n. *)
+let depth_bound n = 2 * floor_log2 (n + 1)
+
+(* Sets are built from even numbers so that every odd number is a gap to probe. *)
+let evens n = List.init n (fun i -> 2 * i)
+
+let shuffle seed xs =
+  Random.init seed;
+  List.map snd (List.sort compare (List.map (fun x -> Random.bits (), x) xs))
+;;
+
+let set_sizes = [ 0; 1; 2; 3; 4; 7; 8; 15; 16; 31; 32; 100; 500; 1000 ]
+
+(* The three insertion orders the depth bound is checked over: ascending sends every
+   element down the right spine, which is the order that rebalances most. *)
+let orders n =
+  [ "ascending", evens n
+  ; "descending", List.rev (evens n)
+  ; "random", shuffle 20260925 (evens n)
+  ]
+;;
+
+module Set_tests (S : SET with type elem = int) = struct
+  let of_list xs = List.fold_left (fun s x -> S.insert x s) S.empty xs
+
+  (* Nodes on the path from the root to the empty slot a failed search for [x] falls into. *)
+  let path_to_gap x s =
+    steps := 0;
+    if S.member x s then invalid_arg "path_to_gap: element is present";
+    !steps
+  ;;
+
+  (* The depth of every gap of a set holding [evens n], the two outside the range
+     included: n + 1 numbers, which is as much of the tree's shape as the seal lets
+     through. *)
+  let gap_profile n s = List.init (n + 1) (fun i -> path_to_gap ((2 * i) - 1) s)
+  let max_path n s = List.fold_left max 0 (gap_profile n s)
+
+  let run_contract name =
+    let t label = Printf.sprintf "%s: %s" name label in
+    check (t "member on the empty set is false") (not (S.member 0 S.empty));
+    let s = of_list (evens 50) in
+    check
+      (t "every inserted element is found")
+      (List.for_all (fun x -> S.member x s) (evens 50));
+    check
+      (t "elements never inserted are not found")
+      (List.init 51 (fun i -> (2 * i) - 1) |> List.for_all (fun x -> not (S.member x s)));
+    (* What a set holds cannot depend on the order the elements arrived in. *)
+    let s' = of_list (shuffle 20260925 (evens 50)) in
+    check
+      (t "membership is independent of insertion order")
+      (List.init 103 (fun i -> i - 1)
+       |> List.for_all (fun x -> S.member x s = S.member x s'));
+    (* Against an independent oracle, over many shapes. *)
+    Random.init 20260926;
+    let disagrees = ref 0 in
+    for trial = 0 to 299 do
+      let n = 1 + Random.int 40 in
+      let xs =
+        if trial mod 3 = 0
+        then List.init n Fun.id
+        else List.init n (fun _ -> Random.int 60)
+      in
+      let s = of_list xs in
+      for q = -2 to 62 do
+        if S.member q s <> List.mem q xs then incr disagrees
+      done
+    done;
+    check_int
+      (t "member agrees with List.mem over 300 random trees")
+      ~expect:0
+      ~actual:!disagrees;
+    (* Re-inserting an element must leave the set alone. An ins whose equal case returns
+       the whole tree rather than the current subtree grafts the tree into itself here,
+       dropping elements and duplicating the rest. *)
+    let base = evens 7 in
+    let once = of_list base in
+    let again =
+      List.init 3 Fun.id
+      |> List.fold_left (fun s _ -> List.fold_left (fun s x -> S.insert x s) s base) once
+    in
+    check
+      (t "re-inserting existing elements keeps every element")
+      (List.for_all (fun x -> S.member x again) base);
+    check
+      (t "re-inserting existing elements adds nothing")
+      (List.init 8 (fun i -> (2 * i) - 1)
+       |> List.for_all (fun x -> not (S.member x again)));
+    check_eq
+      (t "re-inserting existing elements leaves the shape alone")
+      ~expect:(gap_profile 7 once)
+      ~actual:(gap_profile 7 again)
+      string_of_int_list;
+    (* Exercise 3.8, over orders that stress the shape differently. This is the assertion
+       the two colour invariants exist to support: break balance and it fails. *)
+    let over = ref [] in
+    List.iter
+      (fun n ->
+        List.iter
+          (fun (order, xs) ->
+            let d = max_path n (of_list xs) in
+            if d > depth_bound n then over := (order, n, d) :: !over)
+          (orders n))
+      set_sizes;
+    check
+      (t
+         (Printf.sprintf
+            "depth stays within Exercise 3.8's 2*floor(log2 (n+1))%s"
+            (match !over with
+             | [] -> ""
+             | (order, n, d) :: _ ->
+               Printf.sprintf " -- %s n=%d reached %d, bound %d" order n d (depth_bound n))))
+      (!over = []);
+    (* member and insert are O(log n): at most two comparisons per level, over a path the
+       bound above already limits. *)
+    let costly = ref 0 in
+    List.iter
+      (fun n ->
+        let s = of_list (evens n) in
+        if count_only (fun () -> S.member ((2 * n) - 1) s) > 2 * depth_bound n
+        then incr costly;
+        if count_only (fun () -> S.insert ((2 * n) + 1) s) > 2 * depth_bound n
+        then incr costly)
+      set_sizes;
+    check_int (t "member and insert stay O(log n) comparisons") ~expect:0 ~actual:!costly
+  ;;
+
+  let run_costs name =
+    let t label = Printf.sprintf "%s: %s" name label in
+    let allocated f = snd (cost f) in
+    (* The defining property of a persistent structure: an insert leaves the old set
+       whole, and not merely the previous version but every version ever built. *)
+    let s = of_list (evens 50) in
+    let s' = S.insert 99 s in
+    check
+      (t "insert leaves the original set unchanged")
+      ((not (S.member 99 s)) && S.member 99 s');
+    let versions =
+      evens 40
+      |> List.fold_left
+           (fun (acc, s) x ->
+             let s = S.insert x s in
+             s :: acc, s)
+           ([], S.empty)
+      |> fst
+      |> List.rev
+    in
+    let stale = ref 0 in
+    List.iteri
+      (fun i v ->
+        (* version i was built from evens (i+1), so it holds those and nothing beyond *)
+        if not (List.for_all (fun x -> S.member x v) (evens (i + 1))) then incr stale;
+        if S.member (2 * (i + 1)) v then incr stale)
+      versions;
+    check_int (t "every intermediate version stays correct") ~expect:0 ~actual:!stale;
+    (* member only follows pointers, so it must allocate nothing whatsoever, whether the
+       search ends at a node or falls into a gap. *)
+    let searching = ref [] in
+    List.iter
+      (fun n ->
+        let s = of_list (evens n) in
+        let miss = allocated (fun () -> S.member ((2 * n) + 1) s)
+        and hit = allocated (fun () -> S.member (2 * (n - 1)) s) in
+        if miss <> 0.0 then searching := (n, miss) :: !searching;
+        if hit <> 0.0 then searching := (n, hit) :: !searching)
+      [ 10; 100; 1000; 10_000 ];
+    check
+      (t
+         (Printf.sprintf
+            "member allocates nothing%s"
+            (match !searching with
+             | [] -> ""
+             | (n, w) :: _ -> Printf.sprintf " -- n=%d allocated %.0f words" n w)))
+      (!searching = []);
+    (* insert copies the search path and only the search path, so its cost is logarithmic:
+       ten thousand times as many elements must not cost ten thousand times as many words.
+       And the copying is not waste, it is what the older versions keep pointing at, so a
+       fresh insert allocates at least a node per level it rebuilds. *)
+    let insert_cost n =
+      let s = of_list (evens n) in
+      allocated (fun () -> S.insert ((2 * n) + 1) s)
+    in
+    let small = insert_cost 10
+    and large = insert_cost 100_000 in
+    check
+      (t
+         (Printf.sprintf
+            "insert allocates O(log n) (%.0f words at n=10, %.0f at n=100000)"
+            small
+            large))
+      (large < 4.0 *. small);
+    check
+      (t (Printf.sprintf "a fresh insert really does copy the path (%.0f words)" large))
+      (large >= float_of_int (depth_bound 100_000));
+    (* A duplicate has no new node to thread in and no rotation to do, so it costs less,
+       though not nothing: the path is still rebuilt on the way back up. *)
+    let s = of_list (evens 1000) in
+    let dup = allocated (fun () -> S.insert 0 s)
+    and fresh = allocated (fun () -> S.insert 2001 s) in
+    check
+      (t
+         (Printf.sprintf
+            "a duplicate insert costs less than a fresh one (%.0f < %.0f)"
+            dup
+            fresh))
+      (dup < fresh)
+  ;;
+end
+
+module Rb = RedBlackSet (Counting_int)
+module Rb_tests = Set_tests (Rb)
+
+(* Chapter 3's original, for the gap-for-gap comparison. *)
+module Original = Okasaki.Ch3.RedBlackSet (Counting_int)
+module Original_tests = Set_tests (Original)
+
+(* ---------------------------------------------------------- deletion (Exercise 8.1) *)
+
+(* What Exercise 8.1's delete has to do, and what section 8.1 promises for it. The
+   contract first: a deleted element is not a member, everything else still is, inserting
+   it again brings it back, deleting what is absent changes nothing, and none of it
+   disturbs an older version. Then the two conditions of p.99 that make batched rebuilding
+   sound, both measured through the seal.
+
+   Condition (2) says a delete must be a weak update: after any number of them short of
+   the rebuild, a search still costs O(log n), which is p.100's "even if up to half the
+   nodes have been marked as deleted". So a dead node must route a search by its key
+   exactly as a live one does. A search that has to look on both sides of a dead node is
+   not logarithmic, and the comparison count says so.
+
+   Condition (1) says the O(n) rebuild must be rare: it may run only "whenever half the
+   nodes in the tree have been deleted", so that it pays for itself at O(log n) amortised
+   per delete. Its cost is allocation, and it makes no comparisons at all, since a sorted
+   list has already answered every question insert would ask. So the clock for a delete is
+   words, as for the queue, and a rebuild stands out from a path copy by an order of
+   magnitude while more than a few dozen elements survive it. Counting those lumps in a
+   drain gives the rebuild schedule from outside, and the schedule is what shows the
+   estimates being corrected: a rebuild resets the counts to the survivors, so the next
+   one comes after about half of THEM have gone, and the lumps come at halving intervals.
+   Estimates left uncorrected would put the second rebuild out of reach.
+
+   Deleting an element that is not in the set is specified here as a no-op. The book does
+   not say, and raising is a defensible reading, but a total delete is the easier contract
+   to hold in a model, and it matches what marking already does for an element deleted
+   twice. *)
+
+module Delete_tests (S : SET_WITH_DELETE with type elem = int) = struct
+  module Base = Set_tests (S)
+
+  let delete_all xs s = List.fold_left (fun s x -> S.delete x s) s xs
+  let range lo hi = List.init (hi - lo + 1) (fun i -> lo + i)
+  let first_of k xs = List.filteri (fun i _ -> i < k) xs
+
+  let run_contract name =
+    let t label = Printf.sprintf "%s: %s" name label in
+    let holds label f = surviving (t label) f (fun ok -> check (t label) ok) in
+    let same a b = List.for_all (fun x -> S.member x a = S.member x b) (range (-1) 101) in
+    let s = Base.of_list (evens 50) in
+    surviving
+      (t "deleting one element")
+      (fun () -> S.delete 20 s)
+      (fun s' ->
+        check (t "a deleted element is not a member") (not (S.member 20 s'));
+        check
+          (t "deleting one element leaves every other")
+          (List.for_all (fun x -> x = 20 || S.member x s') (evens 50));
+        check (t "the version before the delete still has it") (S.member 20 s);
+        holds "inserting a deleted element brings it back" (fun () ->
+          S.member 20 (S.insert 20 s'));
+        holds "deleting an element twice is a no-op" (fun () -> same s' (S.delete 20 s')));
+    (* The root is on every search path, so a dead root is the first place a search that
+       cannot pass a dead node shows. *)
+    holds "deleting the root leaves both neighbours reachable" (fun () ->
+      let s3 = S.delete 2 (Base.of_list [ 0; 2; 4 ]) in
+      S.member 0 s3 && S.member 4 s3 && not (S.member 2 s3));
+    holds "deleting an absent element is a no-op" (fun () -> same s (S.delete 21 s));
+    surviving
+      (t "deleting everything")
+      (fun () -> delete_all (evens 50) s)
+      (fun gone ->
+        check
+          (t "a set with everything deleted holds nothing")
+          (List.for_all (fun x -> not (S.member x gone)) (range (-1) 101));
+        holds "and can be refilled" (fun () -> S.member 8 (S.insert 8 gone)));
+    (* Every version of a drain stays correct, on both sides of the rebuild that a drain
+       of a hundred passes through. *)
+    surviving
+      (t "every version of a drain stays correct, across rebuilds")
+      (fun () ->
+        let xs = evens 100 in
+        let order = shuffle 20260928 xs in
+        let versions =
+          List.fold_left
+            (fun (acc, s) x ->
+              let s = S.delete x s in
+              s :: acc, s)
+            ([], Base.of_list xs)
+            order
+          |> fst
+          |> List.rev
+        in
+        let stale = ref 0 in
+        List.iteri
+          (fun i v ->
+            (* version i is after i + 1 deletions: the first i + 1 of [order] are gone *)
+            let gone = first_of (i + 1) order in
+            if not (List.for_all (fun x -> S.member x v = not (List.mem x gone)) xs)
+            then incr stale)
+          versions;
+        !stale)
+      (fun stale ->
+        check_int
+          (t "every version of a drain stays correct, across rebuilds")
+          ~expect:0
+          ~actual:stale);
+    (* Against a list model, checked after every operation, with runs long enough to cross
+       the rebuild threshold many times over. *)
+    Random.init 20260929;
+    let bad = ref 0
+    and raised = ref 0 in
+    for _ = 0 to 299 do
+      let s = ref S.empty
+      and model = ref [] in
+      try
+        for _ = 1 to 200 do
+          let x = Random.int 40 in
+          if Random.int 5 < 3
+          then (
+            s := S.insert x !s;
+            if not (List.mem x !model) then model := x :: !model)
+          else (
+            s := S.delete x !s;
+            model := List.filter (fun y -> y <> x) !model);
+          for q = -1 to 40 do
+            if S.member q !s <> List.mem q !model then incr bad
+          done
+        done
+      with
+      | _ -> incr raised
+    done;
+    check_int
+      (t "member agrees with a list model after every operation, 300 random runs")
+      ~expect:0
+      ~actual:!bad;
+    check_int (t "no operation raises, 300 random runs") ~expect:0 ~actual:!raised
+  ;;
+
+  (* The most a delete may allocate without having rebuilt: a path of at most depth_bound
+     n levels, each a node and its tuple, plus the re-marked pair and the triple. A
+     rebuild with L survivors allocates about 13L words on top of that, so while at least
+     32 survive it clears this bound by a wide margin and while at least 64 do, so does
+     the rebuild after it. *)
+  let path_words n = float_of_int (12 * (depth_bound n + 1))
+
+  let run_costs name =
+    let t label = Printf.sprintf "%s: %s" name label in
+    (* Condition (2): with half the nodes dead and no rebuild yet, every search, hit, dead
+       hit or miss, is still two comparisons per level of the tree that was built. *)
+    let n = 1024 in
+    let xs = shuffle 20260930 (evens n) in
+    let s = delete_all (first_of 500 (shuffle 20260931 xs)) (Base.of_list xs) in
+    let dearest =
+      List.fold_left
+        (fun d q -> max d (count_only (fun () -> S.member q s)))
+        0
+        (range (-1) ((2 * n) + 1))
+    in
+    check
+      (t
+         (Printf.sprintf
+            "member stays two comparisons per level with half the nodes dead (dearest \
+             %d, bound %d)"
+            dearest
+            (2 * depth_bound n)))
+      (dearest <= 2 * depth_bound n);
+    (* The drain: every delete of 4096 distinct elements on the clock, comparisons and
+       words, in a random order. [rebuilds] holds, for each delete that allocated more
+       than a path, its index and how many elements survived it. *)
+    let n = 4096 in
+    let xs = shuffle 20260932 (evens n) in
+    let order = shuffle 20260933 xs in
+    let s = ref (Base.of_list xs)
+    and total = ref 0.0
+    and dear_cmp = ref 0
+    and rebuilds = ref [] in
+    List.iteri
+      (fun i x ->
+        comparisons := 0;
+        let s', w = cost (fun () -> S.delete x !s) in
+        dear_cmp := max !dear_cmp !comparisons;
+        total := !total +. w;
+        if w > path_words n then rebuilds := (i + 1, n - i - 1) :: !rebuilds;
+        s := s')
+      order;
+    ignore (Sys.opaque_identity !s);
+    let rebuilds = List.rev !rebuilds in
+    check
+      (t
+         (Printf.sprintf
+            "every delete makes O(log n) comparisons, rebuilds included (dearest %d, \
+             bound %d)"
+            !dear_cmp
+            (2 * depth_bound n)))
+      (!dear_cmp <= 2 * depth_bound n);
+    (* Condition (1), read off the lumps. *)
+    check
+      (t
+         (Printf.sprintf
+            "rebuilds are rare: %d lumps in a drain of %d"
+            (List.length rebuilds)
+            n))
+      (List.length rebuilds <= floor_log2 n + 2);
+    let first =
+      match rebuilds with
+      | [] -> 0
+      | (i, _) :: _ -> i
+    in
+    check
+      (t
+         (Printf.sprintf
+            "the first rebuild comes when about half the nodes are dead (delete #%d of \
+             %d)"
+            first
+            n))
+      (first >= n / 4 && first <= (n / 2) + 2);
+    (* Each rebuild after the first comes when about half the survivors of the previous
+       one are dead. That is the estimates being corrected: a count left at its old value
+       would put the next rebuild twice as far off, past the end of the survivors. Only
+       lumps with at least 64 survivors are trusted to have a detectable successor. *)
+    let rec spacing_ok = function
+      | (i, live) :: ((j, _) :: _ as rest) when live >= 64 ->
+        j - i >= live / 4 && j - i <= (live / 2) + 2 && spacing_ok rest
+      | _ -> true
+    in
+    let trusted = List.length (List.filter (fun (_, live) -> live >= 32) rebuilds) in
+    check
+      (t
+         (Printf.sprintf
+            "each rebuild comes when about half the survivors of the last are dead (%d \
+             lumps with 32+ survivors, at deletes %s)"
+            trusted
+            (String.concat
+               ","
+               (List.map (fun (i, _) -> string_of_int i) (first_of 8 rebuilds)))))
+      (trusted >= floor_log2 n - 6 && spacing_ok rebuilds);
+    check
+      (t
+         (Printf.sprintf
+            "delete is O(log n) amortised: %.0f words per delete over the drain, bound \
+             %.0f"
+            (!total /. float_of_int n)
+            (16.0 *. float_of_int (depth_bound n))))
+      (!total /. float_of_int n <= 16.0 *. float_of_int (depth_bound n));
+    (* A rebuilt tree is a red-black tree: growing it afterwards keeps Exercise 3.8's
+       bound. 1024 in, 600 out through a rebuild, 2048 new ones in. Colours stay invisible
+       here as in test_ch3, and the bound has a factor of two of slack, so a rebuild that
+       mis-colours its nodes but keeps their order can grow a few levels deeper and still
+       pass; what this catches is a rebuild that is not a search tree or not balanced. *)
+    let n = 1024 in
+    let xs = shuffle 20260934 (evens n) in
+    let s = delete_all (first_of 600 (shuffle 20260935 xs)) (Base.of_list xs) in
+    let extra = 2048 in
+    let grown =
+      List.fold_left (fun s x -> S.insert x s) s (List.init extra (fun i -> 2 * (n + i)))
+    in
+    let d = Base.max_path (n + extra) grown in
+    check
+      (t
+         (Printf.sprintf
+            "growth after a rebuild keeps the depth bound (depth %d, bound %d)"
+            d
+            (depth_bound (n + extra))))
+      (d <= depth_bound (n + extra))
+  ;;
+end
+
+module Deletion = Delete_tests (Rb)
+
+let test_redblack () =
+  section "RedBlackSet (8.1): the Section 3.3 set, and the delete of Exercise 8.1";
+  Rb_tests.run_contract "RedBlackSet";
+  Rb_tests.run_costs "RedBlackSet";
+  let differs = ref [] in
+  List.iter
+    (fun n ->
+      List.iter
+        (fun (order, xs) ->
+          let here = Rb_tests.gap_profile n (Rb_tests.of_list xs)
+          and there = Original_tests.gap_profile n (Original_tests.of_list xs) in
+          if here <> there then differs := (order, n) :: !differs)
+        (orders n))
+    set_sizes;
+  check
+    (Printf.sprintf
+       "RedBlackSet: the copy has Chapter 3's shape, gap for gap%s"
+       (match !differs with
+        | [] -> ""
+        | (order, n) :: _ -> Printf.sprintf " -- differs for %s n=%d" order n))
+    (!differs = []);
+  (* What a delete costs means nothing until it behaves like one. *)
+  let before = !failures in
+  Deletion.run_contract "RedBlackSet delete";
+  if !failures > before
+  then
+    Printf.printf
+      "  SKIP  RedBlackSet delete: cost checks -- the contract above does not hold\n"
+  else Deletion.run_costs "RedBlackSet delete"
+;;
+
 (* ------------------------------------------------------------------- runner *)
 
 (* A regression can make a function raise where the test did not expect it. Report that as
@@ -650,6 +1225,7 @@ let run name f =
 ;;
 
 let () =
+  run "RedBlackSet" test_redblack;
   run "HoodMelvilleQueue" test_hood_melville;
   Printf.printf "\n%d checks, %d failures\n\n" !checks !failures;
   if !failures > 0 then exit 1
