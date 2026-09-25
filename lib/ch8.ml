@@ -8,14 +8,13 @@ module type QUEUE = sig
   val tail : 'a queue -> 'a queue
 end
 
-
 module HoodMelvilleQueue = struct
   type 'a rotation_state =
     (* Idle *)
     | I
     (* Reversing *)
     | R of
-        { k : int
+        { k : int (* valid element count *)
         ; f : 'a list
         ; f' : 'a list
         ; r : 'a list
@@ -23,7 +22,7 @@ module HoodMelvilleQueue = struct
         }
     (* Append *)
     | A of
-        { k : int
+        { k : int (* valid element count *)
         ; f' : 'a list
         ; r' : 'a list
         }
@@ -45,7 +44,7 @@ module HoodMelvilleQueue = struct
     | st -> st
   ;;
 
-  let exec = function
+  let step = function
     | R ({ f = x :: xs; r = y :: ys } as st) ->
       R { k = st.k + 1; f = xs; f' = x :: st.f'; r = ys; r' = y :: st.r' }
     | R ({ f = []; r = [ y ] } as st) -> A { k = st.k; f' = st.f'; r' = y :: st.r' }
@@ -54,25 +53,23 @@ module HoodMelvilleQueue = struct
     | st -> st
   ;;
 
-  let exec2 q =
-    match exec (exec q.state) with
+  let catch_up q =
+    match q.state |> step |> step with
     | D newf -> { q with f = newf; state = I }
     | newstate -> { q with state = newstate }
   ;;
 
-  let check ({ lenf; f; lenr; r } as q) =
-    if lenr <= lenf
-    then exec2 q
-    else
-      exec2
-        { lenf = lenf + lenr
-        ; f
-        ; state = R { k = 0; f; f' = []; r; r' = [] }
-        ; lenr = 0
-        ; r = []
-        }
+  let start_rebuild { lenf; f; lenr; r } =
+    catch_up
+      { lenf = lenf + lenr
+      ; f
+      ; state = R { k = 0; f; f' = []; r; r' = [] }
+      ; lenr = 0
+      ; r = []
+      }
   ;;
 
+  let check q = if q.lenr <= q.lenf then catch_up q else start_rebuild q
   let empty = { lenf = 0; f = []; state = I; lenr = 0; r = [] }
   let is_empty q = q.lenf = 0
   let snoc q x = check { q with lenr = q.lenr + 1; r = x :: q.r }
