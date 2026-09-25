@@ -29,12 +29,15 @@ module HoodMelvilleQueue = struct
     (* Done *)
     | D of 'a list
 
+  (* Exercise 8.3 Replace the lent and lenr fields with a single diff field that maintains
+     the difference between the lengths of f and r. diff may be inaccurate during
+     rebuilding, but must be accurate by the time rebuilding is finished. *)
+
   type 'a queue =
-    { lenf : int
-    ; f : 'a list
-    ; state : 'a rotation_state
-    ; lenr : int
+    { f : 'a list
     ; r : 'a list
+    ; state : 'a rotation_state
+    ; diff : int
     }
 
   let invalidate = function
@@ -44,13 +47,15 @@ module HoodMelvilleQueue = struct
     | st -> st
   ;;
 
-  let step = function
+  let step (st, d) =
+    match st with
     | R ({ f = x :: xs; r = y :: ys } as st) ->
-      R { k = st.k + 1; f = xs; f' = x :: st.f'; r = ys; r' = y :: st.r' }
-    | R ({ f = []; r = [ y ] } as st) -> A { k = st.k; f' = st.f'; r' = y :: st.r' }
-    | A { k = 0; r' } -> D r'
-    | A ({ f' = x :: xs } as st) -> A { k = st.k - 1; f' = xs; r' = x :: st.r' }
-    | st -> st
+      R { k = st.k + 1; f = xs; f' = x :: st.f'; r = ys; r' = y :: st.r' }, d + 2
+    | R ({ f = []; r = [ y ] } as st) ->
+      A { k = st.k; f' = st.f'; r' = y :: st.r' }, d + 1
+    | A { k = 0; r' } -> D r', d
+    | A ({ f' = x :: xs } as st) -> A { k = st.k - 1; f' = xs; r' = x :: st.r' }, d
+    | _ -> st, d
   ;;
 
   (* Exercise 8.2 Prove that calling exec twice at the beginning of each rotation, and
@@ -58,28 +63,21 @@ module HoodMelvilleQueue = struct
      time. Modify the code accordingly. *)
 
   let commit q = function
-    | D newf -> { q with f = newf; state = I }
-    | newstate -> { q with state = newstate }
+    | D newf, d -> { q with f = newf; state = I; diff = d }
+    | newstate, d -> { q with state = newstate; diff = d }
   ;;
 
-  let step_up q = q.state |> step |> commit q
+  let step_up q = (q.state, q.diff) |> step |> commit q
 
-  let start_rebuild { lenf; f; lenr; r } =
-    let q =
-      { lenf = lenf + lenr
-      ; f
-      ; state = R { k = 0; f; f' = []; r; r' = [] }
-      ; lenr = 0
-      ; r = []
-      }
-    in
-    q.state |> step |> step |> commit q
+  let start_rebuild { f; r } =
+    let q = { f; r = []; state = R { k = 0; f; f' = []; r; r' = [] }; diff = -1 } in
+    (q.state, 0) |> step |> step |> commit q
   ;;
 
-  let check q = if q.lenf >= q.lenr then step_up q else start_rebuild q
-  let empty = { lenf = 0; f = []; state = I; lenr = 0; r = [] }
-  let is_empty q = q.lenf = 0
-  let snoc q x = check { q with lenr = q.lenr + 1; r = x :: q.r }
+  let check q = if q.diff >= 0 then step_up q else start_rebuild q
+  let empty = { f = []; r = []; state = I; diff = 0 }
+  let is_empty q = q.f = []
+  let snoc q x = check { q with r = x :: q.r; diff = q.diff - 1 }
 
   let head q =
     match q.f with
@@ -90,6 +88,6 @@ module HoodMelvilleQueue = struct
   let tail q =
     match q.f with
     | [] -> raise (Failure "tail: empty queue")
-    | _ :: f -> check { q with lenf = q.lenf - 1; f; state = invalidate q.state }
+    | _ :: f -> check { q with f; state = invalidate q.state; diff = q.diff - 1 }
   ;;
 end

@@ -1,5 +1,6 @@
-(* Tests for Chapter 8: the Hood-Melville real-time queue of Figure 8.1 (section 8.2.1).
-   Plain OCaml, no test framework, matching the earlier chapters.
+(* Tests for Chapter 8: the Hood-Melville real-time queue of Figure 8.1 (section 8.2.1),
+   on the schedule of Exercise 8.2 and with the single diff field of Exercise 8.3. Plain
+   OCaml, no test framework, matching the earlier chapters.
 
    Figure 8.1 makes the promise of Figure 7.1, every operation in O(1) WORST-CASE time and
    still when used persistently, without laziness. Section 8.2 calls the technique global
@@ -7,29 +8,41 @@
    tail from it, while a secondary copy is built beside it a few steps at a time. The
    secondary copy is the rotation state. A rotation begins when the rear becomes one
    longer than the front, reverses f and r in parallel, then reverses f' onto r', by
-   explicit calls to exec, two per operation. A tail taken meanwhile is buffered the
-   cheapest way there is: it invalidates one element of the copy, so that the invalid
-   elements are never placed on the answer list to begin with. Everything rests on the
-   sizing argument of p.104. With |f| = m and |r| = m + 1 when the rotation begins, it
-   needs at most 2m + 2 steps, the working copy lasts m deletions, and two steps per
-   operation finish it "at most m operations after it begins". There is no suspension, no
-   memoisation and nothing to force.
+   explicit steps. A tail taken meanwhile is buffered the cheapest way there is: it
+   invalidates one element of the copy, so that the invalid elements are never placed on
+   the answer list to begin with. Everything rests on the sizing argument of p.104. With
+   |f| = m and |r| = m + 1 when the rotation begins, it needs at most 2m + 2 steps and the
+   working copy lasts m deletions. Figure 8.1 takes two steps on every operation and
+   finishes "at most m operations after it begins"; Exercise 8.2 trims that to two steps
+   on the operation that starts the rotation and one on each operation after it, and asks
+   for a proof that this is still on time. The implementation follows the exercise. There
+   is no suspension, no memoisation and nothing to force.
+
+   Exercise 8.3 then replaces the two length fields by one, the difference between them,
+   which "may be inaccurate during rebuilding, but must be accurate by the time rebuilding
+   is finished". From outside the seal that field is invisible, and its accuracy shows in
+   one place only: the moment a rotation is triggered. A difference that is off when a
+   rotation ends starts the next one with the wrong shape, one the reversing phase cannot
+   finish, and the elements in it are lost. So every check below that runs past a second
+   rotation is a check on the difference, and the random runs of the contract are the
+   sharpest of them.
 
    That changes what the clock can see and what persistence can lean on. In test_ch7
-   allocation stood in for suspensions being forced. Here it is the work itself: a step of
-   exec is a cons or two and a fresh state, an operation is two of them and a fresh queue,
+   allocation stood in for suspensions being forced. Here it is the work itself: a step is
+   a cons or two and a fresh state, an operation is one or two of them and a fresh queue,
    and the only way for an operation to be expensive is to allocate. Persistence has
    nothing to lean on at all: a version reused pays exactly what it paid the first time,
    which is why p.102 can say that "arbitrarily repeating operations has no effect on the
    time bounds". So the checks are those of test_ch7. The behavioural contract first, with
    one item added: the sizing argument above asserted from outside, by exhausting the
-   working copy the moment a rotation begins. Then every operation of a sequence on the
-   clock by itself with the DEAREST asserted, at two sizes a hundred times apart, and the
-   same from every version of a build and of a drain and over a random trace of random
-   earlier versions. The tests reach the queue only as a functor argument of type QUEUE,
-   so nothing here can see the rotation state. Whether the clock can see a lump at all is
-   checked over the batched queue of Figure 5.2, which section 8.1 presents as the
-   batched-rebuilding version of this very design. *)
+   working copy the moment a rotation begins, which under the trimmed schedule is the
+   claim of Exercise 8.2 itself. Then every operation of a sequence on the clock by itself
+   with the DEAREST asserted, at two sizes a hundred times apart, and the same from every
+   version of a build and of a drain and over a random trace of random earlier versions.
+   The tests reach the queue only as a functor argument of type QUEUE, so nothing here can
+   see the rotation state. Whether the clock can see a lump at all is checked over the
+   batched queue of Figure 5.2, which section 8.1 presents as the batched-rebuilding
+   version of this very design. *)
 
 open Okasaki.Ch8
 
@@ -109,16 +122,18 @@ let cost f =
   r, float_of_int (words () - before)
 ;;
 
-(* The most a single operation may allocate, in words. Every operation of Figure 8.1
-   rebuilds the queue record once on the way in and once on the way out of exec2, 6 words
-   each, and a snoc adds a cons onto the rear. Between rotations that is all of it. During
-   one, each of the two steps of exec allocates a fresh state, 6 words while reversing
-   with two conses pushed, 4 words while appending with one. The operation that begins a
-   rotation builds a third queue record and the initial state on top of its two steps. The
-   dearest operations measured here are those: a snoc at 51 words, a tail at 48. CONSTANT
-   leaves room for those and for the probe's own noise, and is nowhere near an operation
-   that is really linear: the reverse that batched rebuilding runs in one tail costs three
-   words a cons, and at the sizes used here that is out by a factor of thirty. *)
+(* The most a single operation may allocate, in words. Every operation rebuilds the queue
+   record once on the way in and once on the way out of its steps, 5 words each now that
+   Exercise 8.3 has left it four fields, and a snoc adds a cons onto the rear. Between
+   rotations that is all of it. During one, a step allocates a fresh state, 6 words while
+   reversing with two conses pushed, 4 words while appending with one, and the 3-word pair
+   that carries the difference through the step. Under Exercise 8.2 an operation takes one
+   step, and the operation that begins a rotation takes two, and builds a third queue
+   record and the initial state on top of them. The dearest operations measured here are
+   those: a snoc at 54 words, a tail at 51. CONSTANT leaves room for those and for the
+   probe's own noise, and is nowhere near an operation that is really linear: the reverse
+   that batched rebuilding runs in one tail costs three words a cons, and at the sizes
+   used here that is out by a factor of thirty. *)
 let constant = 96.0
 
 (* ---------------------------------------------------- shared queue contract *)
@@ -189,7 +204,9 @@ module Queue_tests (Q : QUEUE) = struct
        ends on the very snoc that starts a rotation of m, and the working copy is the old
        front of m elements. Take m tails at once and ask for the head: the answer has to
        come from the rotation's result, and there is no later moment at which it may
-       arrive. No check outside the seal can be sharper about the schedule than this. *)
+       arrive. Under the schedule of Exercise 8.2 this is the exercise's own claim, with
+       the tails arriving as fast as they can; a schedule one step short at the start
+       fails it at m = 0 already. No check outside the seal can be sharper than this. *)
     let late = ref [] in
     for k = 0 to 12 do
       let m = (1 lsl k) - 1 in
