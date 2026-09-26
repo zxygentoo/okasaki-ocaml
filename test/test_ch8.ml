@@ -1,8 +1,9 @@
 (* Tests for Chapter 8: the Hood-Melville real-time queue of Figure 8.1 (section 8.2.1),
    on the schedule of Exercise 8.2 and with the single diff field of Exercise 8.3. Plain
    OCaml, no test framework, matching the earlier chapters. The cons functor of Exercise
-   8.4, the banker's deque of Figure 8.3 (section 8.4.2) and the red-black set carried
-   into section 8.1 for Exercise 8.1 each have their own preamble further down.
+   8.4, the banker's deque of Figure 8.3 (section 8.4.2), the real-time deque of Figure
+   8.4 (section 8.4.3) and the red-black set carried into section 8.1 for Exercise 8.1
+   each have their own preamble further down.
 
    Figure 8.1 makes the promise of Figure 7.1, every operation in O(1) WORST-CASE time and
    still when used persistently, without laziness. Section 8.2 calls the technique global
@@ -2187,6 +2188,365 @@ let test_bankers_deque () =
       "  SKIP  BankersDeque, c = 3: persistence checks -- not amortised O(1) in one thread\n"
 ;;
 
+(* ----------------------------------------------------- RealTimeDeque (8.4.3) *)
+
+(* Section 8.4.3 schedules the deque of Figure 8.3 the way section 7.2 scheduled the
+   banker's queue, and promises every operation in O(1) WORST-CASE time, persistently. A
+   rebalance still cuts the long stream by take and moves its remainder onto the short
+   one, but the two monolithic pieces of that, drop and reverse, are rewritten as
+   rotateDrop and rotateRev, which do c steps of the drop, and then c steps of the
+   reverse, for each element they pass on, so that every cell of the rotated stream is
+   O(1) to force. Each stream then carries a schedule, a pointer into itself: an insertion
+   forces one cell of each schedule and a removal two, and Exercise 8.7 claims that this
+   keeps both schedules ahead of the next rotation, so that a rotation never forces
+   anything unevaluated. The tests see none of that machinery, only the bound it exists
+   for.
+
+   A worst-case bound is a claim about every single operation, where an amortised one was
+   a claim about sequences, so here every operation is on the clock BY ITSELF and the
+   DEAREST is what is asserted, never a total. Otherwise the checks are the section
+   above's: the behavioural contract unchanged, since a real-time deque is a deque; each
+   single-thread plan with its dearest operation, at two sizes a hundred times apart, so
+   that an operation whose cost grows with the deque shows as a dearest that grows with n;
+   then, because a real-time structure may be used from any version, the first future of
+   every version of a drain and of a build, and a random trace over random earlier
+   versions, every operation of it on the clock.
+
+   Two clocks, and here each sees what the other cannot. Words see a rebalance done at
+   once: take, drop and reverse over strict streams, the control, or a rotateDrop whose
+   spine is built in one go. The counting stream sees a drop, or a chain of them, walking
+   cells that already exist, which allocates nothing. Figure 8.4 as printed is caught by
+   the second and not the first: each rotateDrop step hands the next one drop (c, r) as a
+   suspension and nothing forces it, so the drops nest, and the reverse at the end of the
+   rotation forces the whole chain in one schedule step, 632 steps at n = 1000 and some
+   55000 at n = 100000, at 58 words either way. p.111 says that rotateDrop "performs c
+   steps of the drop for every step of the ++", and the implementation does that, forcing
+   each step's drop as the step runs; measured, its dearest operation is 9 steps at c = 2
+   and 11 at c = 3. The budgets are derived. In steps: an operation forces at most two
+   cells of each schedule, and a head or last one cell more, and if it rotates performs at
+   most one drop of its own; a cell costs at most 3c + 2, the drop of c that a rotateDrop
+   or rotateRev step performs, or, at the join of a rotation, the reverse of the at most
+   c + 1 elements left over, the take and reverse of c that open the next chunk of the
+   accumulated reverse, and the copy of ++. Five cells and a drop: 5(3c + 2) + 2c, 44 at c
+   = 2 and 61 at c = 3, a fourteenth of what the figure as printed executes at n = 1000.
+   In words, twice CONSTANT. A removal of the banker's deque forced nothing but what its
+   own head needed; one here forces four cells of the rotated streams as well, and a cell
+   of rotateRev allocates its drop, its take, its reverse and its ++ before the cell
+   itself, some 40 words, a cell of the accumulated reverse the c cells of a take and a
+   reverse of c, some 35. Four such cells, the operation's own records and the four
+   suspensions of a rotation come to under 200; the dearest measured is a tail at 141 at c
+   = 2 and 147 at c = 3, the same at n = 1000 and at n = 100000.
+
+   Exercise 8.7's schedule is asserted only through the bound. Removals that advance each
+   schedule by one cell instead of two leave cells unforced at the next rotation, and the
+   clocks see it, at c = 2, as a dearest removal of 271 words and 21 steps, flat in n to a
+   million operations, above the words budget and within the steps budget; at c = 3 it
+   stays within both. What the second cell buys is a constant, and from outside the seal
+   the exercise's "enough" cannot be told from more than enough. Every other variant tried
+   is over budget at n = 1000 already: the figure as printed, a rotateDrop whose spine is
+   built at once, insertions that leave the schedules alone, and a rotation that schedules
+   only the stream it took. *)
+
+(* The most a single operation may execute, in steps of the counting stream, and allocate,
+   in words. *)
+let real_time_steps c = float_of_int ((5 * ((3 * c) + 2)) + (2 * c))
+let real_time_words = 2.0 *. constant
+
+module Real_time_tests (D : DEQUE) = struct
+  module T = Deque_tests (D)
+
+  let opaque = T.opaque
+
+  (* A plan is a run written out in full, one step from a deque to the next per operation;
+     a peek keeps the deque and discards what it read. *)
+  let cons i q = D.cons i q
+  let snoc i q = D.snoc q i
+
+  let peek_head q =
+    opaque (D.head q);
+    q
+  ;;
+
+  let peek_last q =
+    opaque (D.last q);
+    q
+  ;;
+
+  let each op n = Array.make n op
+  let build f n = Array.init n f
+
+  let random_plan n =
+    Random.init 20260926;
+    let size = ref 0 in
+    Array.init n (fun i ->
+      match if !size = 0 then Random.int 2 else Random.int 6 with
+      | 0 ->
+        incr size;
+        cons i
+      | 1 ->
+        incr size;
+        snoc i
+      | 2 ->
+        decr size;
+        D.tail
+      | 3 ->
+        decr size;
+        D.init
+      | 4 -> peek_head
+      | _ -> peek_last)
+  ;;
+
+  let plans =
+    [ ( "n conses then n tails, a stack"
+      , fun n -> Array.append (build cons n) (each D.tail n) )
+    ; ("n conses then n inits", fun n -> Array.append (build cons n) (each D.init n))
+    ; ( "n snocs then n tails, a queue"
+      , fun n -> Array.append (build snoc n) (each D.tail n) )
+    ; ("n snocs then n inits", fun n -> Array.append (build snoc n) (each D.init n))
+    ; ( "n snocs, then tail and init alternating"
+      , fun n ->
+          Array.append
+            (build snoc n)
+            (Array.init n (fun i -> if i land 1 = 0 then D.tail else D.init)) )
+    ; ( "cons and snoc in turn, then n tails"
+      , fun n ->
+          Array.append
+            (Array.init n (fun i -> if i land 1 = 0 then cons i else snoc i))
+            (each D.tail n) )
+    ; ( "cons and init alternating on one element"
+      , fun n ->
+          Array.append
+            [| cons 0 |]
+            (Array.init (2 * n) (fun i -> if i land 1 = 0 then cons i else D.init)) )
+    ; ( "a head and a last after every cons and every snoc"
+      , fun n ->
+          Array.concat
+            (List.init n (fun i ->
+               [| cons i; peek_head; peek_last; snoc i; peek_head; peek_last |])) )
+    ; "a random mix of all six operations", random_plan
+    ]
+  ;;
+
+  (* Every operation of [plan] on [clock] by itself, from empty: the index of the dearest
+     and what it cost. *)
+  let dearest clock plan =
+    let q = ref D.empty
+    and dear = ref (0, 0.0) in
+    Array.iteri
+      (fun i op ->
+        let q', c = cost_on clock (fun () -> op !q) in
+        q := q';
+        if c > snd !dear then dear := i, c)
+      plan;
+    opaque !q;
+    !dear
+  ;;
+
+  (* Worst-case O(1), asserted the only way a worst-case bound can be: on the dearest
+     operation. At n, and at a hundred times n if the small size held. *)
+  let run_plans name clock ~budget ~unit =
+    let t label = Printf.sprintf "%s: %s" name label in
+    List.iter
+      (fun (plan, make) ->
+        let within label n =
+          let ops = make n in
+          let k, c = dearest clock ops in
+          let fine = c <= budget in
+          check
+            (t
+               (Printf.sprintf
+                  "%s, %s: dearest of %d is #%d at %.0f %s, n=%d"
+                  plan
+                  label
+                  (Array.length ops)
+                  k
+                  c
+                  unit
+                  n))
+            fine;
+          fine
+        in
+        if not (within "O(1) worst-case" 1_000)
+        then
+          Printf.printf
+            "  SKIP  %s: %s at n=100000 -- not O(1) worst-case at n=1000\n"
+            name
+            plan
+        else ignore (within "still, a hundred times longer" 100_000))
+      plans
+  ;;
+
+  (* ------------------------------------------------------ from every version *)
+
+  (* The shortest futures of the section above, but the FIRST run from every version is
+     the one on the clock: a real-time deque owes nothing to a version's history, and
+     memoisation may not stand in for that. Each run gets versions of its own, so that no
+     run finds what another has forced. *)
+  let short_runs =
+    [ "tail", (fun q -> opaque (D.tail q)), 1, 1
+    ; "init", (fun q -> opaque (D.init q)), 1, 1
+    ; "tail then head", (fun q -> opaque (D.head (D.tail q))), 2, 2
+    ; "init then last", (fun q -> opaque (D.last (D.init q))), 2, 2
+    ; "tail then last", (fun q -> opaque (D.last (D.tail q))), 2, 2
+    ; "init then head", (fun q -> opaque (D.head (D.init q))), 2, 2
+    ; "cons then last", (fun q -> opaque (D.last (D.cons 0 q))), 2, 0
+    ; "snoc then head", (fun q -> opaque (D.head (D.snoc q 0))), 2, 0
+    ; "cons then init", (fun q -> opaque (D.init (D.cons 0 q))), 2, 0
+    ; "snoc then tail", (fun q -> opaque (D.tail (D.snoc q 0))), 2, 0
+    ]
+  ;;
+
+  (* [f] once from every version in [v] whose size allows it, on the clock. *)
+  let dearest_from clock v ~size ~needs f =
+    let dear = ref (0, 0.0) in
+    Array.iteri
+      (fun k q ->
+        if size k >= needs
+        then (
+          let _, c = cost_on clock (fun () -> f q) in
+          if c > snd !dear then dear := k, c))
+      v;
+    !dear
+  ;;
+
+  (* n operations by the four writers, each applied to a version chosen at random among
+     all built so far, each on the clock. *)
+  let random_versions clock n =
+    Random.init 20260926;
+    let v = Array.make (n + 1) D.empty
+    and dear = ref (0, 0.0) in
+    for i = 1 to n do
+      let q = v.(Random.int i) in
+      let op = if D.is_empty q then Random.int 2 else Random.int 4 in
+      let q', c =
+        cost_on clock (fun () ->
+          match op with
+          | 0 -> D.cons i q
+          | 1 -> D.snoc q i
+          | 2 -> D.tail q
+          | _ -> D.init q)
+      in
+      v.(i) <- q';
+      if c > snd !dear then dear := i, c
+    done;
+    opaque v;
+    !dear
+  ;;
+
+  let run_versions name clock ~budget ~unit =
+    let t label = Printf.sprintf "%s: %s" name label in
+    let n = 1_000 in
+    List.iter
+      (fun ({ T.direction; builder; _ } as e) ->
+        List.iter
+          (fun (run, f, ops, needs) ->
+            let within label (k, c) =
+              check
+                (t
+                   (Printf.sprintf
+                      "%s, %s, dearest from #%d at %.0f %s"
+                      run
+                      label
+                      k
+                      c
+                      unit))
+                (c <= float_of_int ops *. budget)
+            in
+            within
+              (Printf.sprintf "first from every version of a drain %s" direction)
+              (dearest_from clock (T.versions n e) ~size:(fun k -> n - k) ~needs f);
+            within
+              (Printf.sprintf "first from every version of a build by %s" builder)
+              (dearest_from clock (T.growth (2 * n) e) ~size:Fun.id ~needs f))
+          short_runs)
+      T.ends;
+    let k, c = random_versions clock 100_000 in
+    check
+      (t
+         (Printf.sprintf
+            "a random trace of 100000 operations, each on a random earlier version, \
+             dearest #%d at %.0f %s"
+            k
+            c
+            unit))
+      (c <= budget)
+  ;;
+end
+
+module Rt2 = RealTimeDeque (C2) (Okasaki.Ch4.Stream)
+module Rt2_counting = RealTimeDeque (C2) (Counting_stream)
+module Rt2_strict = RealTimeDeque (C2) (Strict_stream)
+module Rt3 = RealTimeDeque (C3) (Okasaki.Ch4.Stream)
+module Rt3_counting = RealTimeDeque (C3) (Counting_stream)
+
+(* One value of c: the contract over both streams, then the plans and the versions on both
+   clocks. What a deque costs means nothing until it behaves like one. *)
+module Real_time_section (C : CONSTANT_FACTOR) (Lazy_stream : DEQUE) (Counting : DEQUE) =
+struct
+  module W = Real_time_tests (Lazy_stream)
+  module S = Real_time_tests (Counting)
+
+  let run name =
+    section (Printf.sprintf "RealTimeDeque (8.4.3), c = %d" C.c);
+    let before = !failures in
+    W.T.As_queue.run_contract name;
+    W.T.run_contract name;
+    S.T.As_queue.run_contract (name ^ " over the counting stream");
+    S.T.run_contract (name ^ " over the counting stream");
+    if !failures > before
+    then
+      Printf.printf "  SKIP  %s: cost checks -- the contract above does not hold\n" name
+    else (
+      let budget = real_time_steps C.c in
+      W.run_plans name words ~budget:real_time_words ~unit:"words";
+      S.run_plans (name ^ ", in steps") steps ~budget ~unit:"steps";
+      W.run_versions (name ^ ", persistently") words ~budget:real_time_words ~unit:"words";
+      S.run_versions (name ^ ", persistently, in steps") steps ~budget ~unit:"steps")
+  ;;
+end
+
+module Rt2_section = Real_time_section (C2) (Rt2) (Rt2_counting)
+module Rt3_section = Real_time_section (C3) (Rt3) (Rt3_counting)
+module Rt2_strict_tests = Real_time_tests (Rt2_strict)
+module Bankers2_counting_rt = Real_time_tests (Deque2_counting)
+
+(* The guards, that each clock over these plans sees an operation whose cost grows with
+   the deque: Figure 8.3 over the counting stream has one, the removal that runs its
+   reverse; Figure 8.4 over strict streams, batched rebuilding again, has one in words,
+   the take of half the deque done at once. *)
+let test_real_time_guards () =
+  let n = 1_000 in
+  let plan = "n snocs then n tails, a queue" in
+  let k, c =
+    Bankers2_counting_rt.dearest steps (List.assoc plan Bankers2_counting_rt.plans n)
+  in
+  check
+    (Printf.sprintf
+       "guard, Figure 8.3 over the counting stream: %s, dearest of %d is #%d at %.0f \
+        steps"
+       plan
+       (2 * n)
+       k
+       c)
+    (c >= reverse_floor n);
+  let k, c = Rt2_strict_tests.dearest words (List.assoc plan Rt2_strict_tests.plans n) in
+  check
+    (Printf.sprintf
+       "guard, the same functor over strict streams: %s, dearest of %d is #%d at %.0f \
+        words"
+       plan
+       (2 * n)
+       k
+       c)
+    (c >= reverse_floor n)
+;;
+
+let test_real_time_deque () =
+  Rt2_section.run "RealTimeDeque";
+  test_real_time_guards ();
+  Rt3_section.run "RealTimeDeque, c = 3"
+;;
+
 (* ------------------------------------------- red-black trees (8.1, Exercise 8.1) *)
 
 (* Section 8.1 introduces batched rebuilding, and its second example is the red-black tree
@@ -2778,6 +3138,7 @@ let () =
   run "HoodMelvilleQueue" test_hood_melville;
   run "ConstantTimeConsQueue" test_cons_queue;
   run "BankersDeque" test_bankers_deque;
+  run "RealTimeDeque" test_real_time_deque;
   Printf.printf "\n%d checks, %d failures\n\n" !checks !failures;
   if !failures > 0 then exit 1
 ;;

@@ -344,3 +344,89 @@ module BankersDeque (C : CONSTANT_FACTOR) (S : STREAM) : DEQUE = struct
     | _, (lazy (S.Cons (_, xs))) -> check (lenf, f, lenr - 1, xs)
   ;;
 end
+
+module RealTimeDeque (C : CONSTANT_FACTOR) (S : STREAM) : DEQUE = struct
+  type 'a half = int * 'a S.stream * 'a S.stream
+  type 'a queue = 'a half * 'a half
+
+  let exec1 = function
+    | (lazy (S.Cons (_, s))) -> s
+    | s -> s
+  ;;
+
+  let exec2 s = s |> exec1 |> exec1
+
+  let rec rotate_rev f r acc =
+    match f with
+    | (lazy S.Nil) -> S.(reverse r ++ acc)
+    | (lazy (S.Cons (x, f))) ->
+      let r' = Lazy.force (S.drop C.c r) in
+      lazy (S.Cons (x, rotate_rev f (lazy r') S.(reverse (take C.c r) ++ acc)))
+  ;;
+
+  let rec rotate_drop a n b =
+    if n < C.c
+    then rotate_rev a (S.drop n b) (lazy S.Nil)
+    else (
+      let[@ocaml.warning "-partial-match"] (lazy (S.Cons (x, a'))) = a in
+      let b' = Lazy.force (S.drop C.c b) in
+      lazy (S.Cons (x, rotate_drop a' (n - C.c) (lazy b'))))
+  ;;
+
+  let check (((lenf, f, _), (lenr, r, _)) as q) =
+    if lenf > (C.c * lenr) + 1
+    then (
+      let i = (lenf + lenr) / 2 in
+      let j = lenf + lenr - i in
+      let f' = S.take i f in
+      let r' = rotate_drop r i f in
+      (i, f', f'), (j, r', r'))
+    else if lenr > (C.c * lenf) + 1
+    then (
+      let j = (lenf + lenr) / 2 in
+      let i = lenf + lenr - j in
+      let r' = S.take j r in
+      let f' = rotate_drop f j r in
+      (i, f', f'), (j, r', r'))
+    else q
+  ;;
+
+  let empty = (0, lazy S.Nil, lazy S.Nil), (0, lazy S.Nil, lazy S.Nil)
+  let is_empty ((lenf, _, _), (lenr, _, _)) = lenf + lenr = 0
+
+  let cons x ((lenf, f, sf), (lenr, r, sr)) =
+    check ((lenf + 1, lazy (S.Cons (x, f)), exec1 sf), (lenr, r, exec1 sr))
+  ;;
+
+  let snoc ((lenf, f, sf), (lenr, r, sr)) x =
+    check ((lenf, f, exec1 sf), (lenr + 1, lazy (S.Cons (x, r)), exec1 sr))
+  ;;
+
+  let head ((_, f, _), (_, r, _)) =
+    match f, r with
+    | (lazy S.Nil), (lazy S.Nil) -> raise (Failure "head: empty deque")
+    | (lazy S.Nil), (lazy (S.Cons (x, _))) -> x
+    | (lazy (S.Cons (x, _))), _ -> x
+  ;;
+
+  let last ((_, f, _), (_, r, _)) =
+    match f, r with
+    | (lazy S.Nil), (lazy S.Nil) -> raise (Failure "last: empty deque")
+    | (lazy (S.Cons (x, _))), (lazy S.Nil) -> x
+    | _, (lazy (S.Cons (x, _))) -> x
+  ;;
+
+  let tail ((lenf, f, sf), (lenr, r, sr)) =
+    match f, r with
+    | (lazy S.Nil), (lazy S.Nil) -> raise (Failure "tail: empty deque")
+    | (lazy S.Nil), (lazy (S.Cons _)) -> empty
+    | (lazy (S.Cons (_, xs))), _ -> check ((lenf - 1, xs, exec2 sf), (lenr, r, exec2 sr))
+  ;;
+
+  let init ((lenf, f, sf), (lenr, r, sr)) =
+    match f, r with
+    | (lazy S.Nil), (lazy S.Nil) -> raise (Failure "init: empty deque")
+    | (lazy (S.Cons _)), (lazy S.Nil) -> empty
+    | _, (lazy (S.Cons (_, xs))) -> check ((lenf, f, exec2 sf), (lenr - 1, xs, exec2 sr))
+  ;;
+end
