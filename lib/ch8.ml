@@ -349,12 +349,17 @@ module RealTimeDeque (C : CONSTANT_FACTOR) (S : STREAM) : DEQUE = struct
   type 'a half = int * 'a S.stream * 'a S.stream
   type 'a queue = 'a half * 'a half
 
-  let exec1 = function
+  (* Exercise 8.7 Show that executing one suspension per stream per insertion and two
+     suspensions per stream per deletion is enough to guarantee that both schedules are
+     completely evaluated before the next rotation. *)
+
+  let exec = function
     | (lazy (S.Cons (_, s))) -> s
     | s -> s
   ;;
 
-  let exec2 s = s |> exec1 |> exec1
+  let exec_ins s = s |> exec
+  let exec_del s = s |> exec |> exec
 
   let rec rotate_rev f r acc =
     match f with
@@ -395,11 +400,11 @@ module RealTimeDeque (C : CONSTANT_FACTOR) (S : STREAM) : DEQUE = struct
   let is_empty ((lenf, _, _), (lenr, _, _)) = lenf + lenr = 0
 
   let cons x ((lenf, f, sf), (lenr, r, sr)) =
-    check ((lenf + 1, lazy (S.Cons (x, f)), exec1 sf), (lenr, r, exec1 sr))
+    check ((lenf + 1, lazy (S.Cons (x, f)), exec_ins sf), (lenr, r, exec_ins sr))
   ;;
 
   let snoc ((lenf, f, sf), (lenr, r, sr)) x =
-    check ((lenf, f, exec1 sf), (lenr + 1, lazy (S.Cons (x, r)), exec1 sr))
+    check ((lenf, f, exec_ins sf), (lenr + 1, lazy (S.Cons (x, r)), exec_ins sr))
   ;;
 
   let head ((_, f, _), (_, r, _)) =
@@ -420,13 +425,15 @@ module RealTimeDeque (C : CONSTANT_FACTOR) (S : STREAM) : DEQUE = struct
     match f, r with
     | (lazy S.Nil), (lazy S.Nil) -> raise (Failure "tail: empty deque")
     | (lazy S.Nil), (lazy (S.Cons _)) -> empty
-    | (lazy (S.Cons (_, xs))), _ -> check ((lenf - 1, xs, exec2 sf), (lenr, r, exec2 sr))
+    | (lazy (S.Cons (_, xs))), _ ->
+      check ((lenf - 1, xs, exec_del sf), (lenr, r, exec_del sr))
   ;;
 
   let init ((lenf, f, sf), (lenr, r, sr)) =
     match f, r with
     | (lazy S.Nil), (lazy S.Nil) -> raise (Failure "init: empty deque")
     | (lazy (S.Cons _)), (lazy S.Nil) -> empty
-    | _, (lazy (S.Cons (_, xs))) -> check ((lenf, f, exec2 sf), (lenr - 1, xs, exec2 sr))
+    | _, (lazy (S.Cons (_, xs))) ->
+      check ((lenf, f, exec_del sf), (lenr - 1, xs, exec_del sr))
   ;;
 end
