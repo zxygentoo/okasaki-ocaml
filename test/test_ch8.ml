@@ -1,8 +1,8 @@
 (* Tests for Chapter 8: the Hood-Melville real-time queue of Figure 8.1 (section 8.2.1),
    on the schedule of Exercise 8.2 and with the single diff field of Exercise 8.3. Plain
    OCaml, no test framework, matching the earlier chapters. The cons functor of Exercise
-   8.4 and the red-black set carried into section 8.1 for Exercise 8.1 each have their own
-   preamble further down.
+   8.4, the banker's deque of Figure 8.3 (section 8.4.2) and the red-black set carried
+   into section 8.1 for Exercise 8.1 each have their own preamble further down.
 
    Figure 8.1 makes the promise of Figure 7.1, every operation in O(1) WORST-CASE time and
    still when used persistently, without laziness. Section 8.2 calls the technique global
@@ -75,24 +75,22 @@ let check_eq name ~expect ~actual to_string =
 
 let check_int name ~expect ~actual = check_eq name ~expect ~actual string_of_int
 
-let check_raises name expected f =
+(* A refusal on the empty structure: Failure "<op>: empty queue", or "<op>: empty deque"
+   from the deques of section 8.4, whose messages say what they are. *)
+let check_refuses name op f =
   incr checks;
+  let wanted =
+    Printf.sprintf "Failure \"%s: empty queue\" or \"%s: empty deque\"" op op
+  in
   match f () with
   | _ ->
     incr failures;
-    Printf.printf
-      "  FAIL  %s: expected %s, got no exception\n"
-      name
-      (Printexc.to_string expected)
+    Printf.printf "  FAIL  %s: expected %s, got no exception\n" name wanted
+  | exception Failure msg when msg = op ^ ": empty queue" || msg = op ^ ": empty deque" ->
+    ()
   | exception e ->
-    if e <> expected
-    then (
-      incr failures;
-      Printf.printf
-        "  FAIL  %s: expected %s, got %s\n"
-        name
-        (Printexc.to_string expected)
-        (Printexc.to_string e))
+    incr failures;
+    Printf.printf "  FAIL  %s: expected %s, got %s\n" name wanted (Printexc.to_string e)
 ;;
 
 (* Run [f], and hand its result to [k] if it returned one. An exception is that one
@@ -134,11 +132,13 @@ let drain_with ~is_empty ~head ~tail q =
    measurement. *)
 let words () = int_of_float (Gc.minor_words ())
 
-let cost f =
-  let before = words () in
+let cost_on clock f =
+  let before = clock () in
   let r = Sys.opaque_identity (f ()) in
-  r, float_of_int (words () - before)
+  r, float_of_int (clock () - before)
 ;;
+
+let cost f = cost_on words f
 
 (* The most a single operation may allocate, in words. Every operation rebuilds the queue
    record once on the way in and once on the way out of its steps, 5 words each now that
@@ -179,9 +179,8 @@ module Queue_tests (Q : QUEUE) = struct
     in
     check (t "empty is empty") (Q.is_empty Q.empty);
     check (t "a singleton is not empty") (not (Q.is_empty (Q.snoc Q.empty 1)));
-    check_raises (t "head on empty raises") (Failure "head: empty queue") (fun () ->
-      Q.head Q.empty);
-    check_raises (t "tail on empty raises") (Failure "tail: empty queue") (fun () ->
+    check_refuses (t "head on empty raises") "head" (fun () -> Q.head Q.empty);
+    check_refuses (t "tail on empty raises") "tail" (fun () ->
       ignore (Q.is_empty (Q.tail Q.empty)));
     (* The two places the invariant can be lost. is_empty reads lenf, which during a
        rotation counts the front under construction, while head reads the working copy. A
@@ -203,10 +202,8 @@ module Queue_tests (Q : QUEUE) = struct
       (fun () -> Q.tail (Q.tail (of_list [ 1; 2 ])))
       (fun drained ->
         check (t "a queue drained to nothing is empty") (Q.is_empty drained);
-        check_raises
-          (t "head on a drained queue raises")
-          (Failure "head: empty queue")
-          (fun () -> Q.head drained);
+        check_refuses (t "head on a drained queue raises") "head" (fun () ->
+          Q.head drained);
         eq "a drained queue can be refilled" [ 8; 9 ] (Q.snoc (Q.snoc drained 8) 9));
     (* The sizing argument of p.104, from outside. A rotation begins when |r| = |f| + 1,
        with |f| = m, and "the working copy of the front list will be exhausted after just
@@ -821,9 +818,9 @@ module Cons_tests (Q : QUEUE_WITH_CONS) = struct
         check
           (t "and is empty again after a cons and a tail")
           (Q.is_empty (Q.tail (Q.cons 5 drained))));
-    check_raises
+    check_refuses
       (t "head after the tail of the only cons'ed element raises")
-      (Failure "head: empty queue")
+      "head"
       (fun () -> Q.head (Q.tail (Q.cons 1 Q.empty)));
     (* Randomised, against the obvious model: a list, cons at the front, snoc at the back,
        tail at the front. Checked after every operation, as the queue contract does. *)
@@ -1171,6 +1168,1023 @@ let test_cons_queue () =
     else
       Printf.printf
         "  SKIP  ConstantTimeConsQueue: persistence checks -- not real-time in one thread\n")
+;;
+
+(* ------------------------------------------------------ BankersDeque (8.4.2) *)
+
+(* Section 8.4.2 builds deques the way section 6.3.2 built queues: two streams with their
+   lengths, and laziness doing the rebuilding. For a queue, balance meant everything in
+   the front; for a deque it means the two streams within a constant factor of each other,
+   |f| <= c|r| + 1 and |r| <= c|f| + 1, the "+1" letting a singleton keep its one element
+   in either stream. When an operation breaks the invariant, check restores perfect
+   balance: the long stream is cut to half of the total, by take, and its remainder goes
+   onto the back of the short one, by ++ and the reverse of a drop, all of it suspended,
+   so that the operation itself does O(1) work and the operations that follow pay for the
+   rest a step at a time, under a debit invariant. p.110 concludes from Theorem 8.1 that
+   every operation is O(1) amortised, and by the banker's method that holds when the deque
+   is used persistently.
+
+   So the checks are test_ch6's for the banker's queue, behind test_ch5's contract for
+   deques. A deque goes wrong at its singletons, at the crossing where a drain from one
+   end runs the other side dry, and in the mirror between its two ends, so every check
+   that names an end has a twin. The cost checks are amortised, over whole sequences, and
+   then over traces, several futures of one deque. The branch point just after a
+   rebalance, where every future of one version forces the same suspension, is where lazy
+   rebuilding shows, and the same functor over STRICT streams, the same code with every
+   suspension forced on creation, is the control: it passes every single-thread sequence,
+   since it is batched rebuilding, and fails the branch point, running the reverse again
+   on every repeat. It is also the guard that the clock sees a reverse at all.
+
+   Two clocks again. Words, against the constant above: the dearest sequence averages 37
+   per operation, and a cons or snoc that rebalances allocates 44, its four suspensions
+   and a tuple. And a counting stream, in which two claims are exact: cons and snoc
+   execute no step of any stream, "by inspection, every operation has an O(1) unshared
+   cost", and a removal repeated from one version executes nothing after the first time,
+   which is memoisation. Theorem 8.1's discharge counts, 1 and c + 1 per stream, are not
+   made a step budget: the book leaves the proof, and with it what a step of take or drop
+   is worth, to the reader. c is a functor argument, so the whole suite runs at c = 2, and
+   the contract and the word budgets again at c = 3. *)
+
+(* Figure 4.1's streams with every step counted: one per cell that ++ copies, take keeps,
+   drop passes over or reverse moves. *)
+module Counting_stream = struct
+  type 'a stream_cell =
+    | Nil
+    | Cons of 'a * 'a stream
+
+  and 'a stream = 'a stream_cell lazy_t
+
+  let steps = ref 0
+
+  let rec ( ++ ) s1 s2 =
+    lazy
+      (match s1 with
+       | (lazy Nil) -> Lazy.force s2
+       | (lazy (Cons (x, s))) ->
+         incr steps;
+         Cons (x, s ++ s2))
+  ;;
+
+  let rec take n s =
+    lazy
+      (match n, s with
+       | 0, _ | _, (lazy Nil) -> Nil
+       | _, (lazy (Cons (x, s'))) ->
+         incr steps;
+         Cons (x, take (n - 1) s'))
+  ;;
+
+  let drop n s =
+    let rec aux n (lazy c) =
+      match n, c with
+      | 0, _ -> c
+      | _, Nil -> Nil
+      | _, Cons (_, s') ->
+        incr steps;
+        aux (n - 1) s'
+    in
+    lazy (aux n s)
+  ;;
+
+  let reverse s =
+    let rec aux lhs rhs =
+      match lhs with
+      | (lazy Nil) -> rhs
+      | (lazy (Cons (x, s))) ->
+        incr steps;
+        aux s (Cons (x, lazy rhs))
+    in
+    lazy (aux s Nil)
+  ;;
+end
+
+let steps () = !Counting_stream.steps
+
+(* The same four functions with nothing suspended: each runs on the spot and wraps its
+   result as a stream already forced. Figure 8.3 over these is batched rebuilding. *)
+module Strict_stream = struct
+  type 'a stream_cell =
+    | Nil
+    | Cons of 'a * 'a stream
+
+  and 'a stream = 'a stream_cell lazy_t
+
+  let rec ( ++ ) s1 s2 =
+    match s1 with
+    | (lazy Nil) -> s2
+    | (lazy (Cons (x, s))) -> Lazy.from_val (Cons (x, s ++ s2))
+  ;;
+
+  let rec take n s =
+    match n, s with
+    | 0, _ | _, (lazy Nil) -> Lazy.from_val Nil
+    | _, (lazy (Cons (x, s'))) -> Lazy.from_val (Cons (x, take (n - 1) s'))
+  ;;
+
+  let rec drop n s =
+    match n, s with
+    | 0, _ | _, (lazy Nil) -> s
+    | _, (lazy (Cons (_, s'))) -> drop (n - 1) s'
+  ;;
+
+  let reverse s =
+    let rec aux acc = function
+      | (lazy Nil) -> acc
+      | (lazy (Cons (x, s))) -> aux (Lazy.from_val (Cons (x, acc))) s
+    in
+    aux (Lazy.from_val Nil) s
+  ;;
+end
+
+(* What a run did, for its budget. *)
+type deque_ops =
+  { conses : int
+  ; snocs : int
+  ; tails : int
+  ; inits : int
+  ; heads : int
+  ; lasts : int
+  }
+
+let nothing = { conses = 0; snocs = 0; tails = 0; inits = 0; heads = 0; lasts = 0 }
+let deque_total o = o.conses + o.snocs + o.tails + o.inits + o.heads + o.lasts
+
+let times d o =
+  { conses = d * o.conses
+  ; snocs = d * o.snocs
+  ; tails = d * o.tails
+  ; inits = d * o.inits
+  ; heads = d * o.heads
+  ; lasts = d * o.lasts
+  }
+;;
+
+(* Amortised O(1) in words: CONSTANT per operation, over the whole run. *)
+let deque_budget o = constant *. float_of_int (deque_total o)
+
+let per_operation o c =
+  Printf.sprintf "%.2f words per operation" (c /. float_of_int (deque_total o))
+;;
+
+(* The least a removal that runs a rebalance's reverse costs in a drain of n, in either
+   unit: what the guards ask a clock to see. The reverse moves a fixed fraction of the
+   deque, a sixth at c = 2, and the drop before it walks half; measured, some five words
+   an element and one step. *)
+let reverse_floor n = float_of_int n /. 2.
+
+module Deque_tests (D : DEQUE) = struct
+  module As_queue = Queue_tests (D)
+
+  let opaque x = ignore (Sys.opaque_identity x)
+
+  (* Four ways to build the deque that reads [xs] from front to back. *)
+  let snocs xs = List.fold_left D.snoc D.empty xs
+  let conses xs = List.fold_left (fun q x -> D.cons x q) D.empty (List.rev xs)
+
+  let halves xs =
+    let k = List.length xs / 2 in
+    List.filteri (fun i _ -> i < k) xs, List.filteri (fun i _ -> i >= k) xs
+  ;;
+
+  let builds =
+    [ "snoc", snocs
+    ; "cons", conses
+    ; ( "cons onto snoc"
+      , fun xs ->
+          let left, right = halves xs in
+          List.fold_left (fun q x -> D.cons x q) (snocs right) (List.rev left) )
+    ; ( "snoc onto cons"
+      , fun xs ->
+          let left, right = halves xs in
+          List.fold_left D.snoc (conses left) right )
+    ]
+  ;;
+
+  (* Three ways to take one apart. Each returns the elements front to back. *)
+  let drain_front q = drain_with ~is_empty:D.is_empty ~head:D.head ~tail:D.tail q
+
+  let drain_back q =
+    List.rev (drain_with ~is_empty:D.is_empty ~head:D.last ~tail:D.init q)
+  ;;
+
+  let drain_both_ends q =
+    let rec go n front back from_front q =
+      if D.is_empty q
+      then List.rev_append front back
+      else if n = drain_limit
+      then failwith "drain: no end in sight"
+      else if from_front
+      then go (n + 1) (D.head q :: front) back false (D.tail q)
+      else go (n + 1) front (D.last q :: back) true (D.init q)
+    in
+    go 0 [] [] true q
+  ;;
+
+  let drains =
+    [ "the front", drain_front; "the back", drain_back; "both ends", drain_both_ends ]
+  ;;
+
+  let run_contract name =
+    let t label = Printf.sprintf "%s: %s" name label in
+    check_refuses (t "last on empty raises") "last" (fun () -> D.last D.empty);
+    check_refuses (t "init on empty raises") "init" (fun () ->
+      ignore (D.is_empty (D.init D.empty)));
+    (* One element, by every route: put there from either end, or left behind by a removal
+       from either end of each two-element deque. The invariant lets it sit in either
+       stream, and every reader has to cope with both. *)
+    let routes =
+      [ ("snoc", fun () -> D.snoc D.empty 7)
+      ; ("cons", fun () -> D.cons 7 D.empty)
+      ; ("tail of two snocs", fun () -> D.tail (snocs [ 0; 7 ]))
+      ; ("init of two snocs", fun () -> D.init (snocs [ 7; 0 ]))
+      ; ("tail of two conses", fun () -> D.tail (conses [ 0; 7 ]))
+      ; ("init of two conses", fun () -> D.init (conses [ 7; 0 ]))
+      ; ("tail of a cons onto a snoc", fun () -> D.tail (D.cons 0 (D.snoc D.empty 7)))
+      ; ("init of a snoc onto a cons", fun () -> D.init (D.snoc (D.cons 7 D.empty) 0))
+      ]
+    in
+    (* The first thing a one-element deque owes that [make ()] does not deliver. *)
+    let lacks make =
+      match
+        let q = make () in
+        if D.is_empty q
+        then Some "it claims to be empty"
+        else if D.head q <> 7
+        then Some "head is wrong"
+        else if D.last q <> 7
+        then Some "last is wrong"
+        else if not (D.is_empty (D.tail q))
+        then Some "its tail is not empty"
+        else if not (D.is_empty (D.init q))
+        then Some "its init is not empty"
+        else None
+      with
+      | verdict -> verdict
+      | exception Failure why -> Some ("it raised " ^ why)
+    in
+    let bad =
+      List.filter_map
+        (fun (route, make) -> Option.map (fun why -> route, why) (lacks make))
+        routes
+    in
+    check
+      (t
+         (Printf.sprintf
+            "one element behaves the same by every route to it%s"
+            (match bad with
+             | [] -> ""
+             | (route, why) :: _ -> Printf.sprintf " -- reached by %s, %s" route why)))
+      (bad = []);
+    (* The crossing. Every build, read from every end, at every small size: 0 to 20 covers
+       the empty deque, both one-element shapes, the two- and three-element rebalances
+       where a half is a single element, and odd and even splits after that. *)
+    let bad = ref [] in
+    for n = 20 downto 0 do
+      let xs = upto n in
+      List.iter
+        (fun (build, make) ->
+          List.iter
+            (fun (drain, take) ->
+              match take (make xs) with
+              | got when got = xs -> ()
+              | got -> bad := (build, drain, n, string_of_int_list got) :: !bad
+              | exception Failure why -> bad := (build, drain, n, "raised " ^ why) :: !bad)
+            drains)
+        builds
+    done;
+    check
+      (t
+         (Printf.sprintf
+            "every build reads back correctly from every end, sizes 0 to 20%s"
+            (match !bad with
+             | [] -> ""
+             | (build, drain, n, got) :: _ ->
+               Printf.sprintf " -- built by %s, n=%d, read from %s: %s" build n drain got)))
+      (!bad = []);
+    (* Randomised against a list, with all four writers and all three readers, checked
+       after every operation. *)
+    Random.init 20260926;
+    let bad_empty = ref 0
+    and bad_head = ref 0
+    and bad_last = ref 0
+    and bad_drain = ref 0
+    and raised = ref 0 in
+    for run = 0 to 299 do
+      let q = ref D.empty
+      and model = ref [] in
+      try
+        for i = 0 to 59 do
+          (match Random.int 6 with
+           | 0 | 1 ->
+             q := D.snoc !q i;
+             model := !model @ [ i ]
+           | 2 | 3 ->
+             q := D.cons i !q;
+             model := i :: !model
+           | 4 when !model <> [] ->
+             q := D.tail !q;
+             model := List.tl !model
+           | 5 when !model <> [] ->
+             q := D.init !q;
+             model := List.rev (List.tl (List.rev !model))
+           | _ -> ());
+          if D.is_empty !q <> (!model = []) then incr bad_empty;
+          match !model with
+          | [] -> ()
+          | x :: _ ->
+            if D.head !q <> x then incr bad_head;
+            if D.last !q <> List.hd (List.rev !model) then incr bad_last
+        done;
+        let _, take = List.nth drains (run mod 3) in
+        if take !q <> !model then incr bad_drain
+      with
+      | Failure _ -> incr raised
+    done;
+    check_int
+      (t "no operation raises on a non-empty deque, 300 random runs")
+      ~expect:0
+      ~actual:!raised;
+    check_int (t "is_empty agrees with a list model") ~expect:0 ~actual:!bad_empty;
+    check_int (t "head agrees with a list model") ~expect:0 ~actual:!bad_head;
+    check_int (t "last agrees with a list model") ~expect:0 ~actual:!bad_last;
+    check_int (t "every drain agrees with a list model") ~expect:0 ~actual:!bad_drain;
+    (* Persistence, with all four writers let loose on every version. *)
+    surviving
+      (t "every earlier version can still be used")
+      (fun () ->
+        let versions = List.init 20 (fun i -> snocs (upto i)) in
+        List.iter
+          (fun v ->
+            ignore (D.snoc v 99);
+            ignore (D.cons 99 v);
+            if not (D.is_empty v)
+            then (
+              ignore (D.tail v);
+              ignore (D.init v)))
+          versions;
+        List.mapi (fun i v -> if drain_both_ends v = upto i then 0 else 1) versions
+        |> List.fold_left ( + ) 0)
+      (fun stale ->
+        check_int (t "every earlier version stays correct") ~expect:0 ~actual:stale)
+  ;;
+
+  (* ---------------------------------------- sequences: one thread, from empty *)
+
+  (* Each driver runs its sequence and reports what it did, keeping its deque alive to the
+     end so that nothing it allocated can be optimised away. They differ in where the
+     rebalances fall and which way the elements cross. *)
+  let cons_then_init n () =
+    let q = ref D.empty in
+    for i = 1 to n do
+      q := D.cons i !q
+    done;
+    for _ = 1 to n do
+      q := D.init !q
+    done;
+    opaque !q;
+    { nothing with conses = n; inits = n }
+  ;;
+
+  let cons_then_tail n () =
+    let q = ref D.empty in
+    for i = 1 to n do
+      q := D.cons i !q
+    done;
+    for _ = 1 to n do
+      q := D.tail !q
+    done;
+    opaque !q;
+    { nothing with conses = n; tails = n }
+  ;;
+
+  let snoc_then_tail n () =
+    let q = ref D.empty in
+    for i = 1 to n do
+      q := D.snoc !q i
+    done;
+    for _ = 1 to n do
+      q := D.tail !q
+    done;
+    opaque !q;
+    { nothing with snocs = n; tails = n }
+  ;;
+
+  let snoc_then_both_ends n () =
+    let q = ref D.empty in
+    for i = 1 to n do
+      q := D.snoc !q i
+    done;
+    for i = 1 to n do
+      q := if i land 1 = 0 then D.tail !q else D.init !q
+    done;
+    opaque !q;
+    { nothing with snocs = n; tails = n / 2; inits = n - (n / 2) }
+  ;;
+
+  (* The smallest rebalance there is, over and over: a second element arrives on the side
+     that already holds the first, and leaves again from the other. *)
+  let smallest_rebalance n () =
+    let q = ref (D.cons 0 D.empty) in
+    for i = 1 to n do
+      q := D.cons i !q;
+      q := D.init !q
+    done;
+    opaque !q;
+    { nothing with conses = n + 1; inits = n }
+  ;;
+
+  let alternate n () =
+    let q = ref D.empty in
+    for i = 1 to n do
+      q := D.snoc !q i;
+      q := D.tail !q
+    done;
+    opaque !q;
+    { nothing with snocs = n; tails = n }
+  ;;
+
+  let cons_snoc_init n () =
+    let q = ref D.empty in
+    for i = 1 to n do
+      q := D.cons i !q;
+      q := D.snoc !q i;
+      q := D.init !q
+    done;
+    opaque !q;
+    { nothing with conses = n; snocs = n; inits = n }
+  ;;
+
+  (* Here a head or a last can do work: it opens the front of whatever ++ the rebalances
+     have stacked on its stream. *)
+  let peeks n () =
+    let q = ref D.empty
+    and sum = ref 0 in
+    for i = 1 to n do
+      q := D.cons i !q;
+      sum := !sum + D.head !q + D.last !q;
+      q := D.snoc !q i;
+      sum := !sum + D.head !q + D.last !q
+    done;
+    opaque !q;
+    opaque !sum;
+    { nothing with conses = n; snocs = n; heads = 2 * n; lasts = 2 * n }
+  ;;
+
+  (* The plan is drawn, and counted, before anything is measured. *)
+  let random_mix n =
+    Random.init 20260926;
+    let size = ref 0 in
+    let plan =
+      Array.init n (fun _ ->
+        let op = if !size = 0 then Random.int 2 else Random.int 6 in
+        (match op with
+         | 0 | 1 -> incr size
+         | 2 | 3 -> decr size
+         | _ -> ());
+        op)
+    in
+    let count k =
+      Array.fold_left (fun acc op -> if op = k then acc + 1 else acc) 0 plan
+    in
+    let ops =
+      { conses = count 0
+      ; snocs = count 1
+      ; tails = count 2
+      ; inits = count 3
+      ; heads = count 4
+      ; lasts = count 5
+      }
+    in
+    fun () ->
+      let q = ref D.empty
+      and sum = ref 0 in
+      Array.iteri
+        (fun i op ->
+          match op with
+          | 0 -> q := D.cons i !q
+          | 1 -> q := D.snoc !q i
+          | 2 -> q := D.tail !q
+          | 3 -> q := D.init !q
+          | 4 -> sum := !sum + D.head !q
+          | _ -> sum := !sum + D.last !q)
+        plan;
+      opaque !q;
+      opaque !sum;
+      ops
+  ;;
+
+  let sequences =
+    [ "n conses then n inits", cons_then_init
+    ; "n conses then n tails, a stack", cons_then_tail
+    ; "n snocs then n tails, a queue", snoc_then_tail
+    ; "n snocs, then tail and init alternating", snoc_then_both_ends
+    ; "cons and init alternating on one element", smallest_rebalance
+    ; "snoc and tail alternating", alternate
+    ; "cons, snoc and init, over and over", cons_snoc_init
+    ; "a head and a last after every cons and every snoc", peeks
+    ; "a random mix of all six operations", random_mix
+    ]
+  ;;
+
+  (* Amortised bounds, asserted the only way an amortised bound can be: over whole
+     sequences. True if every sequence stayed within the budget. The large size is guarded
+     on the small one, as everywhere in these files. *)
+  let run_sequences name =
+    let t label = Printf.sprintf "%s: %s" name label in
+    let ok = ref true in
+    List.iter
+      (fun (sequence, driver) ->
+        let within label n =
+          let ops, c = cost (driver n) in
+          let fine = c <= deque_budget ops in
+          check
+            (t
+               (Printf.sprintf
+                  "%s, %s: %s at n=%d"
+                  sequence
+                  label
+                  (per_operation ops c)
+                  n))
+            fine;
+          fine
+        in
+        if not (within "amortised O(1)" 1_000)
+        then (
+          ok := false;
+          Printf.printf
+            "  SKIP  %s: %s at n=100000 -- it is not amortised O(1) at n=1000\n"
+            name
+            sequence)
+        else if not (within "still amortised O(1), a hundred times longer" 100_000)
+        then ok := false)
+      sequences;
+    !ok
+  ;;
+
+  (* -------------------------------------- traces: several futures of one deque *)
+
+  (* Each end: how to build the deque whose drain from that end has to carry elements
+     across, the insertion that builds it, the removal, and what one removal is worth in
+     the budget. *)
+  type direction =
+    { direction : string
+    ; builder : string
+    ; build : int list -> int D.queue
+    ; insert : int D.queue -> int -> int D.queue
+    ; remove : int D.queue -> int D.queue
+    ; per : deque_ops
+    }
+
+  let ends =
+    [ { direction = "from the front"
+      ; builder = "snoc"
+      ; build = snocs
+      ; insert = D.snoc
+      ; remove = D.tail
+      ; per = { nothing with tails = 1 }
+      }
+    ; { direction = "from the back"
+      ; builder = "cons"
+      ; build = conses
+      ; insert = (fun q x -> D.cons x q)
+      ; remove = D.init
+      ; per = { nothing with inits = 1 }
+      }
+    ]
+  ;;
+
+  (* A drain of n, one removal at a time, each on the clock. The index and cost of the
+     dearest: the removal that runs a reverse. *)
+  let dearest_removal clock ~build ~remove n =
+    let q = ref (build (upto n))
+    and dear = ref (0, 0.0) in
+    for i = 1 to n do
+      let q', c = cost_on clock (fun () -> remove !q) in
+      if c > snd !dear then dear := i, c;
+      q := q'
+    done;
+    !dear
+  ;;
+
+  (* A fresh deque brought to the version whose removal is the dear one, without taking
+     it. *)
+  let version_before ~build ~remove ~n ~k =
+    let q = ref (build (upto n)) in
+    for _ = 1 to k - 1 do
+      q := remove !q
+    done;
+    !q
+  ;;
+
+  (* The whole drain, d times over from the same starting deque. *)
+  let repeated_drain ~build ~remove ~per ~n ~d =
+    let q0 = build (upto n) in
+    fun () ->
+      for _ = 1 to d do
+        let q = ref q0 in
+        for _ = 1 to n do
+          q := remove !q
+        done;
+        opaque !q
+      done;
+      times (d * n) per
+  ;;
+
+  (* Every version of a full drain from one end, kept, and so with everything on the
+     drain's path already forced. *)
+  let versions n e =
+    let v = Array.make (n + 1) D.empty in
+    v.(0) <- e.build (upto n);
+    for i = 1 to n do
+      v.(i) <- e.remove v.(i - 1)
+    done;
+    v
+  ;;
+
+  (* Every version of a build by insertions at the far end. *)
+  let growth n e =
+    let v = Array.make (n + 1) D.empty in
+    for i = 1 to n do
+      v.(i) <- e.insert v.(i - 1) i
+    done;
+    v
+  ;;
+
+  (* The shortest futures there are, d times over from every version in [v] whose size
+     ([size k] for the k-th) allows them: an operation, and then the one that would force
+     what it suspended, at either end. One run from each version goes unmeasured first: a
+     version may have put off work its own history is due to pay for, and memoisation then
+     shares it with every run after. For each run, the version it was dearest from and
+     what it cost there. *)
+  let short_runs v ~size ~d =
+    let runs =
+      [ "tail", (fun q -> opaque (D.tail q)), { nothing with tails = 1 }, 1
+      ; "init", (fun q -> opaque (D.init q)), { nothing with inits = 1 }, 1
+      ; ( "tail then head"
+        , (fun q -> opaque (D.head (D.tail q)))
+        , { nothing with tails = 1; heads = 1 }
+        , 2 )
+      ; ( "init then last"
+        , (fun q -> opaque (D.last (D.init q)))
+        , { nothing with inits = 1; lasts = 1 }
+        , 2 )
+      ; ( "tail then last"
+        , (fun q -> opaque (D.last (D.tail q)))
+        , { nothing with tails = 1; lasts = 1 }
+        , 2 )
+      ; ( "init then head"
+        , (fun q -> opaque (D.head (D.init q)))
+        , { nothing with inits = 1; heads = 1 }
+        , 2 )
+      ; ( "cons then last"
+        , (fun q -> opaque (D.last (D.cons 0 q)))
+        , { nothing with conses = 1; lasts = 1 }
+        , 0 )
+      ; ( "snoc then head"
+        , (fun q -> opaque (D.head (D.snoc q 0)))
+        , { nothing with snocs = 1; heads = 1 }
+        , 0 )
+      ; ( "cons then init"
+        , (fun q -> opaque (D.init (D.cons 0 q)))
+        , { nothing with conses = 1; inits = 1 }
+        , 0 )
+      ; ( "snoc then tail"
+        , (fun q -> opaque (D.tail (D.snoc q 0)))
+        , { nothing with snocs = 1; tails = 1 }
+        , 0 )
+      ]
+    in
+    List.map
+      (fun (run, f, per, needs) ->
+        let worst = ref (0, 0.0) in
+        Array.iteri
+          (fun k q ->
+            if size k >= needs
+            then (
+              f q;
+              let _, c =
+                cost (fun () ->
+                  for _ = 1 to d do
+                    f q
+                  done)
+              in
+              if c > snd !worst then worst := k, c))
+          v;
+        run, fst !worst, times d per, snd !worst)
+      runs
+  ;;
+
+  (* n operations by the four writers, each applied to a version chosen at random among
+     all built so far. *)
+  let random_trace n =
+    Random.init 20260926;
+    let from = Array.init n (fun i -> Random.int (i + 1)) in
+    let draw = Array.init n (fun _ -> Random.int 4) in
+    let v = Array.make (n + 1) D.empty in
+    fun () ->
+      let conses = ref 0
+      and snocs = ref 0
+      and tails = ref 0
+      and inits = ref 0 in
+      for i = 1 to n do
+        let q = v.(from.(i - 1)) in
+        let op = if D.is_empty q then draw.(i - 1) land 1 else draw.(i - 1) in
+        v.(i)
+        <- (match op with
+            | 0 ->
+              incr conses;
+              D.cons i q
+            | 1 ->
+              incr snocs;
+              D.snoc q i
+            | 2 ->
+              incr tails;
+              D.tail q
+            | _ ->
+              incr inits;
+              D.init q)
+      done;
+      opaque v;
+      { nothing with conses = !conses; snocs = !snocs; tails = !tails; inits = !inits }
+  ;;
+
+  let run_traces name =
+    let t label = Printf.sprintf "%s: %s" name label in
+    let within label (ops, c) =
+      check
+        (t (Printf.sprintf "%s: %s" label (per_operation ops c)))
+        (c <= deque_budget ops)
+    in
+    let n = 1_000 in
+    List.iter
+      (fun ({ direction; builder; build; remove; per; _ } as e) ->
+        (* The guard, at each end: a drain of a deque built from the other end has one
+           removal that runs a reverse, and the clock sees it. *)
+        let k, dear = dearest_removal words ~build ~remove n in
+        check
+          (t
+             (Printf.sprintf
+                "in a drain of %d %s the dearest removal is #%d, at %.0f words"
+                n
+                direction
+                k
+                dear))
+          (dear >= reverse_floor n);
+        (* p.65's branch point just after the rebalance: the version whose removal is the
+           dear one, taken d times. Every future forces the same suspension, so the
+           reverse runs once. *)
+        let d = 10_000 in
+        let v = version_before ~build ~remove ~n ~k in
+        let _, first = cost (fun () -> remove v) in
+        let _, rest =
+          cost (fun () ->
+            for _ = 2 to d do
+              opaque (remove v)
+            done)
+        in
+        check
+          (t
+             (Printf.sprintf
+                "the first of %d removals of one version %s runs the reverse, %.0f words"
+                d
+                direction
+                first))
+          (first >= reverse_floor n);
+        within
+          (Printf.sprintf "and the other %d find it memoised" (d - 1))
+          (times (d - 1) per, rest);
+        (* p.65's branch point just before the rebalance: the whole drain, d times over.
+           These are different suspensions, so memoisation does not help, and the budget
+           holds anyway, because the operations were repeated along with the work. *)
+        within
+          (Printf.sprintf "the whole drain %s repeated 10 times from one deque" direction)
+          (cost (repeated_drain ~build ~remove ~per ~n ~d:10));
+        (* Every branch point of a drain from this end, with the shortest futures at both
+           ends. *)
+        List.iter
+          (fun (run, k, ops, c) ->
+            within
+              (Printf.sprintf
+                 "%s, 50 times over from each version of a drain %s, dearest from #%d"
+                 run
+                 direction
+                 k)
+              (ops, c))
+          (short_runs (versions n e) ~size:(fun k -> n - k) ~d:50);
+        (* And every branch point of the build that drain empties: a drain only ever
+           shrinks, so its versions have all seen a rebalance some time ago; a build's are
+           the ones on the brink of the next, and the ones just past it. *)
+        List.iter
+          (fun (run, k, ops, c) ->
+            within
+              (Printf.sprintf
+                 "%s, 20 times over from each version of a build by %s, dearest from #%d"
+                 run
+                 builder
+                 k)
+              (ops, c))
+          (short_runs (growth (2 * n) e) ~size:Fun.id ~d:20))
+      ends;
+    within
+      "a random trace of 100000 operations, each on a random earlier version"
+      (cost (random_trace 100_000))
+  ;;
+end
+
+module C2 = struct
+  let c = 2
+end
+
+module C3 = struct
+  let c = 3
+end
+
+module Deque2 = BankersDeque (C2) (Okasaki.Ch4.Stream)
+module Deque2_counting = BankersDeque (C2) (Counting_stream)
+module Deque2_strict = BankersDeque (C2) (Strict_stream)
+module Deque3 = BankersDeque (C3) (Okasaki.Ch4.Stream)
+module Deque2_tests = Deque_tests (Deque2)
+module Deque2_counting_tests = Deque_tests (Deque2_counting)
+module Deque2_strict_tests = Deque_tests (Deque2_strict)
+module Deque3_tests = Deque_tests (Deque3)
+
+(* p.110: "by inspection, every operation has an O(1) unshared cost". For cons and snoc
+   that is their whole cost: check compares two lengths and, at a rebalance, suspends a
+   take, a drop, a reverse and a ++, and forces nothing. So both are O(1) worst-case in
+   words, and execute no step of any stream, at any size and however the two streams have
+   been growing. *)
+module Unshared (D : DEQUE) = struct
+  let dearest clock insert n =
+    let q = ref D.empty
+    and worst = ref 0.0 in
+    for i = 1 to n do
+      let q', c = cost_on clock (fun () -> insert !q i) in
+      q := q';
+      worst := Float.max !worst c
+    done;
+    !worst
+  ;;
+
+  let run clock n =
+    [ "snoc", dearest clock (fun q i -> D.snoc q i) n
+    ; "cons", dearest clock (fun q i -> D.cons i q) n
+    ; ( "cons and snoc in turn"
+      , dearest clock (fun q i -> if i land 1 = 0 then D.cons i q else D.snoc q i) n )
+    ]
+  ;;
+end
+
+module Unshared_words = Unshared (Deque2)
+module Unshared_steps = Unshared (Deque2_counting)
+
+let test_deque_unshared () =
+  let n = 20_000 in
+  List.iter
+    (fun (what, w) ->
+      check
+        (Printf.sprintf
+           "BankersDeque: %s is O(1) worst-case, dearest of %d consecutive %.0f words"
+           what
+           n
+           w)
+        (w <= constant))
+    (Unshared_words.run words n);
+  List.iter
+    (fun (what, s) ->
+      check
+        (Printf.sprintf
+           "BankersDeque, in steps: %s executes no step, dearest of %d consecutive %.0f"
+           what
+           n
+           s)
+        (s = 0.0))
+    (Unshared_steps.run steps n)
+;;
+
+(* The branch point after a rebalance, to the step: the first removal from the version
+   executes the rebalance, and the same removal repeated executes nothing. *)
+let test_deque_steps () =
+  let module T = Deque2_counting_tests in
+  let t label = Printf.sprintf "BankersDeque, in steps: %s" label in
+  let n = 1_000
+  and d = 10_000 in
+  List.iter
+    (fun { T.direction; build; remove; _ } ->
+      let k, dear = T.dearest_removal steps ~build ~remove n in
+      check
+        (t
+           (Printf.sprintf
+              "in a drain of %d %s the dearest removal is #%d, at %.0f steps"
+              n
+              direction
+              k
+              dear))
+        (dear >= reverse_floor n);
+      let v = T.version_before ~build ~remove ~n ~k in
+      let _, first = cost_on steps (fun () -> remove v) in
+      let _, rest =
+        cost_on steps (fun () ->
+          for _ = 2 to d do
+            T.opaque (remove v)
+          done)
+      in
+      check
+        (t
+           (Printf.sprintf
+              "the first of %d removals of one version %s executes the rebalance, %.0f \
+               steps"
+              d
+              direction
+              first))
+        (first >= reverse_floor n);
+      check
+        (t
+           (Printf.sprintf
+              "and the other %d removals %s execute no step at all (%.0f)"
+              (d - 1)
+              direction
+              rest))
+        (rest = 0.0))
+    T.ends
+;;
+
+(* The control: Figure 8.3 over strict streams. Batched rebuilding passes every
+   single-thread sequence, which is why the sequences alone cannot tell the two apart, and
+   its dearest removal is the reverse the clock has to see. At the branch point every
+   repeat runs the reverse again: there is no suspension to have remembered it. *)
+let test_deque_control () =
+  let module T = Deque2_strict_tests in
+  let name = "guard, the same functor over strict streams" in
+  let t label = Printf.sprintf "%s: %s" name label in
+  ignore (T.run_sequences name);
+  let n = 1_000
+  and d = 100 in
+  let { T.build; remove; _ } = List.hd T.ends in
+  let k, dear = T.dearest_removal words ~build ~remove n in
+  check
+    (t
+       (Printf.sprintf
+          "in a drain of %d from the front the dearest removal is #%d, at %.0f words"
+          n
+          k
+          dear))
+    (dear >= reverse_floor n);
+  let v = T.version_before ~build ~remove ~n ~k in
+  let _, first = cost (fun () -> remove v) in
+  let _, rest =
+    cost (fun () ->
+      for _ = 2 to d do
+        T.opaque (remove v)
+      done)
+  in
+  check
+    (t
+       (Printf.sprintf
+          "the first of %d removals of that version runs the reverse, %.0f words, and so \
+           does every one of the other %d, %.0f words each"
+          d
+          first
+          (d - 1)
+          (rest /. float_of_int (d - 1))))
+    (first >= reverse_floor n && rest >= float_of_int (d - 1) *. reverse_floor n)
+;;
+
+(* What a deque costs means nothing until it behaves like one, and one that raises half
+   way through a sequence would take the rest of the section down with it. *)
+let test_bankers_deque () =
+  section "BankersDeque (8.4.2), c = 2";
+  let before = !failures in
+  Deque2_tests.As_queue.run_contract "BankersDeque";
+  Deque2_tests.run_contract "BankersDeque";
+  Deque2_counting_tests.As_queue.run_contract "BankersDeque over the counting stream";
+  Deque2_counting_tests.run_contract "BankersDeque over the counting stream";
+  if !failures > before
+  then
+    Printf.printf
+      "  SKIP  BankersDeque: cost checks -- the contract above does not hold\n"
+  else if Deque2_tests.run_sequences "BankersDeque"
+  then (
+    test_deque_unshared ();
+    test_deque_control ();
+    Deque2_tests.run_traces "BankersDeque, persistently";
+    test_deque_steps ())
+  else
+    Printf.printf
+      "  SKIP  BankersDeque: worst-case and persistence checks -- not amortised O(1) in \
+       one thread\n";
+  section "BankersDeque (8.4.2), c = 3";
+  let before = !failures in
+  Deque3_tests.As_queue.run_contract "BankersDeque, c = 3";
+  Deque3_tests.run_contract "BankersDeque, c = 3";
+  if !failures > before
+  then
+    Printf.printf
+      "  SKIP  BankersDeque, c = 3: cost checks -- the contract above does not hold\n"
+  else if Deque3_tests.run_sequences "BankersDeque, c = 3"
+  then Deque3_tests.run_traces "BankersDeque, c = 3, persistently"
+  else
+    Printf.printf
+      "  SKIP  BankersDeque, c = 3: persistence checks -- not amortised O(1) in one thread\n"
 ;;
 
 (* ------------------------------------------- red-black trees (8.1, Exercise 8.1) *)
@@ -1763,6 +2777,7 @@ let () =
   run "RedBlackSet" test_redblack;
   run "HoodMelvilleQueue" test_hood_melville;
   run "ConstantTimeConsQueue" test_cons_queue;
+  run "BankersDeque" test_bankers_deque;
   Printf.printf "\n%d checks, %d failures\n\n" !checks !failures;
   if !failures > 0 then exit 1
 ;;

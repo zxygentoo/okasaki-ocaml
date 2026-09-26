@@ -272,3 +272,75 @@ module ConstantTimeConsQueue (Q : QUEUE) : QUEUE_WITH_CONS = struct
     | _ :: xs' -> xs', q
   ;;
 end
+
+module type STREAM = sig
+  type 'a stream_cell =
+    | Nil
+    | Cons of 'a * 'a stream
+
+  and 'a stream = 'a stream_cell lazy_t
+
+  val ( ++ ) : 'a stream -> 'a stream -> 'a stream
+  val take : int -> 'a stream -> 'a stream
+  val drop : int -> 'a stream -> 'a stream
+  val reverse : 'a stream -> 'a stream
+end
+
+module type CONSTANT_FACTOR = sig
+  val c : int
+end
+
+module BankersDeque (C : CONSTANT_FACTOR) (S : STREAM) : DEQUE = struct
+  type 'a queue = int * 'a S.stream * int * 'a S.stream
+
+  let check ((lenf, f, lenr, r) as q) =
+    if lenf > (C.c * lenr) + 1
+    then (
+      let i = (lenf + lenr) / 2 in
+      let j = lenf + lenr - i in
+      let f' = S.take i f in
+      let r' = S.(r ++ reverse (drop i f)) in
+      i, f', j, r')
+    else if lenr > (C.c * lenf) + 1
+    then (
+      let j = (lenf + lenr) / 2 in
+      let i = lenf + lenr - j in
+      let r' = S.take j r in
+      let f' = S.(f ++ reverse (drop j r)) in
+      i, f', j, r')
+    else q
+  ;;
+
+  let empty = 0, lazy S.Nil, 0, lazy S.Nil
+  let is_empty (lenf, _, lenr, _) = lenf + lenr = 0
+  let snoc (lenf, f, lenr, r) x = check (lenf, f, lenr + 1, lazy (S.Cons (x, r)))
+  let cons x (lenf, f, lenr, r) = check (lenf + 1, lazy (S.Cons (x, f)), lenr, r)
+
+  let head (_, f, _, r) =
+    match f, r with
+    | (lazy S.Nil), (lazy S.Nil) -> raise (Failure "head: empty deque")
+    | (lazy S.Nil), (lazy (S.Cons (x, _))) -> x
+    | (lazy (S.Cons (x, _))), _ -> x
+  ;;
+
+  let last (_, f, _, r) =
+    match f, r with
+    | (lazy S.Nil), (lazy S.Nil) -> raise (Failure "last: empty deque")
+    | (lazy (S.Cons (x, _))), (lazy S.Nil) -> x
+    | _, (lazy (S.Cons (x, _))) -> x
+  ;;
+
+  let tail (lenf, f, lenr, r) =
+    match f, r with
+    | (lazy S.Nil), (lazy S.Nil) -> raise (Failure "tail: empty deque")
+    | (lazy S.Nil), (lazy (S.Cons _)) -> empty
+    | (lazy (S.Cons (_, xs))), _ -> check (lenf - 1, xs, lenr, r)
+  ;;
+
+  let init (lenf, f, lenr, r) =
+    match f, r with
+    | (lazy S.Nil), (lazy S.Nil) -> raise (Failure "init: empty deque")
+    | (lazy (S.Cons _)), (lazy S.Nil) -> empty
+    | _, (lazy (S.Cons (_, xs))) -> check (lenf, f, lenr - 1, xs)
+  ;;
+end
