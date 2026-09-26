@@ -1,7 +1,8 @@
 (* Tests for Chapter 8: the Hood-Melville real-time queue of Figure 8.1 (section 8.2.1),
    on the schedule of Exercise 8.2 and with the single diff field of Exercise 8.3. Plain
-   OCaml, no test framework, matching the earlier chapters. The red-black set carried into
-   section 8.1 for Exercise 8.1 has its own preamble further down.
+   OCaml, no test framework, matching the earlier chapters. The cons functor of Exercise
+   8.4 and the red-black set carried into section 8.1 for Exercise 8.1 each have their own
+   preamble further down.
 
    Figure 8.1 makes the promise of Figure 7.1, every operation in O(1) WORST-CASE time and
    still when used persistently, without laziness. Section 8.2 calls the technique global
@@ -109,6 +110,22 @@ let section name = Printf.printf "%s\n" name
 let string_of_int_list l = "[" ^ String.concat ";" (List.map string_of_int l) ^ "]"
 let upto n = List.init n Fun.id
 
+(* head/tail to exhaustion. A queue whose tail does not advance would never come to an
+   end, and neither would the list this builds, so a drain past any size used here gives
+   up and raises: the checks around it report that as the failure it is. *)
+let drain_limit = 100_000
+
+let drain_with ~is_empty ~head ~tail q =
+  let rec go n acc q =
+    if is_empty q
+    then List.rev acc
+    else if n = drain_limit
+    then failwith "drain: no end in sight"
+    else go (n + 1) (head q :: acc) (tail q)
+  in
+  go 0 [] q
+;;
+
 (* ---------------------------------------------------------------- the clock *)
 
 (* Words allocated by [f], read before and after. Sys.opaque_identity stops the optimiser
@@ -142,14 +159,9 @@ let constant = 96.0
 module Queue_tests (Q : QUEUE) = struct
   let of_list xs = List.fold_left Q.snoc Q.empty xs
 
-  (* head/tail to exhaustion. That this returns the elements in the order they were
-     snoc'ed is the whole behavioural specification of a queue. *)
-  let drain q =
-    let rec go acc q =
-      if Q.is_empty q then List.rev acc else go (Q.head q :: acc) (Q.tail q)
-    in
-    go [] q
-  ;;
+  (* That this returns the elements in the order they were snoc'ed is the whole
+     behavioural specification of a queue. *)
+  let drain q = drain_with ~is_empty:Q.is_empty ~head:Q.head ~tail:Q.tail q
 
   let run_contract name =
     let t label = Printf.sprintf "%s: %s" name label in
@@ -636,6 +648,529 @@ let test_hood_melville () =
     else
       Printf.printf
         "  SKIP  HoodMelvilleQueue: persistence checks -- not real-time in one thread\n")
+;;
+
+(* ------------------------------------- ConstantTimeConsQueue (Exercise 8.4) *)
+
+(* Section 8.4 turns to deques, and 8.4.1 remarks that giving a queue cons, insertion at
+   the front, is trivial for the banker's and real-time queues of Chapters 6 and 7: the
+   element goes onto the front stream. The Hood-Melville queue has no such place, its
+   front is a working copy with a rotation state under construction beside it, so Exercise
+   8.4 asks for a functor instead. Any queue Q is paired with a plain list: cons pushes
+   onto the list, head and tail serve from the list "whenever it is non-empty", and snoc
+   goes through to Q. The pair is an output-restricted deque, and the one requirement the
+   exercise adds to the queue contract is that cons is constant-time.
+
+   Two things follow, and both are checked. The pair is still a queue, so the contract and
+   the cost probes above run over it unchanged, over the Hood-Melville queue, whose
+   worst-case bounds the wrapper must not spoil: it adds one pair to every operation. And
+   cons is constant for ANY Q exactly when it never calls into Q at all, which is what the
+   exercise's "insert elements into the new list" comes to. That is checked twice: by
+   counting the calls the wrapper makes into a queue it was given, and on the clock over
+   the batched queue of Figure 5.2, whose own tail is linear. The second is also the
+   guard: the same run shows the clock still sees that reverse through the wrapper, so the
+   wrapper's cost checks do not pass by measuring nothing. *)
+
+(* The calls a wrapper makes into the queue it was given. *)
+type calls =
+  { mutable is_empty : int
+  ; mutable snoc : int
+  ; mutable head : int
+  ; mutable tail : int
+  }
+
+let inner = { is_empty = 0; snoc = 0; head = 0; tail = 0 }
+
+let reset_inner () =
+  inner.is_empty <- 0;
+  inner.snoc <- 0;
+  inner.head <- 0;
+  inner.tail <- 0
+;;
+
+let inner_calls () = inner.is_empty + inner.snoc + inner.head + inner.tail
+
+(* The Hood-Melville queue with its calls counted. *)
+module Counted : QUEUE = struct
+  type 'a queue = 'a HoodMelvilleQueue.queue
+
+  let empty = HoodMelvilleQueue.empty
+
+  let is_empty q =
+    inner.is_empty <- inner.is_empty + 1;
+    HoodMelvilleQueue.is_empty q
+  ;;
+
+  let snoc q x =
+    inner.snoc <- inner.snoc + 1;
+    HoodMelvilleQueue.snoc q x
+  ;;
+
+  let head q =
+    inner.head <- inner.head + 1;
+    HoodMelvilleQueue.head q
+  ;;
+
+  let tail q =
+    inner.tail <- inner.tail + 1;
+    HoodMelvilleQueue.tail q
+  ;;
+end
+
+module Delegation = ConstantTimeConsQueue (Counted)
+
+(* The division of labour the exercise states, read off the counters. *)
+let test_delegation () =
+  let module Q = Delegation in
+  let t label = Printf.sprintf "ConstantTimeConsQueue: %s" label in
+  let five = List.fold_left Q.snoc Q.empty (upto 5) in
+  reset_inner ();
+  let three = Q.cons 2 (Q.cons 1 (Q.cons 0 five)) in
+  ignore (Sys.opaque_identity (Q.cons 0 Q.empty));
+  check_int
+    (t
+       "cons makes no call into the inner queue: 3 conses onto 5 snocs, and one onto \
+        empty")
+    ~expect:0
+    ~actual:(inner_calls ());
+  reset_inner ();
+  let q = ref three in
+  for _ = 1 to 3 do
+    ignore (Sys.opaque_identity (Q.head !q));
+    q := Q.tail !q
+  done;
+  check_int
+    (t
+       "head and tail serve from the list while it has elements: 3 heads and 3 tails \
+        after 3 conses remove nothing from the inner queue")
+    ~expect:0
+    ~actual:(inner.head + inner.tail);
+  reset_inner ();
+  ignore (Sys.opaque_identity (Q.head !q));
+  q := Q.tail !q;
+  check_int
+    (t
+       "and from the inner queue once the list is used up: the 4th head is one inner head")
+    ~expect:1
+    ~actual:inner.head;
+  check_int
+    (t
+       "and from the inner queue once the list is used up: the 4th tail is one inner tail")
+    ~expect:1
+    ~actual:inner.tail;
+  ignore (Sys.opaque_identity !q)
+;;
+
+module Cons_tests (Q : QUEUE_WITH_CONS) = struct
+  let of_list xs = List.fold_left Q.snoc Q.empty xs
+  let drain q = drain_with ~is_empty:Q.is_empty ~head:Q.head ~tail:Q.tail q
+
+  (* The elements cons'ed onto the empty queue in order, so the last is in front. *)
+  let cons_list xs = List.fold_left (fun q x -> Q.cons x q) Q.empty xs
+
+  let run_contract name =
+    let t label = Printf.sprintf "%s: %s" name label in
+    let eq label expect q =
+      surviving
+        (t label)
+        (fun () -> drain q)
+        (fun actual -> check_eq (t label) ~expect ~actual string_of_int_list)
+    in
+    let head_is label expect q =
+      surviving
+        (t label)
+        (fun () -> Q.head (q ()))
+        (fun actual -> check_int (t label) ~expect ~actual)
+    in
+    check
+      (t "cons onto the empty queue is not empty")
+      (not (Q.is_empty (Q.cons 1 Q.empty)));
+    head_is "cons onto the empty queue makes its element the head" 7 (fun () ->
+      Q.cons 7 Q.empty);
+    eq
+      "cons puts its element in front of everything snoc'ed"
+      [ 0; 1; 2; 3 ]
+      (Q.cons 0 (of_list [ 1; 2; 3 ]));
+    eq "the last element cons'ed is the first out" [ 3; 2; 1 ] (cons_list [ 1; 2; 3 ]);
+    eq
+      "snoc after cons still goes to the back"
+      [ 0; 1; 2 ]
+      (Q.snoc (Q.cons 0 (of_list [ 1 ])) 2);
+    eq
+      "cons and snoc interleaved"
+      [ 4; 2; 1; 3; 5 ]
+      (Q.snoc (Q.cons 4 (Q.snoc (Q.cons 2 (of_list [ 1 ])) 3)) 5);
+    (* The seam between the two halves, crossed both ways. A queue that is empty in one
+       half and not the other is where a wrapper is most easily wrong about itself. *)
+    head_is "tail past the cons'ed elements moves on to the snoc'ed" 1 (fun () ->
+      Q.tail (Q.cons 0 (of_list [ 1; 2 ])));
+    surviving
+      (t "tail of the one cons'ed element")
+      (fun () -> Q.tail (Q.cons 0 (Q.snoc Q.empty 1)))
+      (fun q ->
+        check
+          (t "leaves the snoc'ed element behind, so the queue is not empty")
+          (not (Q.is_empty q));
+        eq "and that element is the head" [ 1 ] q);
+    surviving
+      (t "a queue drained to nothing")
+      (fun () -> Q.tail (Q.tail (of_list [ 1; 2 ])))
+      (fun drained ->
+        eq "takes a cons" [ 5 ] (Q.cons 5 drained);
+        eq "takes a cons and then a snoc" [ 5; 6 ] (Q.snoc (Q.cons 5 drained) 6);
+        check
+          (t "and is empty again after a cons and a tail")
+          (Q.is_empty (Q.tail (Q.cons 5 drained))));
+    check_raises
+      (t "head after the tail of the only cons'ed element raises")
+      (Failure "head: empty queue")
+      (fun () -> Q.head (Q.tail (Q.cons 1 Q.empty)));
+    (* Randomised, against the obvious model: a list, cons at the front, snoc at the back,
+       tail at the front. Checked after every operation, as the queue contract does. *)
+    Random.init 20260926;
+    let bad_empty = ref 0
+    and bad_head = ref 0
+    and bad_drain = ref 0
+    and raised = ref 0 in
+    for _ = 0 to 299 do
+      let q = ref Q.empty
+      and model = ref [] in
+      (* The model is never asked for the head or tail of nothing, so any Failure in here
+         is the queue refusing an operation it owes. *)
+      try
+        for i = 0 to 59 do
+          (match if !model = [] then Random.int 2 else Random.int 3 with
+           | 0 ->
+             q := Q.cons i !q;
+             model := i :: !model
+           | 1 ->
+             q := Q.snoc !q i;
+             model := !model @ [ i ]
+           | _ ->
+             q := Q.tail !q;
+             model := List.tl !model);
+          if Q.is_empty !q <> (!model = []) then incr bad_empty;
+          match !model with
+          | x :: _ when Q.head !q <> x -> incr bad_head
+          | _ -> ()
+        done;
+        if drain !q <> !model then incr bad_drain
+      with
+      | Failure _ -> incr raised
+    done;
+    check_int
+      (t "no operation raises on a non-empty queue, 300 random runs with cons")
+      ~expect:0
+      ~actual:!raised;
+    check_int
+      (t "is_empty agrees with a list model, 300 random runs with cons")
+      ~expect:0
+      ~actual:!bad_empty;
+    check_int
+      (t "head agrees with a list model, 300 random runs with cons")
+      ~expect:0
+      ~actual:!bad_head;
+    check_int
+      (t "drain agrees with a list model, 300 random runs with cons")
+      ~expect:0
+      ~actual:!bad_drain;
+    (* Persistence: a cons may not disturb its operand, and a tail taken from a cons'ed
+       queue in one future leaves the element in place in the other. *)
+    let q = of_list [ 1; 2; 3 ] in
+    let a = Q.cons 0 q
+    and b = Q.cons 9 q in
+    eq "one future of a shared queue, by cons" [ 0; 1; 2; 3 ] a;
+    eq "does not leak into the other" [ 9; 1; 2; 3 ] b;
+    eq "nor into the queue they came from" [ 1; 2; 3 ] q;
+    let c = Q.cons 0 q in
+    eq "a tail taken in one future of a cons'ed queue" [ 1; 2; 3 ] (Q.tail c);
+    eq "leaves the cons'ed element in the other" [ 0; 1; 2; 3 ] c;
+    surviving
+      (t "every earlier version of a cons-build can still be used")
+      (fun () ->
+        let versions = List.init 20 (fun i -> cons_list (upto i)) in
+        List.iter
+          (fun v ->
+            ignore (Q.cons 99 v);
+            ignore (Q.snoc v 99);
+            if not (Q.is_empty v) then ignore (Q.tail v))
+          versions;
+        List.mapi (fun i v -> if drain v = List.rev (upto i) then 0 else 1) versions
+        |> List.fold_left ( + ) 0)
+      (fun stale ->
+        check_int
+          (t "every earlier version of a cons-build stays correct")
+          ~expect:0
+          ~actual:stale)
+  ;;
+
+  (* ------------------------------------------------------------- on the clock *)
+
+  type op =
+    | Cons of int
+    | Snoc of int
+    | Tail
+    | Head
+
+  let describe = function
+    | Cons x -> Printf.sprintf "cons %d" x
+    | Snoc x -> Printf.sprintf "snoc %d" x
+    | Tail -> "tail"
+    | Head -> "head"
+  ;;
+
+  (* Runs [ops] from the empty queue with every operation on the clock by itself, and
+     returns what each one cost. *)
+  let costs ops =
+    let q = ref Q.empty
+    and sum = ref 0 in
+    let costs =
+      Array.map
+        (fun op ->
+          match op with
+          | Cons x ->
+            let q', c = cost (fun () -> Q.cons x !q) in
+            q := q';
+            c
+          | Snoc x ->
+            let q', c = cost (fun () -> Q.snoc !q x) in
+            q := q';
+            c
+          | Tail ->
+            let q', c = cost (fun () -> Q.tail !q) in
+            q := q';
+            c
+          | Head ->
+            let x, c = cost (fun () -> Q.head !q) in
+            sum := !sum + x;
+            c)
+        ops
+    in
+    ignore (Sys.opaque_identity !q);
+    ignore (Sys.opaque_identity !sum);
+    costs
+  ;;
+
+  (* The dearest of the operations [among] picks out: its index, what it was, its cost. *)
+  let dearest among ops costs =
+    let dear = ref (0, Tail, -1.0) in
+    Array.iteri
+      (fun i c ->
+        let _, _, worst = !dear in
+        if among ops.(i) && c > worst then dear := i, ops.(i), c)
+      costs;
+    !dear
+  ;;
+
+  let any _ = true
+
+  let a_cons = function
+    | Cons _ -> true
+    | _ -> false
+  ;;
+
+  let a_tail = function
+    | Tail -> true
+    | _ -> false
+  ;;
+
+  (* The list alone: n conses, then n tails. *)
+  let cons_then_drain n =
+    Array.init (2 * n) (fun i -> if i < n then Cons (n - i) else Tail)
+  ;;
+
+  (* n snocs, then n conses, then 2n tails: the tails cross from the list into the inner
+     queue half way through, at index 3n. *)
+  let both_then_drain n =
+    Array.init (4 * n) (fun i ->
+      if i < n then Snoc (n + 1 + i) else if i < 2 * n then Cons (n - i + n) else Tail)
+  ;;
+
+  (* Two snocs and a cons, then two tails, over and over: the seam is crossed on every
+     round while the inner queue grows and rotates underneath. *)
+  let two_snocs_a_cons_two_tails n =
+    Array.init (5 * n) (fun i ->
+      match i mod 5 with
+      | 0 | 1 -> Snoc i
+      | 2 -> Cons i
+      | _ -> Tail)
+  ;;
+
+  let head_after_each n =
+    Array.init (4 * n) (fun i ->
+      match i mod 4 with
+      | 0 -> Cons i
+      | 2 -> Snoc i
+      | _ -> Head)
+  ;;
+
+  let random_mix n =
+    Random.init 20260926;
+    let size = ref 0 in
+    Array.init n (fun i ->
+      match if !size = 0 then Random.int 2 else Random.int 4 with
+      | 0 ->
+        incr size;
+        Cons i
+      | 1 ->
+        incr size;
+        Snoc i
+      | 2 ->
+        decr size;
+        Tail
+      | _ -> Head)
+  ;;
+
+  let sequences =
+    [ "n conses then n tails", cons_then_drain
+    ; "n snocs, n conses, then 2n tails", both_then_drain
+    ; "two snocs and a cons to every two tails", two_snocs_a_cons_two_tails
+    ; "a head after every cons and every snoc", head_after_each
+    ; "a random mix of cons, snoc, tail and head", random_mix
+    ]
+  ;;
+
+  (* As Worst_case.run_sequences, with cons in the sequences. *)
+  let run_sequences name =
+    let t label = Printf.sprintf "%s: %s" name label in
+    let ok = ref true in
+    List.iter
+      (fun (sequence, ops) ->
+        let within label n =
+          let ops = ops n in
+          let i, op, c = dearest any ops (costs ops) in
+          let fine = c <= constant in
+          check
+            (t
+               (Printf.sprintf
+                  "%s, %s: dearest is #%d (%s) at %.0f words, n=%d"
+                  sequence
+                  label
+                  i
+                  (describe op)
+                  c
+                  n))
+            fine;
+          fine
+        in
+        if not (within "O(1) worst-case" 1_000)
+        then (
+          ok := false;
+          Printf.printf
+            "  SKIP  %s: %s at n=100000 -- it is not O(1) worst-case at n=1000\n"
+            name
+            sequence)
+        else if not (within "still O(1) worst-case, a hundred times longer" 100_000)
+        then ok := false)
+      sequences;
+    !ok
+  ;;
+
+  module W = Worst_case (Q)
+
+  (* Every version kept and every cons on the clock, from three kinds of version: each
+     step of a build by cons; each step of a build by snoc, which catches the inner queue
+     in every phase of a rotation; and each step of a drain. Then the other operations as
+     a second future of every version of the cons-build. *)
+  let run_versions name =
+    let t label = Printf.sprintf "%s: %s" name label in
+    let within label (k, c) =
+      check
+        (t (Printf.sprintf "%s, dearest from #%d at %.0f words" label k c))
+        (c <= constant)
+    in
+    let cons_from v =
+      let dear = ref (0, 0.0) in
+      Array.iteri
+        (fun k q ->
+          let _, c = cost (fun () -> Q.cons 0 q) in
+          if c > snd !dear then dear := k, c)
+        v;
+      !dear
+    in
+    let n = 2_000 in
+    let v = Array.make (n + 1) Q.empty
+    and dear = ref (0, 0.0) in
+    for i = 1 to n do
+      let q, c = cost (fun () -> Q.cons i v.(i - 1)) in
+      v.(i) <- q;
+      if c > snd !dear then dear := i, c
+    done;
+    within
+      (Printf.sprintf "the cons that makes each version of a cons-build of %d" n)
+      !dear;
+    List.iter
+      (fun (run, k, c) ->
+        within (Printf.sprintf "%s from every version of a cons-build of %d" run n) (k, c))
+      (W.short_futures v ~size:Fun.id);
+    let v, _ = W.build n in
+    within
+      (Printf.sprintf "cons from every version of a snoc-build of %d" n)
+      (cons_from v);
+    let n = 1_000 in
+    let v, _ = W.drain n in
+    within (Printf.sprintf "cons from every version of a drain of %d" n) (cons_from v)
+  ;;
+end
+
+module Over_batched = ConstantTimeConsQueue (Okasaki.Ch5.BatchedQueue)
+module Over_batched_tests = Cons_tests (Over_batched)
+
+(* "Any implementation of queues": over Figure 5.2's batched queue, cons is constant
+   although the queue under it is not, and the first tail to reach that queue runs its
+   reverse, which the clock sees through the wrapper. *)
+let test_cons_guard () =
+  let module B = Over_batched_tests in
+  let n = 1_000 in
+  let ops = B.both_then_drain n in
+  let costs = B.costs ops in
+  let i, op, c = B.dearest B.a_cons ops costs in
+  check
+    (Printf.sprintf
+       "guard: over Figure 5.2's queue the dearest cons of n snocs, n conses and 2n \
+        tails is #%d (%s) at %.0f words, n=%d"
+       i
+       (B.describe op)
+       c
+       n)
+    (c <= constant);
+  let i, op, c = B.dearest B.a_tail ops costs in
+  check
+    (Printf.sprintf
+       "guard: and the same probe sees that queue's reverse through the wrapper, on the \
+        first tail past the list, #%d (%s) at %.0f words"
+       i
+       (B.describe op)
+       c)
+    (i = 3 * n && c >= float_of_int n /. 2.)
+;;
+
+module Wrapped = ConstantTimeConsQueue (HoodMelvilleQueue)
+module Wrapped_contract = Queue_tests (Wrapped)
+module Wrapped_costs = Worst_case (Wrapped)
+module Wrapped_cons = Cons_tests (Wrapped)
+
+let test_cons_queue () =
+  section "ConstantTimeConsQueue (Exercise 8.4): cons over HoodMelvilleQueue";
+  let before = !failures in
+  Wrapped_contract.run_contract "ConstantTimeConsQueue";
+  Wrapped_cons.run_contract "ConstantTimeConsQueue";
+  test_delegation ();
+  if !failures > before
+  then
+    Printf.printf
+      "  SKIP  ConstantTimeConsQueue: cost checks -- the contract above does not hold\n"
+  else (
+    test_cons_guard ();
+    let queue_ops = Wrapped_costs.run_sequences "ConstantTimeConsQueue" in
+    let with_cons = Wrapped_cons.run_sequences "ConstantTimeConsQueue" in
+    if queue_ops && with_cons
+    then (
+      Wrapped_costs.run_versions "ConstantTimeConsQueue, persistently";
+      Wrapped_cons.run_versions "ConstantTimeConsQueue, persistently")
+    else
+      Printf.printf
+        "  SKIP  ConstantTimeConsQueue: persistence checks -- not real-time in one thread\n")
 ;;
 
 (* ------------------------------------------- red-black trees (8.1, Exercise 8.1) *)
@@ -1227,6 +1762,7 @@ let run name f =
 let () =
   run "RedBlackSet" test_redblack;
   run "HoodMelvilleQueue" test_hood_melville;
+  run "ConstantTimeConsQueue" test_cons_queue;
   Printf.printf "\n%d checks, %d failures\n\n" !checks !failures;
   if !failures > 0 then exit 1
 ;;

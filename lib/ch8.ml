@@ -220,3 +220,55 @@ module HoodMelvilleQueue = struct
     | _ :: f -> check { q with f; state = invalidate q.state; diff = q.diff - 1 }
   ;;
 end
+
+module type DEQUE = sig
+  include QUEUE
+
+  val cons : 'a -> 'a queue -> 'a queue
+  val last : 'a queue -> 'a
+  val init : 'a queue -> 'a queue
+end
+
+(* Exercise 8.4 Unfortunately, we cannot extend Hood and Melville's real-time queues with
+   a cons function quite so easily, because there is no easy way to insert the new element
+   into the rotation state. Instead, write a functor that extends any implementation of
+   queues with a constant-time cons function, using the type
+
+   type a Queue = a list x a Q.Queue
+
+   where Q is the parameter to the functor, cons should insert elements into the new list,
+   and head and tail should remove elements from the new list whenever it is non-empty.
+*)
+
+module type QUEUE_WITH_CONS = sig
+  include QUEUE
+
+  val cons : 'a -> 'a queue -> 'a queue
+end
+
+module ConstantTimeConsQueue (Q : QUEUE) : QUEUE_WITH_CONS = struct
+  type 'a queue = 'a list * 'a Q.queue
+
+  let empty = [], Q.empty
+
+  let is_empty (xs, q) =
+    match xs with
+    | [] -> Q.is_empty q
+    | _ -> false
+  ;;
+
+  let snoc (xs, q) x = xs, Q.snoc q x
+  let cons x (xs, q) = x :: xs, q
+
+  let head (xs, q) =
+    match xs with
+    | [] -> Q.head q
+    | x :: _ -> x
+  ;;
+
+  let tail (xs, q) =
+    match xs with
+    | [] -> [], Q.tail q
+    | _ :: xs' -> xs', q
+  ;;
+end
