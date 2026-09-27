@@ -1,7 +1,7 @@
 (* Tests for Chapter 9: the binary random-access list of Figure 9.6 (section 9.2.1), the
-   drop of Exercise 9.1, the create of Exercise 9.2 and the sparse list of Exercise 9.3,
-   each with its own preamble further down. Plain OCaml, no test framework, matching the
-   earlier chapters.
+   drop of Exercise 9.1, the create of Exercise 9.2, and the sparse list of Exercise 9.3
+   with its own drop and create, each with its own preamble further down. Plain OCaml, no
+   test framework, matching the earlier chapters.
 
    Section 9.2.1 builds a list out of a binary number. A list of n elements holds one
    complete binary leaf tree for every one in the binary representation of n, in
@@ -854,7 +854,8 @@ let test_drop () =
    for a tree built afresh for every digit, which is O(log^2 n), and the stopwatch catches
    a create that does linear work without allocating, which the clock cannot see. That is
    also why the sweep at n=100000 comes after the ladder and not before: such a create
-   would make it quadratic. *)
+   would make it quadratic. The reads are on the stopwatch as well, since they lean on
+   drop, whose own tests stop at n=100000. *)
 
 module type WITH_CREATE = sig
   include WITH_DROP
@@ -1104,13 +1105,17 @@ module Create_tests (R : WITH_CREATE) = struct
 
   (* ------------------------------------------------------------------ the ladder *)
 
-  (* Half a second of processor time for one create: some hundred thousand times what one
-     takes at any size here, and with the rungs a factor of two apart, a create that is
-     linear in n is stopped within a second or so of the first rung it cannot climb. *)
+  (* Half a second of processor time for one create, and as much again for the reads that
+     follow it: some hundred thousand times what either takes at any size here. With the
+     rungs a factor of two apart, anything linear in n is stopped within a second or so of
+     the first rung it cannot climb. The reads go on the stopwatch too because they lean
+     on drop, tail and update, whose own tests stop at n=100000: a drop that is linear
+     would otherwise climb to 2^50 and never come back. *)
   let rung_limit = 0.5
 
-  (* n copies, made on the clock and the stopwatch and then used where using them costs
-     O(log n) too. [None] if every check held, or [Some why] for the first that did not. *)
+  (* n copies, made on the clock and the stopwatch and then used, on the stopwatch again,
+     where using them costs O(log n) too. [None] if every check held, or [Some why] for
+     the first that did not; a wrong answer is reported before a slow one. *)
   let rung n =
     let started = Sys.time () in
     match cost (fun () -> R.create n 0) with
@@ -1125,34 +1130,43 @@ module Create_tests (R : WITH_CREATE) = struct
       else if c > budget n
       then over "create" c
       else (
-        try
-          let refused =
-            match R.lookup n r with
-            | _ -> false
-            | exception Failure m -> m = "lookup: not found"
-          in
-          if R.head r <> 0 || R.lookup (n - 1) r <> 0
-          then Some "an end is not a copy"
-          else if not refused
-          then Some "lookup one past the end is not refused"
-          else if not (R.is_empty (R.drop n r))
-          then Some "a drop of all of them is not empty"
-          else (
-            let r', cu = cost (fun () -> R.update (n - 1) 1 r) in
-            let r'', ct = cost (fun () -> R.tail r) in
-            if cu > budget n
-            then over "the update of the last" cu
-            else if ct > budget n
-            then over "tail" ct
-            else if R.lookup (n - 1) r' <> 1
-                    || R.lookup (n - 2) r' <> 0
-                    || R.lookup (n - 1) r <> 0
-            then Some "the update of the last does not read back"
-            else if R.head r'' <> 0 || not (R.is_empty (R.drop (n - 1) r''))
-            then Some "the tail does not read back"
-            else None)
-        with
-        | e -> Some ("using it raised " ^ Printexc.to_string e))
+        let started = Sys.time () in
+        let verdict =
+          try
+            let refused =
+              match R.lookup n r with
+              | _ -> false
+              | exception Failure m -> m = "lookup: not found"
+            in
+            if R.head r <> 0 || R.lookup (n - 1) r <> 0
+            then Some "an end is not a copy"
+            else if not refused
+            then Some "lookup one past the end is not refused"
+            else if not (R.is_empty (R.drop n r))
+            then Some "a drop of all of them is not empty"
+            else (
+              let r', cu = cost (fun () -> R.update (n - 1) 1 r) in
+              let r'', ct = cost (fun () -> R.tail r) in
+              if cu > budget n
+              then over "the update of the last" cu
+              else if ct > budget n
+              then over "tail" ct
+              else if R.lookup (n - 1) r' <> 1
+                      || R.lookup (n - 2) r' <> 0
+                      || R.lookup (n - 1) r <> 0
+              then Some "the update of the last does not read back"
+              else if R.head r'' <> 0 || not (R.is_empty (R.drop (n - 1) r''))
+              then Some "the tail does not read back"
+              else None)
+          with
+          | e -> Some ("using it raised " ^ Printexc.to_string e)
+        in
+        let took = Sys.time () -. started in
+        match verdict with
+        | Some _ -> verdict
+        | None when took > rung_limit ->
+          Some (Printf.sprintf "using it took %.2f s of processor time" took)
+        | None -> None)
   ;;
 
   (* 2^20 - 1 and 2^20 copies, 2^21 - 1 and 2^21, and so on to 2^50, up to the first rung
@@ -1234,6 +1248,41 @@ let test_sparse () =
   else Sparse.run_costs "SparseBinaryRandomAccessList"
 ;;
 
+(* ------------------------------------------ sparse drop and create (Exercise 9.3) *)
+
+(* drop and create for the sparse list, through the same tests as the dense ones above.
+   Both are simpler here, and for the same reason: there are no ZEROs. drop keeps, in the
+   order it meets them, the right halves it turns away from and the subtree where the
+   count runs out, which leaves the sizes ascending with nothing to pad. create is the
+   numeral with its zeros left out. What the tests ask of them is unchanged: the survivors
+   in order, and a result that carries, updates, tails and drops again like any list of
+   its size; n copies that behave the same way; and every call within the budget, create
+   all the way up the ladder to 2^50. *)
+
+module Sparse_drop = Drop_tests (SparseBinaryRandomAccessList)
+module Sparse_create = Create_tests (SparseBinaryRandomAccessList)
+
+let test_sparse_drop () =
+  section "SparseBinaryRandomAccessList.drop (Exercises 9.1 and 9.3)";
+  let before = !failures in
+  Sparse_drop.run_contract "SparseBinaryRandomAccessList.drop";
+  if !failures > before
+  then
+    Printf.printf "  SKIP  sparse drop: cost checks -- the contract above does not hold\n"
+  else Sparse_drop.run_costs "SparseBinaryRandomAccessList.drop"
+;;
+
+let test_sparse_create () =
+  section "SparseBinaryRandomAccessList.create (Exercises 9.2 and 9.3)";
+  let before = !failures in
+  Sparse_create.run_contract "SparseBinaryRandomAccessList.create";
+  if !failures > before
+  then
+    Printf.printf
+      "  SKIP  sparse create: cost checks -- the contract above does not hold\n"
+  else Sparse_create.run_costs "SparseBinaryRandomAccessList.create"
+;;
+
 (* ------------------------------------------------------------------- runner *)
 
 (* A regression can make a function raise where the test did not expect it. Report that as
@@ -1251,6 +1300,8 @@ let () =
   run "drop" test_drop;
   run "create" test_create;
   run "SparseBinaryRandomAccessList" test_sparse;
+  run "sparse drop" test_sparse_drop;
+  run "sparse create" test_sparse_create;
   Printf.printf "\n%d checks, %d failures\n\n" !checks !failures;
   if !failures > 0 then exit 1
 ;;

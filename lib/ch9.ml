@@ -253,15 +253,10 @@ module BinaryRandomAccessList : RANDOM_ACCESS_LIST_WITH_DROP_AND_CREATE = struct
   (* Building things bottom-up is way simpler.. *)
 
   let create_bottom_up n e =
-    if n < 0
-    then raise (Failure "create: negative size")
-    else (
-      let rec go n t =
-        if n = 0
-        then []
-        else (if n mod 2 = 0 then Zero else One t) :: go (n / 2) (link t t)
-      in
-      go n (Leaf e))
+    let rec go n t =
+      if n = 0 then [] else (if n mod 2 = 0 then Zero else One t) :: go (n / 2) (link t t)
+    in
+    if n < 0 then raise (Failure "create: negative size") else go n (Leaf e)
   ;;
 
   let create = create_bottom_up
@@ -274,7 +269,7 @@ end
    type a RList = a Tree list
 *)
 
-module SparseBinaryRandomAccessList : RANDOM_ACCESS_LIST = struct
+module SparseBinaryRandomAccessList : RANDOM_ACCESS_LIST_WITH_DROP_AND_CREATE = struct
   type 'a tree =
     | Leaf of 'a
     | Node of int * 'a tree * 'a tree
@@ -343,5 +338,30 @@ module SparseBinaryRandomAccessList : RANDOM_ACCESS_LIST = struct
     | [] -> raise (Failure "update: not found")
     | x :: xs ->
       if i < size x then update_tree i e x :: xs else x :: update (i - size x) e xs
+  ;;
+
+  let rec drop_tree i x xs =
+    match x with
+    | _ when i = 0 -> x :: xs
+    | Node (w, a, b) ->
+      if i < w / 2 then drop_tree i a (b :: xs) else drop_tree (i - (w / 2)) b xs
+    | _ -> raise (Failure "drop: invalid tree")
+  ;;
+
+  let rec drop n = function
+    | xs when n = 0 -> xs
+    | [] -> raise (Failure "drop: not enough elements")
+    | x :: xs -> if n < size x then drop_tree n x xs else drop (n - size x) xs
+  ;;
+
+  let create n e =
+    let rec go n t =
+      if n = 0
+      then []
+      else (
+        let ts = go (n / 2) (link t t) in
+        if n mod 2 = 0 then ts else t :: ts)
+    in
+    if n < 0 then raise (Failure "create: negative size") else go n (Leaf e)
   ;;
 end
