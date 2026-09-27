@@ -1,5 +1,6 @@
-(* Tests for Chapter 9: the binary random-access list of Figure 9.6 (section 9.2.1). Plain
-   OCaml, no test framework, matching the earlier chapters.
+(* Tests for Chapter 9: the binary random-access list of Figure 9.6 (section 9.2.1) and
+   the drop of Exercise 9.1, which has its own preamble further down. Plain OCaml, no test
+   framework, matching the earlier chapters.
 
    Section 9.2.1 builds a list out of a binary number. A list of n elements holds one
    complete binary leaf tree for every one in the binary representation of n, in
@@ -505,6 +506,316 @@ let test_binary () =
     Binary.run_costs "BinaryRandomAccessList")
 ;;
 
+(* --------------------------------------------------------- drop (Exercise 9.1) *)
+
+(* Exercise 9.1 asks for drop, which deletes the first k elements, in O(log n) time. The
+   number is the guide again. After the drop the list holds n - k elements, so its digits
+   are the binary representation of n - k, one tree of each size in its place and the
+   elements in order, and the way there is in two steps, like lookup: down the digits,
+   past the whole trees that go, then down the tree in which the k-th element falls. What
+   that second walk leaves is not a tree, and how its pieces become the new low digits is
+   the exercise; the tests pin only what must come out. Every size up to 70 is dropped by
+   every k and read back both ways. Then, because a tree left one position out of place
+   reads back correctly until head or a carry finds it, every result up to size 40 takes
+   eight more conses with every index looked up after each, an update at either end, a
+   tail, and a second drop of every remaining length, which has to agree with one drop of
+   the sum. The cost is the dearest single drop over every k, at two sizes a hundred times
+   apart, against the budget above: one walk down the digits and one down a tree. Written
+   before the implementation was right, in the manner of Exercise 8.1's tests, so the
+   message for a refused drop is only required to begin with "drop:". *)
+
+module type WITH_DROP = sig
+  include RANDOM_ACCESS_LIST
+
+  val drop : int -> 'a rlist -> 'a rlist
+end
+
+let list_drop k xs = List.filteri (fun i _ -> i >= k) xs
+
+module Drop_tests (R : WITH_DROP) = struct
+  module Base = Rlist_tests (R)
+
+  let of_list = Base.of_list
+  let to_list = Base.to_list
+  let lookups = Base.lookups
+
+  (* A refusal: drop's own Failure, whatever it says after "drop:". *)
+  let refuses name f =
+    incr checks;
+    match f () with
+    | _ ->
+      incr failures;
+      Printf.printf "  FAIL  %s: expected Failure \"drop: ...\", got no exception\n" name
+    | exception Failure m when String.starts_with ~prefix:"drop:" m -> ()
+    | exception e ->
+      incr failures;
+      Printf.printf
+        "  FAIL  %s: expected Failure \"drop: ...\", got %s\n"
+        name
+        (Printexc.to_string e)
+  ;;
+
+  let run_contract name =
+    let t label = Printf.sprintf "%s: %s" name label in
+    let eq label expect r =
+      surviving
+        (t label)
+        (fun () -> to_list (r ()))
+        (fun actual -> check_eq (t label) ~expect ~actual string_of_int_list)
+    in
+    eq "drop 0 of empty is empty" [] (fun () -> R.drop 0 R.empty);
+    eq "drop 0 changes nothing" [ 1; 2; 3 ] (fun () -> R.drop 0 (of_list [ 1; 2; 3 ]));
+    eq "drop 1 of two" [ 2 ] (fun () -> R.drop 1 (of_list [ 1; 2 ]));
+    eq "drop 2 of two is empty" [] (fun () -> R.drop 2 (of_list [ 1; 2 ]));
+    surviving
+      (t "drop 2 of two")
+      (fun () -> R.drop 2 (of_list [ 1; 2 ]))
+      (fun r -> check (t "drop 2 of two is empty by is_empty too") (R.is_empty r));
+    eq "drop 3 of five" [ 4; 5 ] (fun () -> R.drop 3 (of_list [ 1; 2; 3; 4; 5 ]));
+    refuses (t "drop 1 of empty refuses") (fun () -> R.drop 1 R.empty);
+    refuses (t "drop past the end refuses") (fun () -> R.drop 4 (of_list [ 1; 2; 3 ]));
+    refuses (t "drop of a negative count refuses") (fun () ->
+      R.drop (-1) (of_list [ 1; 2; 3 ]));
+    (* Every k of every size from 0 to 70: the survivors, by both readers, and emptiness. *)
+    let bad = ref [] in
+    let note n what = bad := (n, what) :: !bad in
+    for n = 70 downto 0 do
+      try
+        let xs = upto n in
+        let r = of_list xs in
+        for k = 0 to n do
+          let expect = list_drop k xs in
+          match R.drop k r with
+          | r' ->
+            (match to_list r' with
+             | got when got = expect -> ()
+             | got ->
+               note n (Printf.sprintf "drop %d reads back %s" k (string_of_int_list got))
+             | exception e ->
+               note
+                 n
+                 (Printf.sprintf
+                    "drop %d then reading back raised %s"
+                    k
+                    (Printexc.to_string e)));
+            (match lookups (n - k) r' with
+             | got when got = expect -> ()
+             | got ->
+               note n (Printf.sprintf "drop %d looks up %s" k (string_of_int_list got))
+             | exception e ->
+               note
+                 n
+                 (Printf.sprintf "drop %d then lookup raised %s" k (Printexc.to_string e)));
+            if R.is_empty r' <> (expect = [])
+            then note n (Printf.sprintf "drop %d: is_empty is wrong" k)
+          | exception e ->
+            note n (Printf.sprintf "drop %d raised %s" k (Printexc.to_string e))
+        done;
+        match R.drop (n + 1) r with
+        | _ -> note n "drop one past the end did not raise"
+        | exception Failure m when String.starts_with ~prefix:"drop:" m -> ()
+        | exception e -> note n ("drop one past the end raised " ^ Printexc.to_string e)
+      with
+      | e -> note n ("raised " ^ Printexc.to_string e)
+    done;
+    check
+      (t
+         (Printf.sprintf
+            "every k of every size from 0 to 70 drops correctly%s"
+            (match !bad with
+             | [] -> ""
+             | (n, what) :: _ -> Printf.sprintf " -- n=%d: %s" n what)))
+      (!bad = []);
+    (* The shape of what is left, sizes up to 40: it has to carry, update, tail and drop
+       again like any list of its size. *)
+    let bad = ref [] in
+    let note n what = bad := (n, what) :: !bad in
+    for n = 40 downto 0 do
+      try
+        let xs = upto n in
+        let r = of_list xs in
+        for k = 0 to n do
+          let survivors = list_drop k xs in
+          let m = n - k in
+          match R.drop k r with
+          | r' ->
+            (try
+               let q = ref r'
+               and model = ref survivors in
+               for c = 1 to 8 do
+                 q := R.cons (100 + c) !q;
+                 model := (100 + c) :: !model;
+                 if lookups (m + c) !q <> !model
+                 then note n (Printf.sprintf "drop %d then %d conses looks up wrong" k c)
+               done;
+               if to_list !q <> !model
+               then note n (Printf.sprintf "drop %d then 8 conses reads back wrong" k)
+             with
+             | e ->
+               note
+                 n
+                 (Printf.sprintf "drop %d then conses raised %s" k (Printexc.to_string e)));
+            if m > 0
+            then (
+              try
+                let first = List.mapi (fun i x -> if i = 0 then 200 else x) survivors in
+                let last =
+                  List.mapi (fun i x -> if i = m - 1 then 300 else x) survivors
+                in
+                if to_list (R.update 0 200 r') <> first
+                then note n (Printf.sprintf "drop %d then update 0 reads back wrong" k);
+                if to_list (R.update (m - 1) 300 r') <> last
+                then
+                  note
+                    n
+                    (Printf.sprintf "drop %d then update of the last reads back wrong" k);
+                if to_list (R.tail r') <> List.tl survivors
+                then note n (Printf.sprintf "drop %d then tail reads back wrong" k)
+              with
+              | e ->
+                note
+                  n
+                  (Printf.sprintf
+                     "drop %d then update or tail raised %s"
+                     k
+                     (Printexc.to_string e)));
+            (try
+               for j = 0 to m do
+                 if to_list (R.drop j r') <> list_drop (k + j) xs
+                 then note n (Printf.sprintf "drop %d then drop %d reads back wrong" k j)
+               done
+             with
+             | e ->
+               note
+                 n
+                 (Printf.sprintf
+                    "drop %d then a second drop raised %s"
+                    k
+                    (Printexc.to_string e)))
+          | exception e ->
+            note n (Printf.sprintf "drop %d raised %s" k (Printexc.to_string e))
+        done
+      with
+      | e -> note n ("raised " ^ Printexc.to_string e)
+    done;
+    check
+      (t
+         (Printf.sprintf
+            "what a drop leaves behaves like a list of its size, sizes up to 40%s"
+            (match !bad with
+             | [] -> ""
+             | (n, what) :: _ -> Printf.sprintf " -- n=%d: %s" n what)))
+      (!bad = []);
+    (* Randomised, against a list, with drop among the operations. *)
+    Random.init 20260927;
+    let bad_model = ref 0
+    and raised = ref 0 in
+    for _ = 0 to 299 do
+      let r = ref R.empty
+      and model = ref [] in
+      try
+        for i = 0 to 59 do
+          let n = List.length !model in
+          (match if n = 0 then 0 else Random.int 6 with
+           | 0 | 1 ->
+             r := R.cons i !r;
+             model := i :: !model
+           | 2 ->
+             r := R.tail !r;
+             model := List.tl !model
+           | 3 ->
+             let k = Random.int n in
+             r := R.update k (1000 + i) !r;
+             model := List.mapi (fun j x -> if j = k then 1000 + i else x) !model
+           | 4 ->
+             let k = Random.int n in
+             if R.lookup k !r <> List.nth !model k then incr bad_model
+           | _ ->
+             let k = Random.int (n + 1) in
+             r := R.drop k !r;
+             model := list_drop k !model);
+          if R.is_empty !r <> (!model = []) then incr bad_model;
+          match !model with
+          | x :: _ when R.head !r <> x -> incr bad_model
+          | _ -> ()
+        done;
+        if to_list !r <> !model || lookups (List.length !model) !r <> !model
+        then incr bad_model
+      with
+      | Failure _ -> incr raised
+    done;
+    check_int
+      (t "no operation raises on valid arguments, 300 random runs with drop")
+      ~expect:0
+      ~actual:!raised;
+    check_int
+      (t "everything agrees with a list model, 300 random runs with drop")
+      ~expect:0
+      ~actual:!bad_model;
+    (* Persistence: a drop leaves the version it came from as it was, and both go on. *)
+    let v = of_list (upto 10) in
+    eq
+      "a dropped version reads the survivors"
+      (list_drop 3 (upto 10))
+      (fun () -> R.drop 3 v);
+    eq "the version it came from does not change" (upto 10) (fun () ->
+      ignore (R.drop 3 v);
+      v);
+    eq "and the original can still be cons'ed onto" (42 :: upto 10) (fun () ->
+      let w = R.drop 3 v in
+      ignore (R.cons 99 w);
+      R.cons 42 v);
+    eq
+      "as can the dropped version"
+      (99 :: list_drop 3 (upto 10))
+      (fun () ->
+        let w = R.drop 3 v in
+        ignore (R.cons 42 v);
+        R.cons 99 w)
+  ;;
+
+  (* ------------------------------------------------ every drop on its own clock *)
+
+  let run_costs_at name n =
+    let t label = Printf.sprintf "%s: %s" name label in
+    let r = of_list (upto n) in
+    let dear = ref (0, 0.0) in
+    for k = 0 to n do
+      let r', c = cost (fun () -> R.drop k r) in
+      ignore (Sys.opaque_identity r');
+      if c > snd !dear then dear := k, c
+    done;
+    let fine = snd !dear <= budget n in
+    check
+      (t
+         (Printf.sprintf
+            "drop, at every k of %d, dearest is k=%d at %.0f words, budget %.0f"
+            n
+            (fst !dear)
+            (snd !dear)
+            (budget n)))
+      fine;
+    fine
+  ;;
+
+  let run_costs name =
+    if run_costs_at name 1_000
+    then ignore (run_costs_at name 100_000)
+    else Printf.printf "  SKIP  %s: costs at n=100000 -- over budget at n=1000\n" name
+  ;;
+end
+
+module Binary_drop = Drop_tests (BinaryRandomAccessList)
+
+let test_drop () =
+  section "drop (Exercise 9.1)";
+  let before = !failures in
+  Binary_drop.run_contract "BinaryRandomAccessList.drop";
+  if !failures > before
+  then Printf.printf "  SKIP  drop: cost checks -- the contract above does not hold\n"
+  else Binary_drop.run_costs "BinaryRandomAccessList.drop"
+;;
+
 (* ------------------------------------------------------------------- runner *)
 
 (* A regression can make a function raise where the test did not expect it. Report that as
@@ -519,6 +830,7 @@ let run name f =
 
 let () =
   run "BinaryRandomAccessList" test_binary;
+  run "drop" test_drop;
   Printf.printf "\n%d checks, %d failures\n\n" !checks !failures;
   if !failures > 0 then exit 1
 ;;

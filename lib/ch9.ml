@@ -73,7 +73,13 @@ module type RANDOM_ACCESS_LIST = sig
   val update : int -> 'a -> 'a rlist -> 'a rlist
 end
 
-module BinaryRandomAccessList : RANDOM_ACCESS_LIST = struct
+module type RANDOM_ACCESS_LIST_WITH_DROP_AND_CREATE = sig
+  include RANDOM_ACCESS_LIST
+
+  val drop : int -> 'a rlist -> 'a rlist
+end
+
+module BinaryRandomAccessList : RANDOM_ACCESS_LIST_WITH_DROP_AND_CREATE = struct
   type 'a tree =
     | Leaf of 'a
     | Node of int * 'a tree * 'a tree
@@ -117,7 +123,7 @@ module BinaryRandomAccessList : RANDOM_ACCESS_LIST = struct
   ;;
 
   let head ds =
-    if ds = []
+    if is_empty ds
     then raise (Failure "head: empty list")
     else (
       match uncons_tree ds with
@@ -126,7 +132,7 @@ module BinaryRandomAccessList : RANDOM_ACCESS_LIST = struct
   ;;
 
   let tail ds =
-    if ds = []
+    if is_empty ds
     then raise (Failure "tail: empty list")
     else (
       let _, ts = uncons_tree ds in
@@ -162,5 +168,39 @@ module BinaryRandomAccessList : RANDOM_ACCESS_LIST = struct
       if i < size t
       then One (update_tree i e t) :: ts
       else One t :: update (i - size t) e ts
+  ;;
+
+  (* Exercise 9.1 Write a function drop of type int x a RList ->- a RList that deletes the
+     first k elements of a binary random-access list. Your function should run in O(logn)
+     time. *)
+
+  let rec pad n ds =
+    match n, ds with
+    | 0, _ | _, [] -> ds
+    | _ -> pad (n - 1) (Zero :: ds)
+  ;;
+
+  let rec drop_tree i p k r =
+    match k with
+    | _ when i = 0 -> pad p (One k :: r)
+    | Node (w, t1, t2) ->
+      let p' = p - 1 in
+      if i < w / 2
+      then drop_tree i p' t1 (One t2 :: r)
+      else if i > w / 2
+      then drop_tree (i - (w / 2)) p' t2 (pad 1 r)
+      else drop_tree 0 p' t2 r
+    | _ -> raise (Failure "drop: invalid tree")
+  ;;
+
+  let drop n ds =
+    let rec go i p = function
+      | ts when i = 0 -> pad p ts
+      | Zero :: ts -> go i (p + 1) ts
+      | One t :: ts ->
+        if i < size t then drop_tree i p t (pad 1 ts) else go (i - size t) (p + 1) ts
+      | _ -> raise (Failure "drop: not enough elements")
+    in
+    go n 0 ds
   ;;
 end
