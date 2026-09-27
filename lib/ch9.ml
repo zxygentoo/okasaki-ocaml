@@ -229,7 +229,7 @@ module BinaryRandomAccessList : RANDOM_ACCESS_LIST_WITH_DROP_AND_CREATE = struct
     | Node (_, a, _) -> a
   ;;
 
-  let create n e =
+  let create_top_down n e =
     let rec build w t m acc =
       if w / 2 = 0
       then (if n mod 2 = 0 then Zero else One (Leaf e)) :: acc
@@ -249,4 +249,20 @@ module BinaryRandomAccessList : RANDOM_ACCESS_LIST_WITH_DROP_AND_CREATE = struct
       let t = create_tree e r in
       build (pow r) t n [])
   ;;
+
+  (* Building things bottom-up is way simpler.. *)
+
+  let create_bottom_up n e =
+    if n < 0
+    then raise (Failure "create: negative size")
+    else (
+      let rec go n t =
+        if n = 0
+        then []
+        else (if n mod 2 = 0 then Zero else One t) :: go (n / 2) (link t t)
+      in
+      go n (Leaf e))
+  ;;
+
+  let create = create_bottom_up
 end
