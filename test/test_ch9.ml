@@ -1,6 +1,7 @@
 (* Tests for Chapter 9: the binary random-access list of Figure 9.6 (section 9.2.1), the
-   drop of Exercise 9.1 and the create of Exercise 9.2, each with its own preamble further
-   down. Plain OCaml, no test framework, matching the earlier chapters.
+   drop of Exercise 9.1, the create of Exercise 9.2 and the sparse list of Exercise 9.3,
+   each with its own preamble further down. Plain OCaml, no test framework, matching the
+   earlier chapters.
 
    Section 9.2.1 builds a list out of a binary number. A list of n elements holds one
    complete binary leaf tree for every one in the binary representation of n, in
@@ -1204,6 +1205,35 @@ let test_create () =
   else Binary_create.run_costs "BinaryRandomAccessList.create"
 ;;
 
+(* --------------------------- SparseBinaryRandomAccessList (Exercise 9.3) *)
+
+(* Exercise 9.3 asks for the same list in a sparse representation. The ZEROs are gone: the
+   list holds only the trees, smallest first, and the size stored in each tree is now the
+   only record of which digit it stands for. Nothing a user of the list can see is
+   different, and the bounds are the same, so the contract and the clock are the ones
+   above, unchanged.
+
+   What the sparse form can get wrong without any read-back noticing is the order and the
+   uniqueness of the sizes. head and tail never look at a size, and lookup walks the trees
+   by subtracting sizes, which finds every element in any order of trees and however many
+   share a size. So a cons that stops carrying too early reads back perfectly while the
+   number of trees grows with n. The clock sees it in update, which copies a cell for
+   every tree before the one it changes, at the last index of a list built by cons. *)
+
+module Sparse = Rlist_tests (SparseBinaryRandomAccessList)
+
+let test_sparse () =
+  section "SparseBinaryRandomAccessList (Exercise 9.3)";
+  let before = !failures in
+  Sparse.run_contract "SparseBinaryRandomAccessList";
+  if !failures > before
+  then
+    Printf.printf
+      "  SKIP  SparseBinaryRandomAccessList: cost checks -- the contract above does not \
+       hold\n"
+  else Sparse.run_costs "SparseBinaryRandomAccessList"
+;;
+
 (* ------------------------------------------------------------------- runner *)
 
 (* A regression can make a function raise where the test did not expect it. Report that as
@@ -1220,6 +1250,7 @@ let () =
   run "BinaryRandomAccessList" test_binary;
   run "drop" test_drop;
   run "create" test_create;
+  run "SparseBinaryRandomAccessList" test_sparse;
   Printf.printf "\n%d checks, %d failures\n\n" !checks !failures;
   if !failures > 0 then exit 1
 ;;

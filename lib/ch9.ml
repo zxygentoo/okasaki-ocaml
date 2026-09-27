@@ -266,3 +266,82 @@ module BinaryRandomAccessList : RANDOM_ACCESS_LIST_WITH_DROP_AND_CREATE = struct
 
   let create = create_bottom_up
 end
+
+(* Exercise 9.3 Reimplement BinaryRandomAccessList using a sparse representation such as
+
+   datatype a Tree = LEAF of a | NODE of int x a Tree x a Tree
+
+   type a RList = a Tree list
+*)
+
+module SparseBinaryRandomAccessList : RANDOM_ACCESS_LIST = struct
+  type 'a tree =
+    | Leaf of 'a
+    | Node of int * 'a tree * 'a tree
+
+  type 'a rlist = 'a tree list
+
+  let empty = []
+
+  let is_empty = function
+    | [] -> true
+    | _ -> false
+  ;;
+
+  let size = function
+    | Leaf _ -> 1
+    | Node (w, _, _) -> w
+  ;;
+
+  let link t1 t2 = Node (size t1 + size t2, t1, t2)
+
+  let rec merge = function
+    | [] -> []
+    | [ x ] -> [ x ]
+    | x :: y :: rest as xs -> if size x = size y then merge (link x y :: rest) else xs
+  ;;
+
+  let cons e xs = merge (Leaf e :: xs)
+
+  let rec uncons_tree t ts =
+    match t with
+    | Leaf e -> e, ts
+    | Node (_, a, b) -> uncons_tree a (b :: ts)
+  ;;
+
+  let head = function
+    | [] -> raise (Failure "head: empty list")
+    | t :: ts -> fst (uncons_tree t ts)
+  ;;
+
+  let tail = function
+    | [] -> raise (Failure "tail: empty list")
+    | t :: ts -> snd (uncons_tree t ts)
+  ;;
+
+  let rec lookup_tree i = function
+    | Leaf e when i = 0 -> e
+    | Node (w, a, b) -> if i < w / 2 then lookup_tree i a else lookup_tree (i - (w / 2)) b
+    | _ -> raise (Failure "lookup: not found")
+  ;;
+
+  let rec lookup i = function
+    | [] -> raise (Failure "lookup: not found")
+    | x :: xs -> if i < size x then lookup_tree i x else lookup (i - size x) xs
+  ;;
+
+  let rec update_tree i e = function
+    | Leaf _ when i = 0 -> Leaf e
+    | Node (w, a, b) ->
+      if i < w / 2
+      then Node (w, update_tree i e a, b)
+      else Node (w, a, update_tree (i - (w / 2)) e b)
+    | _ -> raise (Failure "update: not found")
+  ;;
+
+  let rec update i e = function
+    | [] -> raise (Failure "update: not found")
+    | x :: xs ->
+      if i < size x then update_tree i e x :: xs else x :: update (i - size x) e xs
+  ;;
+end
