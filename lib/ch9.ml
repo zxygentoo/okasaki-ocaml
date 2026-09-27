@@ -77,6 +77,7 @@ module type RANDOM_ACCESS_LIST_WITH_DROP_AND_CREATE = sig
   include RANDOM_ACCESS_LIST
 
   val drop : int -> 'a rlist -> 'a rlist
+  val create : int -> 'a -> 'a rlist
 end
 
 module BinaryRandomAccessList : RANDOM_ACCESS_LIST_WITH_DROP_AND_CREATE = struct
@@ -171,7 +172,7 @@ module BinaryRandomAccessList : RANDOM_ACCESS_LIST_WITH_DROP_AND_CREATE = struct
   ;;
 
   (* Exercise 9.1 Write a function drop of type int x a RList ->- a RList that deletes the
-     first k elements of a binary random-access list. Your function should run in O(logn)
+     first k elements of a binary random-access list. Your function should run in O(log n)
      time. *)
 
   let rec pad n ds =
@@ -202,5 +203,50 @@ module BinaryRandomAccessList : RANDOM_ACCESS_LIST_WITH_DROP_AND_CREATE = struct
       | _ -> raise (Failure "drop: not enough elements")
     in
     go n 0 ds
+  ;;
+
+  (* Exercise 9.2 Write a function create of type int x a -> a RList that creates a binary
+     random-access list containing n copies of some value x. This function should also run
+     in O(log n) time. (You may find it helpful to review Exercise 2.5.) *)
+
+  let pow n = 1 lsl n
+
+  let rank x =
+    let rec go acc x = if x = 0 then acc else go (acc + 1) (x lsr 1) in
+    go 0 x
+  ;;
+
+  let rec create_tree e r =
+    if r = 0
+    then Leaf e
+    else (
+      let t = create_tree e (r - 1) in
+      Node (pow r, t, t))
+  ;;
+
+  let half_tree = function
+    | Leaf _ -> raise (Failure "half_tree")
+    | Node (_, a, _) -> a
+  ;;
+
+  let create n e =
+    let rec build w t m acc =
+      if w / 2 = 0
+      then (if n mod 2 = 0 then Zero else One (Leaf e)) :: acc
+      else
+        build
+          (w / 2)
+          (half_tree t)
+          (if m >= w then m - w else m)
+          ((if m >= w then One t else Zero) :: acc)
+    in
+    if n < 0
+    then raise (Failure "create: negative size")
+    else if n = 0
+    then empty
+    else (
+      let r = rank n - 1 in
+      let t = create_tree e r in
+      build (pow r) t n [])
   ;;
 end

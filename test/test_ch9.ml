@@ -1,6 +1,6 @@
-(* Tests for Chapter 9: the binary random-access list of Figure 9.6 (section 9.2.1) and
-   the drop of Exercise 9.1, which has its own preamble further down. Plain OCaml, no test
-   framework, matching the earlier chapters.
+(* Tests for Chapter 9: the binary random-access list of Figure 9.6 (section 9.2.1), the
+   drop of Exercise 9.1 and the create of Exercise 9.2, each with its own preamble further
+   down. Plain OCaml, no test framework, matching the earlier chapters.
 
    Section 9.2.1 builds a list out of a binary number. A list of n elements holds one
    complete binary leaf tree for every one in the binary representation of n, in
@@ -76,6 +76,27 @@ let check_raises name msg f =
       "  FAIL  %s: expected Failure \"%s\", got %s\n"
       name
       msg
+      (Printexc.to_string e)
+;;
+
+(* [f] must refuse with the implementation's own Failure, whatever it says after [prefix]:
+   for refusals whose wording the implementation is free to choose. *)
+let refuses ~prefix name f =
+  incr checks;
+  match f () with
+  | _ ->
+    incr failures;
+    Printf.printf
+      "  FAIL  %s: expected Failure \"%s ...\", got no exception\n"
+      name
+      prefix
+  | exception Failure m when String.starts_with ~prefix m -> ()
+  | exception e ->
+    incr failures;
+    Printf.printf
+      "  FAIL  %s: expected Failure \"%s ...\", got %s\n"
+      name
+      prefix
       (Printexc.to_string e)
 ;;
 
@@ -540,20 +561,7 @@ module Drop_tests (R : WITH_DROP) = struct
   let lookups = Base.lookups
 
   (* A refusal: drop's own Failure, whatever it says after "drop:". *)
-  let refuses name f =
-    incr checks;
-    match f () with
-    | _ ->
-      incr failures;
-      Printf.printf "  FAIL  %s: expected Failure \"drop: ...\", got no exception\n" name
-    | exception Failure m when String.starts_with ~prefix:"drop:" m -> ()
-    | exception e ->
-      incr failures;
-      Printf.printf
-        "  FAIL  %s: expected Failure \"drop: ...\", got %s\n"
-        name
-        (Printexc.to_string e)
-  ;;
+  let refuses name f = refuses ~prefix:"drop:" name f
 
   let run_contract name =
     let t label = Printf.sprintf "%s: %s" name label in
@@ -816,6 +824,386 @@ let test_drop () =
   else Binary_drop.run_costs "BinaryRandomAccessList.drop"
 ;;
 
+(* ------------------------------------------------------- create (Exercise 9.2) *)
+
+(* Exercise 9.2 asks for create, which makes a list of n copies of one value, in O(log n)
+   time, and points back at Exercise 2.5. The number is the guide again: the result is the
+   binary representation of n, a complete tree of each size under every one in its place
+   and nothing above the highest one, since a list that ends in a ZERO makes isEmpty lie.
+   Exercise 2.5 is what makes the bound possible at all: a complete tree of 2^k copies is
+   one node over two references to one tree of 2^(k-1) copies, so n copies need only
+   O(log n) nodes.
+
+   All the elements are equal, and that changes what reading back can see: a lookup that
+   walks to the wrong leaf still finds a copy, so a tree whose size field disagrees with
+   its leaves can read back perfectly. Every n up to 70 is read back both ways all the
+   same, and refused one past the end, and 0 has to give the empty list; but the weight of
+   the contract is on what comes out behaving like any list of its size. An update at
+   every index has to change that index and no other, eight conses have to carry into it
+   with every index looked up after each, and tail and a drop of every length have to
+   leave the copies they should. Then 300 random runs that start from a created list. A
+   negative n is refused with create's own message, as drop refuses a negative count.
+
+   The cost is the dearest create over every size up to n, against the budget above, and
+   the created list of size n is held to the same budget for lookup, update and tail. Then
+   the ladder: 2^20 - 1 and 2^20 copies, 2^21 - 1 and 2^21, and so on up to 2^50, each
+   create on the clock and on a stopwatch, and each list read where reading costs O(log n)
+   too: at both ends, one past the end, after a drop of everything, and after an update of
+   its last element and a tail. The budget of a constant per digit leaves no room there
+   for a tree built afresh for every digit, which is O(log^2 n), and the stopwatch catches
+   a create that does linear work without allocating, which the clock cannot see. That is
+   also why the sweep at n=100000 comes after the ladder and not before: such a create
+   would make it quadratic. *)
+
+module type WITH_CREATE = sig
+  include WITH_DROP
+
+  val create : int -> 'a -> 'a rlist
+end
+
+let replicate n x = List.init n (fun _ -> x)
+
+module Create_tests (R : WITH_CREATE) = struct
+  module Base = Rlist_tests (R)
+
+  let to_list = Base.to_list
+  let lookups = Base.lookups
+  let refuses name f = refuses ~prefix:"create:" name f
+
+  let run_contract name =
+    let t label = Printf.sprintf "%s: %s" name label in
+    let eq label expect r =
+      surviving
+        (t label)
+        (fun () -> to_list (r ()))
+        (fun actual -> check_eq (t label) ~expect ~actual string_of_int_list)
+    in
+    eq "create 0 is empty" [] (fun () -> R.create 0 7);
+    surviving
+      (t "create 0")
+      (fun () -> R.create 0 7)
+      (fun r -> check (t "create 0 is empty by is_empty too") (R.is_empty r));
+    eq "create 1 is a singleton" [ 7 ] (fun () -> R.create 1 7);
+    eq "create 2 is a pair" [ 7; 7 ] (fun () -> R.create 2 7);
+    eq "create 5, a one, a zero and a one" (replicate 5 7) (fun () -> R.create 5 7);
+    eq "create 8, a single tree" (replicate 8 7) (fun () -> R.create 8 7);
+    refuses (t "create of a negative count refuses") (fun () ->
+      ignore (R.is_empty (R.create (-1) 7)));
+    (* Every size from 0 to 70: n copies by both readers, emptiness, and the end. *)
+    let bad = ref [] in
+    let note n what = bad := (n, what) :: !bad in
+    for n = 70 downto 0 do
+      try
+        let expect = replicate n n in
+        match R.create n n with
+        | r ->
+          (match to_list r with
+           | got when got = expect -> ()
+           | got -> note n ("reads back " ^ string_of_int_list got)
+           | exception e -> note n ("reading back raised " ^ Printexc.to_string e));
+          (match lookups n r with
+           | got when got = expect -> ()
+           | got -> note n ("looks up " ^ string_of_int_list got)
+           | exception e -> note n ("lookup raised " ^ Printexc.to_string e));
+          if R.is_empty r <> (n = 0) then note n "is_empty is wrong";
+          (match R.lookup n r with
+           | _ -> note n "lookup one past the end did not raise"
+           | exception Failure m when m = "lookup: not found" -> ()
+           | exception e ->
+             note n ("lookup one past the end raised " ^ Printexc.to_string e))
+        | exception e -> note n ("create raised " ^ Printexc.to_string e)
+      with
+      | e -> note n ("raised " ^ Printexc.to_string e)
+    done;
+    check
+      (t
+         (Printf.sprintf
+            "every size from 0 to 70 is n copies%s"
+            (match !bad with
+             | [] -> ""
+             | (n, what) :: _ -> Printf.sprintf " -- n=%d: %s" n what)))
+      (!bad = []);
+    (* The shape of what create makes, sizes up to 40, seen through the operations that
+       trust it: update, cons, tail and drop. *)
+    let bad = ref [] in
+    let note n what = bad := (n, what) :: !bad in
+    for n = 40 downto 0 do
+      try
+        let copies = replicate n 0 in
+        let r = R.create n 0 in
+        (try
+           for i = 0 to n - 1 do
+             let expect = List.mapi (fun k x -> if k = i then 1 + i else x) copies in
+             let r' = R.update i (1 + i) r in
+             if to_list r' <> expect
+             then note n (Printf.sprintf "update %d reads back wrong" i);
+             if lookups n r' <> expect
+             then note n (Printf.sprintf "update %d looks up wrong" i)
+           done;
+           match R.update n 1 r with
+           | _ -> note n "update one past the end did not raise"
+           | exception Failure m when m = "update: not found" -> ()
+           | exception e ->
+             note n ("update one past the end raised " ^ Printexc.to_string e)
+         with
+         | e -> note n ("update raised " ^ Printexc.to_string e));
+        (try
+           let q = ref r
+           and model = ref copies in
+           for c = 1 to 8 do
+             q := R.cons c !q;
+             model := c :: !model;
+             if lookups (n + c) !q <> !model
+             then note n (Printf.sprintf "%d conses looks up wrong" c)
+           done;
+           if to_list !q <> !model then note n "8 conses reads back wrong"
+         with
+         | e -> note n ("conses raised " ^ Printexc.to_string e));
+        try
+          if n > 0 && to_list (R.tail r) <> replicate (n - 1) 0
+          then note n "tail reads back wrong";
+          for k = 0 to n do
+            if to_list (R.drop k r) <> replicate (n - k) 0
+            then note n (Printf.sprintf "drop %d reads back wrong" k)
+          done
+        with
+        | e -> note n ("tail or drop raised " ^ Printexc.to_string e)
+      with
+      | e -> note n ("raised " ^ Printexc.to_string e)
+    done;
+    check
+      (t
+         (Printf.sprintf
+            "what create makes behaves like a list of its size, sizes up to 40%s"
+            (match !bad with
+             | [] -> ""
+             | (n, what) :: _ -> Printf.sprintf " -- n=%d: %s" n what)))
+      (!bad = []);
+    (* Randomised, against a list, from a created list of a random size. *)
+    Random.init 20260927;
+    let bad_model = ref 0
+    and raised = ref 0 in
+    for run = 0 to 299 do
+      try
+        let n0 = Random.int 40 in
+        let r = ref (R.create n0 (-1 - run))
+        and model = ref (replicate n0 (-1 - run)) in
+        for i = 0 to 59 do
+          let n = List.length !model in
+          (match if n = 0 then 0 else Random.int 6 with
+           | 0 | 1 ->
+             r := R.cons i !r;
+             model := i :: !model
+           | 2 ->
+             r := R.tail !r;
+             model := List.tl !model
+           | 3 ->
+             let k = Random.int n in
+             r := R.update k (1000 + i) !r;
+             model := List.mapi (fun j x -> if j = k then 1000 + i else x) !model
+           | 4 ->
+             let k = Random.int n in
+             if R.lookup k !r <> List.nth !model k then incr bad_model
+           | _ ->
+             let k = Random.int (n + 1) in
+             r := R.drop k !r;
+             model := list_drop k !model);
+          if R.is_empty !r <> (!model = []) then incr bad_model;
+          match !model with
+          | x :: _ when R.head !r <> x -> incr bad_model
+          | _ -> ()
+        done;
+        if to_list !r <> !model || lookups (List.length !model) !r <> !model
+        then incr bad_model
+      with
+      | _ -> incr raised
+    done;
+    check_int
+      (t "no operation raises on valid arguments, 300 random runs from a created list")
+      ~expect:0
+      ~actual:!raised;
+    check_int
+      (t "everything agrees with a list model, 300 random runs from a created list")
+      ~expect:0
+      ~actual:!bad_model;
+    (* Persistence: a created list is a version like any other. Made inside each check, so
+       that a create that raises fails the check and not the section. *)
+    eq
+      "an updated version reads the update"
+      (List.mapi (fun k x -> if k = 3 then 99 else x) (replicate 10 0))
+      (fun () -> R.update 3 99 (R.create 10 0));
+    eq
+      "the version it came from does not, nor after a cons and a tail of it"
+      (replicate 10 0)
+      (fun () ->
+         let v = R.create 10 0 in
+         ignore (R.update 3 99 v);
+         ignore (R.cons 1 v);
+         ignore (R.tail v);
+         v)
+  ;;
+
+  (* ---------------------------------------------- every create on its own clock *)
+
+  (* create at every size up to n; then lookup and update at every index of the created
+     list of size n, and a drain of it by tail. The dearest of each is what the bound is
+     about. True if all four stayed within the budget. *)
+  let run_costs_at name n =
+    let t label = Printf.sprintf "%s: %s" name label in
+    let ok = ref true in
+    let within label (k, c) =
+      let fine = c <= budget n in
+      check
+        (t
+           (Printf.sprintf
+              "%s, dearest is #%d at %.0f words, n=%d, budget %.0f"
+              label
+              k
+              c
+              n
+              (budget n)))
+        fine;
+      if not fine then ok := false
+    in
+    let dear = ref (0, 0.0) in
+    for m = 0 to n do
+      let r, c = cost (fun () -> R.create m 0) in
+      ignore (Sys.opaque_identity r);
+      if c > snd !dear then dear := m, c
+    done;
+    within "create, at every size up to n" !dear;
+    let full = R.create n 0 in
+    let dear = ref (0, 0.0)
+    and sum = ref 0 in
+    for i = 0 to n - 1 do
+      let x, c = cost (fun () -> R.lookup i full) in
+      sum := !sum + x;
+      if c > snd !dear then dear := i, c
+    done;
+    ignore (Sys.opaque_identity !sum);
+    within "lookup, at every index of a created list" !dear;
+    let dear = ref (0, 0.0) in
+    for i = 0 to n - 1 do
+      let r', c = cost (fun () -> R.update i 1 full) in
+      ignore (Sys.opaque_identity r');
+      if c > snd !dear then dear := i, c
+    done;
+    within "update, at every index of a created list" !dear;
+    let r = ref full
+    and dear = ref (0, 0.0) in
+    for i = 1 to n do
+      let r', c = cost (fun () -> R.tail !r) in
+      r := r';
+      if c > snd !dear then dear := i, c
+    done;
+    ignore (Sys.opaque_identity !r);
+    within "tail, at every size of a drain from a created list" !dear;
+    !ok
+  ;;
+
+  (* ------------------------------------------------------------------ the ladder *)
+
+  (* Half a second of processor time for one create: some hundred thousand times what one
+     takes at any size here, and with the rungs a factor of two apart, a create that is
+     linear in n is stopped within a second or so of the first rung it cannot climb. *)
+  let rung_limit = 0.5
+
+  (* n copies, made on the clock and the stopwatch and then used where using them costs
+     O(log n) too. [None] if every check held, or [Some why] for the first that did not. *)
+  let rung n =
+    let started = Sys.time () in
+    match cost (fun () -> R.create n 0) with
+    | exception e -> Some ("create raised " ^ Printexc.to_string e)
+    | r, c ->
+      let took = Sys.time () -. started in
+      let over what c =
+        Some (Printf.sprintf "%s costs %.0f words, budget %.0f" what c (budget n))
+      in
+      if took > rung_limit
+      then Some (Printf.sprintf "create took %.2f s of processor time" took)
+      else if c > budget n
+      then over "create" c
+      else (
+        try
+          let refused =
+            match R.lookup n r with
+            | _ -> false
+            | exception Failure m -> m = "lookup: not found"
+          in
+          if R.head r <> 0 || R.lookup (n - 1) r <> 0
+          then Some "an end is not a copy"
+          else if not refused
+          then Some "lookup one past the end is not refused"
+          else if not (R.is_empty (R.drop n r))
+          then Some "a drop of all of them is not empty"
+          else (
+            let r', cu = cost (fun () -> R.update (n - 1) 1 r) in
+            let r'', ct = cost (fun () -> R.tail r) in
+            if cu > budget n
+            then over "the update of the last" cu
+            else if ct > budget n
+            then over "tail" ct
+            else if R.lookup (n - 1) r' <> 1
+                    || R.lookup (n - 2) r' <> 0
+                    || R.lookup (n - 1) r <> 0
+            then Some "the update of the last does not read back"
+            else if R.head r'' <> 0 || not (R.is_empty (R.drop (n - 1) r''))
+            then Some "the tail does not read back"
+            else None)
+        with
+        | e -> Some ("using it raised " ^ Printexc.to_string e))
+  ;;
+
+  (* 2^20 - 1 and 2^20 copies, 2^21 - 1 and 2^21, and so on to 2^50, up to the first rung
+     that does not hold. True if they all did. *)
+  let run_ladder name =
+    let rec climb k =
+      if k > 50
+      then None
+      else (
+        let at label n = Option.map (fun why -> label, why) (rung n) in
+        match at (Printf.sprintf "2^%d - 1" k) ((1 lsl k) - 1) with
+        | Some _ as bad -> bad
+        | None ->
+          (match at (Printf.sprintf "2^%d" k) (1 lsl k) with
+           | Some _ as bad -> bad
+           | None -> climb (k + 1)))
+    in
+    let bad = climb 20 in
+    check
+      (Printf.sprintf
+         "%s: every rung of the ladder holds, 2^20 - 1 to 2^50 copies%s"
+         name
+         (match bad with
+          | None -> ""
+          | Some (label, why) -> Printf.sprintf " -- %s copies: %s" label why))
+      (bad = None);
+    bad = None
+  ;;
+
+  (* O(log n) worst-case: the sweep at n=1000, the ladder, and the sweep at n=100000, each
+     guarded on the one before. *)
+  let run_costs name =
+    let skip what why = Printf.printf "  SKIP  %s: %s -- %s\n" name what why in
+    if not (run_costs_at name 1_000)
+    then skip "the ladder and costs at n=100000" "over budget at n=1000"
+    else if not (run_ladder name)
+    then skip "costs at n=100000" "the ladder did not hold"
+    else ignore (run_costs_at name 100_000)
+  ;;
+end
+
+module Binary_create = Create_tests (BinaryRandomAccessList)
+
+let test_create () =
+  section "create (Exercise 9.2)";
+  let before = !failures in
+  Binary_create.run_contract "BinaryRandomAccessList.create";
+  if !failures > before
+  then Printf.printf "  SKIP  create: cost checks -- the contract above does not hold\n"
+  else Binary_create.run_costs "BinaryRandomAccessList.create"
+;;
+
 (* ------------------------------------------------------------------- runner *)
 
 (* A regression can make a function raise where the test did not expect it. Report that as
@@ -831,6 +1219,7 @@ let run name f =
 let () =
   run "BinaryRandomAccessList" test_binary;
   run "drop" test_drop;
+  run "create" test_create;
   Printf.printf "\n%d checks, %d failures\n\n" !checks !failures;
   if !failures > 0 then exit 1
 ;;
