@@ -113,21 +113,21 @@ module BinaryRandomAccessList : RANDOM_ACCESS_LIST_WITH_DROP_AND_CREATE = struct
 
   let cons e ds = cons_tree (Leaf e) ds
 
-  let rec uncons_tree = function
-    | [] -> raise (Failure "uncons_tree: empty list")
+  let rec uncons = function
+    | [] -> raise (Failure "uncons: empty list")
     | [ One t ] -> t, []
     | One t :: ts -> t, Zero :: ts
     | Zero :: ts ->
-      (match uncons_tree ts with
+      (match uncons ts with
        | Node (_, t1, t2), ts' -> t1, One t2 :: ts'
-       | _ -> raise (Failure "uncons_tree: invalid tree"))
+       | _ -> raise (Failure "uncons: invalid tree"))
   ;;
 
   let head ds =
     if is_empty ds
     then raise (Failure "head: empty list")
     else (
-      match uncons_tree ds with
+      match uncons ds with
       | Leaf e, _ -> e
       | _ -> raise (Failure "head: invalid tree"))
   ;;
@@ -136,7 +136,7 @@ module BinaryRandomAccessList : RANDOM_ACCESS_LIST_WITH_DROP_AND_CREATE = struct
     if is_empty ds
     then raise (Failure "tail: empty list")
     else (
-      let _, ts = uncons_tree ds in
+      let _, ts = uncons ds in
       ts)
   ;;
 
@@ -298,20 +298,20 @@ module SparseBinaryRandomAccessList : RANDOM_ACCESS_LIST_WITH_DROP_AND_CREATE = 
 
   let cons e xs = merge (Leaf e :: xs)
 
-  let rec uncons_tree t ts =
+  let rec uncons t ts =
     match t with
     | Leaf e -> e, ts
-    | Node (_, a, b) -> uncons_tree a (b :: ts)
+    | Node (_, a, b) -> uncons a (b :: ts)
   ;;
 
   let head = function
     | [] -> raise (Failure "head: empty list")
-    | t :: ts -> fst (uncons_tree t ts)
+    | t :: ts -> fst (uncons t ts)
   ;;
 
   let tail = function
     | [] -> raise (Failure "tail: empty list")
-    | t :: ts -> snd (uncons_tree t ts)
+    | t :: ts -> snd (uncons t ts)
   ;;
 
   let rec lookup_tree i = function
@@ -364,4 +364,74 @@ module SparseBinaryRandomAccessList : RANDOM_ACCESS_LIST_WITH_DROP_AND_CREATE = 
     in
     if n < 0 then raise (Failure "create: negative size") else go n (Leaf e)
   ;;
+end
+
+module Zeroless = struct
+  type digit =
+    | One
+    | Two
+
+  type nat = digit list
+
+  let rec inc = function
+    | [] -> [ One ]
+    | One :: ds -> Two :: ds
+    | Two :: ds -> One :: inc ds
+  ;;
+
+  (* Exercise 9.4 Write decrement and addition functions for zeroless binary numbers. Note
+     that carries during additions can involve either ones or twos. *)
+
+  let rec dec = function
+    | [] -> raise (Failure "dec: zero")
+    | Two :: ds -> One :: ds
+    | One :: ds -> dec ds
+  ;;
+end
+
+(* Exercise 9.5 Implement the remaining functions for this type. *)
+
+module ZerolessBinaryRandomAccessList : RANDOM_ACCESS_LIST = struct
+  type 'a tree =
+    | Leaf of 'a
+    | Node of int * 'a tree * 'a tree
+
+  type 'a digit =
+    | One of 'a tree
+    | Two of 'a tree * 'a tree
+
+  type 'a rlist = 'a digit list
+
+  let empty = []
+
+  let is_empty = function
+    | [] -> true
+    | _ -> false
+  ;;
+
+  let size = function
+    | Leaf _ -> 1
+    | Node (w, _, _) -> w
+  ;;
+
+  let link t1 t2 = Node (size t1 + size t2, t1, t2)
+
+  let rec merge = function
+    | One (Leaf _ as a) :: One (Leaf _ as b) :: xs -> Two (a, b) :: merge xs
+    | Two (a, b) :: xs -> One (link a b) :: xs
+    | xs -> xs
+  ;;
+
+  let cons e xs = merge (One (Leaf e) :: xs)
+
+  let head = function
+    | [] -> raise (Failure "head: empty list")
+    | One (Leaf x) :: _ -> x
+    | Two (Leaf x, _) :: _ -> x
+    | _ -> raise (assert false)
+  ;;
+
+  let tail _ = raise (Failure "tail: empty list")
+  let lookup _ _ = raise (Failure "tail: not found")
+  let update _ _ _ = raise (Failure "tail: not found")
 end
