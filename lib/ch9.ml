@@ -366,6 +366,9 @@ module SparseBinaryRandomAccessList : RANDOM_ACCESS_LIST_WITH_DROP_AND_CREATE = 
   ;;
 end
 
+(* Exercise 9.4 Write decrement and addition functions for zeroless binary numbers. Note
+   that carries during additions can involve either ones or twos. *)
+
 module Zeroless = struct
   type digit =
     | One
@@ -379,59 +382,20 @@ module Zeroless = struct
     | Two :: ds -> One :: inc ds
   ;;
 
-  (* Exercise 9.4 Write decrement and addition functions for zeroless binary numbers. Note
-     that carries during additions can involve either ones or twos. *)
-
   let rec dec = function
     | [] -> raise (Failure "dec: zero")
+    | [ One ] -> []
     | Two :: ds -> One :: ds
-    | One :: ds -> dec ds
-  ;;
-end
-
-(* Exercise 9.5 Implement the remaining functions for this type. *)
-
-module ZerolessBinaryRandomAccessList : RANDOM_ACCESS_LIST = struct
-  type 'a tree =
-    | Leaf of 'a
-    | Node of int * 'a tree * 'a tree
-
-  type 'a digit =
-    | One of 'a tree
-    | Two of 'a tree * 'a tree
-
-  type 'a rlist = 'a digit list
-
-  let empty = []
-
-  let is_empty = function
-    | [] -> true
-    | _ -> false
+    | One :: Two :: ds -> Two :: One :: ds
+    | One :: One :: ds -> Two :: dec (One :: ds)
   ;;
 
-  let size = function
-    | Leaf _ -> 1
-    | Node (w, _, _) -> w
+  let rec add a b =
+    match a, b with
+    | _, [] -> a
+    | [], _ -> b
+    | One :: xs, One :: ys -> Two :: add xs ys
+    | Two :: xs, One :: ys | One :: xs, Two :: ys -> One :: inc (add xs ys)
+    | Two :: xs, Two :: ys -> Two :: inc (add xs ys)
   ;;
-
-  let link t1 t2 = Node (size t1 + size t2, t1, t2)
-
-  let rec merge = function
-    | One (Leaf _ as a) :: One (Leaf _ as b) :: xs -> Two (a, b) :: merge xs
-    | Two (a, b) :: xs -> One (link a b) :: xs
-    | xs -> xs
-  ;;
-
-  let cons e xs = merge (One (Leaf e) :: xs)
-
-  let head = function
-    | [] -> raise (Failure "head: empty list")
-    | One (Leaf x) :: _ -> x
-    | Two (Leaf x, _) :: _ -> x
-    | _ -> raise (assert false)
-  ;;
-
-  let tail _ = raise (Failure "tail: empty list")
-  let lookup _ _ = raise (Failure "tail: not found")
-  let update _ _ _ = raise (Failure "tail: not found")
 end

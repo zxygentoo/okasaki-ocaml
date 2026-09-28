@@ -1,7 +1,7 @@
 (* Tests for Chapter 9: the binary random-access list of Figure 9.6 (section 9.2.1), the
-   drop of Exercise 9.1, the create of Exercise 9.2, and the sparse list of Exercise 9.3
-   with its own drop and create, each with its own preamble further down. Plain OCaml, no
-   test framework, matching the earlier chapters.
+   drop of Exercise 9.1, the create of Exercise 9.2, the sparse list of Exercise 9.3 with
+   its own drop and create, and the zeroless numbers of Exercise 9.4, each with its own
+   preamble further down. Plain OCaml, no test framework, matching the earlier chapters.
 
    Section 9.2.1 builds a list out of a binary number. A list of n elements holds one
    complete binary leaf tree for every one in the binary representation of n, in
@@ -1283,6 +1283,290 @@ let test_sparse_create () =
   else Sparse_create.run_costs "SparseBinaryRandomAccessList.create"
 ;;
 
+(* ------------------------------------------- zeroless binary numbers (Exercise 9.4) *)
+
+(* Exercise 9.4 asks for dec and add on zeroless binary numbers, whose digits are ONE and
+   TWO, the i-th weighing 2^i. Every n has exactly one such numeral, and every list of
+   ONEs and TWOs is the numeral of some n, so there is no shape to get wrong apart from
+   the value: an answer is right exactly when it is the numeral of the right number. The
+   tests hold dec and add to that against a model that writes the numeral of an int by
+   halving it, and knows nothing of inc or dec: every n up to 1022 decremented, and
+   incremented to keep the book's inc honest alongside, and every pair up to 254 added,
+   which is every numeral of up to nine digits and every pair of up to seven. Numerals too
+   long for an int are held to what holds of any numbers: dec undoes inc and inc undoes
+   dec, add commutes and associates, and adding a small k is k increments.
+
+   The book states no bound for these, but inc and dec on ordinary binary numbers take
+   O(log n) worst case, one step per digit, and add need only walk both numerals once. So
+   each is held to the per-digit budget above, counted in digits of the longer argument:
+   the dearest call over every numeral, and every pair, of up to eight digits, then long
+   families at a thousand and a hundred thousand digits, all TWOs being the dearest for
+   add and all ONEs the longest borrow for dec. Nothing about long numerals runs until the
+   short ones are within budget: an add that counted up by increments would be correct,
+   and would never finish a pair of thousand-digit numerals. *)
+
+module Z = Zeroless
+
+(* The numeral of n, by halving: an odd n has a ONE at the bottom, an even one a TWO. *)
+let rec z_of_int n =
+  if n = 0
+  then []
+  else if n mod 2 = 1
+  then Z.One :: z_of_int ((n - 1) / 2)
+  else Z.Two :: z_of_int ((n - 2) / 2)
+;;
+
+(* Lowest digit first, as the book writes them. *)
+let string_of_z = function
+  | [] -> "[]"
+  | ds ->
+    String.concat
+      ""
+      (List.map
+         (function
+           | Z.One -> "1"
+           | Z.Two -> "2")
+         ds)
+;;
+
+(* Every numeral of exactly k digits. *)
+let rec numerals k =
+  if k = 0
+  then [ [] ]
+  else List.concat_map (fun ds -> [ Z.One :: ds; Z.Two :: ds ]) (numerals (k - 1))
+;;
+
+let digit_budget k = per_digit *. float_of_int (k + 1)
+
+(* A loop of checks as one check: [f] calls [note] on every failure, and the first is the
+   one reported, with the count. *)
+let all_of name f =
+  let first = ref None
+  and count = ref 0 in
+  let note why =
+    incr count;
+    if !first = None then first := Some why
+  in
+  (try f note with
+   | e -> note ("raised " ^ Printexc.to_string e));
+  check
+    (match !first with
+     | None -> name
+     | Some why -> Printf.sprintf "%s -- %d wrong, the first: %s" name !count why)
+    (!first = None)
+;;
+
+let test_zeroless_contract () =
+  let t label = "Zeroless: " ^ label in
+  let z = string_of_z in
+  all_of (t "inc of every n up to 1022 is the numeral of n + 1") (fun note ->
+    for n = 0 to 1022 do
+      match Z.inc (z_of_int n) with
+      | r when r = z_of_int (n + 1) -> ()
+      | r -> note (Printf.sprintf "inc %s = %s" (z (z_of_int n)) (z r))
+      | exception e ->
+        note (Printf.sprintf "inc %s raised %s" (z (z_of_int n)) (Printexc.to_string e))
+    done);
+  refuses ~prefix:"dec:" (t "dec of zero refuses") (fun () -> Z.dec []);
+  all_of (t "dec of every n from 1 to 1022 is the numeral of n - 1") (fun note ->
+    for n = 1 to 1022 do
+      match Z.dec (z_of_int n) with
+      | r when r = z_of_int (n - 1) -> ()
+      | r ->
+        note
+          (Printf.sprintf
+             "dec %s = %s, want %s"
+             (z (z_of_int n))
+             (z r)
+             (z (z_of_int (n - 1))))
+      | exception e ->
+        note (Printf.sprintf "dec %s raised %s" (z (z_of_int n)) (Printexc.to_string e))
+    done);
+  all_of (t "add of every pair up to 254 is the numeral of the sum") (fun note ->
+    for a = 0 to 254 do
+      for b = 0 to 254 do
+        match Z.add (z_of_int a) (z_of_int b) with
+        | r when r = z_of_int (a + b) -> ()
+        | r ->
+          note
+            (Printf.sprintf
+               "add %s %s = %s, want %s"
+               (z (z_of_int a))
+               (z (z_of_int b))
+               (z r)
+               (z (z_of_int (a + b))))
+        | exception e ->
+          note
+            (Printf.sprintf
+               "add %s %s raised %s"
+               (z (z_of_int a))
+               (z (z_of_int b))
+               (Printexc.to_string e))
+      done
+    done)
+;;
+
+(* Numerals of about a thousand digits, far past any int: random ones, and the three whose
+   carries and borrows run the whole length. *)
+let test_zeroless_long () =
+  let t label = "Zeroless, a thousand digits: " ^ label in
+  Random.init 20260928;
+  let random () =
+    List.init (900 + Random.int 200) (fun _ -> if Random.bool () then Z.One else Z.Two)
+  in
+  let ones = List.init 1000 (fun _ -> Z.One)
+  and twos = List.init 1000 (fun _ -> Z.Two)
+  and alternate = List.init 1000 (fun i -> if i mod 2 = 0 then Z.One else Z.Two) in
+  let samples = ones :: twos :: alternate :: List.init 40 (fun _ -> random ()) in
+  let guarded note what f =
+    match f () with
+    | true -> ()
+    | false -> note what
+    | exception e -> note (what ^ " raised " ^ Printexc.to_string e)
+  in
+  all_of (t "dec undoes inc, and inc undoes dec") (fun note ->
+    List.iteri
+      (fun i x ->
+        guarded note (Printf.sprintf "dec (inc x) for sample %d" i) (fun () ->
+          Z.dec (Z.inc x) = x);
+        guarded note (Printf.sprintf "inc (dec x) for sample %d" i) (fun () ->
+          Z.inc (Z.dec x) = x))
+      samples);
+  all_of (t "add commutes and associates") (fun note ->
+    List.iteri
+      (fun i x ->
+        let y = List.nth samples ((i + 1) mod List.length samples)
+        and w = List.nth samples ((i + 2) mod List.length samples) in
+        guarded note (Printf.sprintf "add x y = add y x for sample %d" i) (fun () ->
+          Z.add x y = Z.add y x);
+        guarded
+          note
+          (Printf.sprintf "add (add x y) w = add x (add y w) for sample %d" i)
+          (fun () -> Z.add (Z.add x y) w = Z.add x (Z.add y w)))
+      samples);
+  all_of (t "adding k, on either side, is k increments, for k up to 40") (fun note ->
+    List.iteri
+      (fun i x ->
+        let r = ref x in
+        for k = 0 to 40 do
+          guarded note (Printf.sprintf "add of %d to sample %d" k i) (fun () ->
+            Z.add x (z_of_int k) = !r && Z.add (z_of_int k) x = !r);
+          r := Z.inc !r
+        done)
+      samples)
+;;
+
+(* The dearest dec over every numeral of exactly k digits, and the dearest add over every
+   pair in which the longer has exactly k, for k from 1 to 8, stopping at the first k that
+   is over budget. True if none was. *)
+let test_zeroless_short_costs () =
+  let t label = "Zeroless: " ^ label in
+  let upto k = List.concat (List.init (k + 1) numerals) in
+  let rec sweep k =
+    if k > 8
+    then None
+    else (
+      let exact = numerals k
+      and within = upto k
+      and dearest = ref (0.0, "") in
+      let see what c = if c > fst !dearest then dearest := c, what in
+      List.iter
+        (fun a ->
+          (match cost (fun () -> Z.dec a) with
+           | _, c -> see ("dec " ^ string_of_z a) c
+           | exception _ -> ());
+          List.iter
+            (fun b ->
+              (match cost (fun () -> Z.add a b) with
+               | _, c ->
+                 see (Printf.sprintf "add %s %s" (string_of_z a) (string_of_z b)) c
+               | exception _ -> ());
+              match cost (fun () -> Z.add b a) with
+              | _, c -> see (Printf.sprintf "add %s %s" (string_of_z b) (string_of_z a)) c
+              | exception _ -> ())
+            within)
+        exact;
+      if fst !dearest > digit_budget k then Some (k, !dearest) else sweep (k + 1))
+  in
+  let over = sweep 1 in
+  check
+    (t
+       (match over with
+        | None -> "dec and add within budget on every numeral and pair of up to 8 digits"
+        | Some (k, (c, what)) ->
+          Printf.sprintf
+            "dec and add within budget on every numeral and pair of up to 8 digits -- %s \
+             costs %.0f words at %d digits, budget %.0f"
+            what
+            c
+            k
+            (digit_budget k)))
+    (over = None);
+  over = None
+;;
+
+(* Long families at k digits: each call on the clock by itself, inputs made beforehand. *)
+let test_zeroless_long_costs k =
+  let ones = List.init k (fun _ -> Z.One)
+  and twos = List.init k (fun _ -> Z.Two)
+  and alternate = List.init k (fun i -> if i mod 2 = 0 then Z.One else Z.Two)
+  and other = List.init k (fun i -> if i mod 2 = 0 then Z.Two else Z.One) in
+  Random.init k;
+  let random () = List.init k (fun _ -> if Random.bool () then Z.One else Z.Two) in
+  let r1 = random ()
+  and r2 = random () in
+  let calls =
+    [ ("add of all TWOs to all TWOs", fun () -> Z.add twos twos)
+    ; ("add of all ONEs to all TWOs", fun () -> Z.add ones twos)
+    ; ("add of all TWOs to all ONEs", fun () -> Z.add twos ones)
+    ; ("add of all ONEs to all ONEs", fun () -> Z.add ones ones)
+    ; ("add of 1212... to 2121...", fun () -> Z.add alternate other)
+    ; ("add of two random numerals", fun () -> Z.add r1 r2)
+    ; ("add of one digit to all TWOs", fun () -> Z.add [ Z.Two ] twos)
+    ; ("dec of all ONEs", fun () -> Z.dec ones)
+    ; ("dec of all TWOs", fun () -> Z.dec twos)
+    ; ("dec of a random numeral", fun () -> Z.dec r1)
+    ]
+  in
+  let dearest = ref (0.0, "") in
+  List.iter
+    (fun (what, f) ->
+      match cost f with
+      | _, c -> if c > fst !dearest then dearest := c, what
+      | exception e -> dearest := infinity, what ^ " raised " ^ Printexc.to_string e)
+    calls;
+  let c, what = !dearest in
+  let fine = c <= digit_budget k in
+  check
+    (Printf.sprintf
+       "Zeroless, %d digits: the dearest of dec and add is %s at %.0f words, budget %.0f"
+       k
+       what
+       c
+       (digit_budget k))
+    fine;
+  fine
+;;
+
+(* Short numerals first, for what they are and then for what they cost; only then the long
+   ones, which an add that is not linear in the digits would never finish. *)
+let test_zeroless () =
+  section "Zeroless binary numbers (Exercise 9.4)";
+  let before = !failures in
+  test_zeroless_contract ();
+  if !failures > before
+  then
+    Printf.printf
+      "  SKIP  Zeroless: long numerals and costs -- the checks above do not hold\n"
+  else if not (test_zeroless_short_costs ())
+  then Printf.printf "  SKIP  Zeroless: long numerals -- over budget on short ones\n"
+  else (
+    test_zeroless_long ();
+    if test_zeroless_long_costs 1_000
+    then ignore (test_zeroless_long_costs 100_000)
+    else Printf.printf "  SKIP  Zeroless: costs at 100000 digits -- over budget at 1000\n")
+;;
+
 (* ------------------------------------------------------------------- runner *)
 
 (* A regression can make a function raise where the test did not expect it. Report that as
@@ -1302,6 +1586,7 @@ let () =
   run "SparseBinaryRandomAccessList" test_sparse;
   run "sparse drop" test_sparse_drop;
   run "sparse create" test_sparse_create;
+  run "Zeroless" test_zeroless;
   Printf.printf "\n%d checks, %d failures\n\n" !checks !failures;
   if !failures > 0 then exit 1
 ;;
