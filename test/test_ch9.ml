@@ -1,7 +1,8 @@
 (* Tests for Chapter 9: the binary random-access list of Figure 9.6 (section 9.2.1), the
    drop of Exercise 9.1, the create of Exercise 9.2, the sparse list of Exercise 9.3 with
-   its own drop and create, and the zeroless numbers of Exercise 9.4, each with its own
-   preamble further down. Plain OCaml, no test framework, matching the earlier chapters.
+   its own drop and create, and the zeroless numbers and list of Exercises 9.4 and 9.5,
+   each with its own preamble further down. Plain OCaml, no test framework, matching the
+   earlier chapters.
 
    Section 9.2.1 builds a list out of a binary number. A list of n elements holds one
    complete binary leaf tree for every one in the binary representation of n, in
@@ -289,6 +290,10 @@ module Rlist_tests (R : RANDOM_ACCESS_LIST) = struct
             then note n (Printf.sprintf "update %d then cons reads back wrong" i)
           | exception Failure why -> note n (Printf.sprintf "update %d raised %s" i why)
         done;
+        (match R.update (-1) 0 r with
+         | _ -> note n "update at -1 did not raise"
+         | exception Failure m when m = "update: not found" -> ()
+         | exception e -> note n ("update at -1 raised " ^ Printexc.to_string e));
         match R.update n 0 r with
         | _ -> note n "update one past the end did not raise"
         | exception Failure m when m = "update: not found" -> ()
@@ -299,7 +304,8 @@ module Rlist_tests (R : RANDOM_ACCESS_LIST) = struct
     check
       (t
          (Printf.sprintf
-            "update at every index of every size up to 40 reads back correctly%s"
+            "update at every index of every size up to 40 reads back correctly, and -1 \
+             and one past the end are refused%s"
             (match !bad with
              | [] -> ""
              | (n, what) :: _ -> Printf.sprintf " -- n=%d: %s" n what)))
@@ -340,7 +346,7 @@ module Rlist_tests (R : RANDOM_ACCESS_LIST) = struct
         if to_list !r <> !model || lookups (List.length !model) !r <> !model
         then incr bad_final
       with
-      | Failure _ -> incr raised
+      | _ -> incr raised
     done;
     check_int
       (t "no operation raises on a valid index of a non-empty list, 300 random runs")
@@ -751,7 +757,7 @@ module Drop_tests (R : WITH_DROP) = struct
         if to_list !r <> !model || lookups (List.length !model) !r <> !model
         then incr bad_model
       with
-      | Failure _ -> incr raised
+      | _ -> incr raised
     done;
     check_int
       (t "no operation raises on valid arguments, 300 random runs with drop")
@@ -1567,6 +1573,94 @@ let test_zeroless () =
     else Printf.printf "  SKIP  Zeroless: costs at 100000 digits -- over budget at 1000\n")
 ;;
 
+(* ----------------------------- ZerolessBinaryRandomAccessList (Exercise 9.5) *)
+
+(* Exercise 9.5 asks for the rest of the binary random-access list over zeroless numbers:
+   digits ONE of a tree and TWO of two trees, the i-th holding trees of size 2^i, and no
+   position ever empty. cons is inc with trees and tail is dec with trees, so what can go
+   wrong is what went wrong with the numbers: a carry that stops short or runs on, a
+   borrow taken where none is due or not passed up the list, an update that forgets a
+   digit it walked past. The contract and the clock above see those, unchanged: a carry
+   that stops short leaves the list linear in n, and update's walk to the last element
+   pays for it.
+
+   What the section is for is head. The first digit is never empty, so the head is always
+   a leaf right at the front, and p.125 says head "clearly runs in O(1) worst-case time".
+   That is a claim about head itself, as the book writes it, reading the front digit and
+   nothing else. A head written the way Figure 9.6 writes it, through the unconsTree that
+   tail uses, gives the right answer and rebuilds the list it throws away, and over
+   zeroless digits that rebuilding borrows up the list whenever the front is a ONE, which
+   is O(log n) on perfectly shaped lists. So head is on the clock at every size of a build
+   by cons and of the drain by tail that follows, and its dearest must stay within one
+   digit's budget, the same at a thousand elements and at a hundred thousand. A tail that
+   leaves a bigger tree at the front is the contract's to catch: the next cons pairs trees
+   of different sizes, and lookups go astray. O(log i) for lookup and update is Exercise
+   9.6, and not asked of this one. *)
+
+module Zeroless_list = Rlist_tests (ZerolessBinaryRandomAccessList)
+
+let test_zeroless_head_at n =
+  let module R = ZerolessBinaryRandomAccessList in
+  let name =
+    Printf.sprintf
+      "ZerolessBinaryRandomAccessList: head, at every size of a build and of the drain \
+       after it, n=%d"
+      n
+  in
+  let dearest () =
+    let dear = ref 0.0
+    and sum = ref 0
+    and r = ref R.empty in
+    let see r =
+      let x, c = cost (fun () -> R.head r) in
+      sum := !sum + x;
+      if c > !dear then dear := c
+    in
+    for i = 1 to n do
+      r := R.cons i !r;
+      see !r
+    done;
+    for _ = 2 to n do
+      r := R.tail !r;
+      see !r
+    done;
+    ignore (Sys.opaque_identity !sum);
+    !dear
+  in
+  match dearest () with
+  | c ->
+    let fine = c <= per_digit in
+    check
+      (Printf.sprintf
+         "%s, dearest at %.0f words, budget %.0f whatever n"
+         name
+         c
+         per_digit)
+      fine;
+    fine
+  | exception e ->
+    check (Printf.sprintf "%s: raised %s" name (Printexc.to_string e)) false;
+    false
+;;
+
+let test_zeroless_list () =
+  section "ZerolessBinaryRandomAccessList (Exercise 9.5)";
+  let before = !failures in
+  Zeroless_list.run_contract "ZerolessBinaryRandomAccessList";
+  if !failures > before
+  then
+    Printf.printf
+      "  SKIP  ZerolessBinaryRandomAccessList: cost checks -- the contract above does \
+       not hold\n"
+  else (
+    Zeroless_list.run_costs "ZerolessBinaryRandomAccessList";
+    if test_zeroless_head_at 1_000
+    then ignore (test_zeroless_head_at 100_000)
+    else
+      Printf.printf
+        "  SKIP  ZerolessBinaryRandomAccessList: head at n=100000 -- over budget at n=1000\n")
+;;
+
 (* ------------------------------------------------------------------- runner *)
 
 (* A regression can make a function raise where the test did not expect it. Report that as
@@ -1587,6 +1681,7 @@ let () =
   run "sparse drop" test_sparse_drop;
   run "sparse create" test_sparse_create;
   run "Zeroless" test_zeroless;
+  run "ZerolessBinaryRandomAccessList" test_zeroless_list;
   Printf.printf "\n%d checks, %d failures\n\n" !checks !failures;
   if !failures > 0 then exit 1
 ;;

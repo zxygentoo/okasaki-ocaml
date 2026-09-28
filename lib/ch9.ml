@@ -399,3 +399,103 @@ module Zeroless = struct
     | Two :: xs, Two :: ys -> Two :: inc (add xs ys)
   ;;
 end
+
+(* Exercise 9.5 Implement the remaining functions for this type. *)
+
+module ZerolessBinaryRandomAccessList : RANDOM_ACCESS_LIST = struct
+  type 'a tree =
+    | Leaf of 'a
+    | Node of int * 'a tree * 'a tree
+
+  type 'a digit =
+    | One of 'a tree
+    | Two of 'a tree * 'a tree
+
+  type 'a rlist = 'a digit list
+
+  let empty = []
+
+  let is_empty = function
+    | [] -> true
+    | _ -> false
+  ;;
+
+  let size = function
+    | Leaf _ -> 1
+    | Node (w, _, _) -> w
+  ;;
+
+  let link t1 t2 = Node (size t1 + size t2, t1, t2)
+
+  let rec carry = function
+    | One a :: One b :: xs -> Two (a, b) :: xs
+    | (One _ as x) :: Two (a, b) :: xs -> x :: carry (One (link a b) :: xs)
+    | xs -> xs
+  ;;
+
+  let rec borrow = function
+    | Two (Node (_, a, b), (Node _ as c)) :: xs -> Two (a, b) :: One c :: xs
+    | One (Node (_, a, b)) :: xs -> Two (a, b) :: borrow xs
+    | xs -> xs
+  ;;
+
+  let cons e xs = carry (One (Leaf e) :: xs)
+
+  let head = function
+    | [] -> raise (Failure "head: empty list")
+    | One (Leaf e) :: _ -> e
+    | Two (Leaf e, _) :: _ -> e
+    | _ -> assert false
+  ;;
+
+  let rec tail = function
+    | [] -> raise (Failure "tail: empty list")
+    | One (Leaf _) :: xs -> borrow xs
+    | Two (a, b) :: xs -> tail (One a :: One b :: xs)
+    | _ -> assert false
+  ;;
+
+  let rec lookup_tree i = function
+    | Leaf e when i = 0 -> e
+    | Node (w, a, b) -> if i < w / 2 then lookup_tree i a else lookup_tree (i - (w / 2)) b
+    | _ -> raise (Failure "lookup: not found")
+  ;;
+
+  let rec lookup i = function
+    | [] -> raise (Failure "lookup: not found")
+    | One x :: xs -> if i < size x then lookup_tree i x else lookup (i - size x) xs
+    | Two (a, b) :: xs ->
+      let sa = size a
+      and sb = size b in
+      if i < sa
+      then lookup_tree i a
+      else if i < sa + sb
+      then lookup_tree (i - sa) b
+      else lookup (i - sa - sb) xs
+  ;;
+
+  let rec update_tree i e = function
+    | Leaf _ when i = 0 -> Leaf e
+    | Node (w, a, b) ->
+      if i < w / 2
+      then Node (w, update_tree i e a, b)
+      else Node (w, a, update_tree (i - (w / 2)) e b)
+    | _ -> raise (Failure "update: not found")
+  ;;
+
+  let rec update i e = function
+    | [] -> raise (Failure "update: not found")
+    | One x :: xs ->
+      if i < size x
+      then One (update_tree i e x) :: xs
+      else One x :: update (i - size x) e xs
+    | (Two (a, b) as x) :: xs ->
+      let sa = size a
+      and sb = size b in
+      if i < sa
+      then Two (update_tree i e a, b) :: xs
+      else if i < sa + sb
+      then Two (a, update_tree (i - sa) e b) :: xs
+      else x :: update (i - sa - sb) e xs
+  ;;
+end
