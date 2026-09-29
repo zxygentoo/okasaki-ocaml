@@ -313,8 +313,8 @@ module BankersDeque (C : CONSTANT_FACTOR) (S : STREAM) : DEQUE = struct
 
   let empty = 0, lazy S.Nil, 0, lazy S.Nil
   let is_empty (lenf, _, lenr, _) = lenf + lenr = 0
-  let snoc (lenf, f, lenr, r) x = check (lenf, f, lenr + 1, lazy (S.Cons (x, r)))
-  let cons x (lenf, f, lenr, r) = check (lenf + 1, lazy (S.Cons (x, f)), lenr, r)
+  let snoc (lenf, f, lenr, r) x = check (lenf, f, lenr + 1, Lazy.from_val (S.Cons (x, r)))
+  let cons x (lenf, f, lenr, r) = check (lenf + 1, Lazy.from_val (S.Cons (x, f)), lenr, r)
 
   let head (_, f, _, r) =
     match f, r with
@@ -400,11 +400,11 @@ module RealTimeDeque (C : CONSTANT_FACTOR) (S : STREAM) : DEQUE = struct
   let is_empty ((lenf, _, _), (lenr, _, _)) = lenf + lenr = 0
 
   let cons x ((lenf, f, sf), (lenr, r, sr)) =
-    check ((lenf + 1, lazy (S.Cons (x, f)), exec_ins sf), (lenr, r, exec_ins sr))
+    check ((lenf + 1, Lazy.from_val (S.Cons (x, f)), exec_ins sf), (lenr, r, exec_ins sr))
   ;;
 
   let snoc ((lenf, f, sf), (lenr, r, sr)) x =
-    check ((lenf, f, exec_ins sf), (lenr + 1, lazy (S.Cons (x, r)), exec_ins sr))
+    check ((lenf, f, exec_ins sf), (lenr + 1, Lazy.from_val (S.Cons (x, r)), exec_ins sr))
   ;;
 
   let head ((_, f, _), (_, r, _)) =

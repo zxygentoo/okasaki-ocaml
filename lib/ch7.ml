@@ -42,9 +42,9 @@ module RealTimeQueue (Strem : STREAM) : QUEUE_WITH_SIZES = struct
 
   let[@ocaml.warning "-partial-match"] rec rotate x y a =
     match x, y with
-    | (lazy S.Nil), y :: _ -> lazy (S.Cons (y, a))
+    | (lazy S.Nil), y :: _ -> Lazy.from_val (S.Cons (y, a))
     | (lazy (S.Cons (x, xs))), y :: ys ->
-      lazy (S.Cons (x, rotate xs ys (lazy (S.Cons (y, a)))))
+      lazy (S.Cons (x, rotate xs ys (Lazy.from_val (S.Cons (y, a)))))
   ;;
 
   let exec (f, r, s) =
@@ -126,8 +126,8 @@ module ScheduledBinomialHeap (Elem : ORDERED) (Stream : STREAM) :
   ;;
 
   let rec ins_tree t = function
-    | (lazy S.Nil) -> lazy (S.Cons (One t, lazy S.Nil))
-    | (lazy (S.Cons (Zero, ds))) -> lazy (S.Cons (One t, ds))
+    | (lazy S.Nil) -> Lazy.from_val (S.Cons (One t, lazy S.Nil))
+    | (lazy (S.Cons (Zero, ds))) -> Lazy.from_val (S.Cons (One t, ds))
     | (lazy (S.Cons (One t', ds))) -> lazy (S.Cons (Zero, ins_tree (link t t') ds))
   ;;
 
@@ -171,12 +171,12 @@ module ScheduledBinomialHeap (Elem : ORDERED) (Stream : STREAM) :
     | (lazy (S.Cons (One t, (lazy S.Nil)))) -> t, lazy S.Nil
     | (lazy (S.Cons (Zero, ds))) ->
       let t', ds' = remove_min_tree ds in
-      t', lazy (S.Cons (Zero, ds'))
+      t', Lazy.from_val (S.Cons (Zero, ds'))
     | (lazy (S.Cons (One (Node (x, _) as t), ds))) ->
       let (Node (x', _) as t'), ds' = remove_min_tree ds in
       if Element.leq x x'
-      then t, lazy (S.Cons (Zero, ds))
-      else t', lazy (S.Cons (One t, ds'))
+      then t, Lazy.from_val (S.Cons (Zero, ds))
+      else t', Lazy.from_val (S.Cons (One t, ds'))
   ;;
 
   let find_min (ds, _) =
@@ -261,7 +261,7 @@ module ScheduledBottomUpMergeSort (Elem : ORDERED) (Stream : STREAM) :
         let xs'' = mrg xs xs' in
         add_seg xs'' ss' (sz / 2) (xs'' :: rsched))
     in
-    let segs' = add_seg (lazy (S.Cons (x, lazy S.Nil))) segs size [] in
+    let segs' = add_seg (Lazy.from_val (S.Cons (x, lazy S.Nil))) segs size [] in
     size + 1, List.map exec2 segs'
   ;;
 

@@ -33,7 +33,7 @@ module BankersQueue (Stream : STREAM) : QUEUE = struct
     if lenr <= lenf then q else lenf + lenr, S.(f ++ reverse r), 0, lazy S.Nil
   ;;
 
-  let snoc (lenf, f, lenr, r) x = check (lenf, f, lenr + 1, lazy (S.Cons (x, r)))
+  let snoc (lenf, f, lenr, r) x = check (lenf, f, lenr + 1, Lazy.from_val (S.Cons (x, r)))
 
   let head = function
     | _, (lazy S.Nil), _, _ -> raise (Failure "head: empty queue")
@@ -301,7 +301,7 @@ module StreamBottomUpMergeSort (E : ORDERED) (Stream : STREAM) :
     let rec add_seg s ss sz =
       if sz mod 2 = 0 then s :: ss else add_seg (mrg s (List.hd ss)) (List.tl ss) (sz / 2)
     in
-    size + 1, add_seg (lazy (S.Cons (x, lazy S.Nil))) segs size
+    size + 1, add_seg (Lazy.from_val (S.Cons (x, lazy S.Nil))) segs size
   ;;
 
   let to_list s =

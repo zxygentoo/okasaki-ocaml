@@ -529,16 +529,16 @@ module Lazz (S : STREAM) = struct
   type nat = digit stream
 
   let rec inc = function
-    | (lazy Nil) -> lazy (Cons (One, lazy Nil))
-    | (lazy (Cons (Zero, ds))) -> lazy (Cons (One, ds))
-    | (lazy (Cons (One, ds))) -> lazy (Cons (Two, ds))
+    | (lazy Nil) -> Lazy.from_val (Cons (One, lazy Nil))
+    | (lazy (Cons (Zero, ds))) -> Lazy.from_val (Cons (One, ds))
+    | (lazy (Cons (One, ds))) -> Lazy.from_val (Cons (Two, ds))
     | (lazy (Cons (Two, ds))) -> lazy (Cons (One, inc ds))
   ;;
 
   let rec dec = function
     | (lazy (Cons (One, (lazy Nil)))) -> lazy Nil
-    | (lazy (Cons (One, ds))) -> lazy (Cons (Zero, ds))
-    | (lazy (Cons (Two, ds))) -> lazy (Cons (One, ds))
+    | (lazy (Cons (One, ds))) -> Lazy.from_val (Cons (Zero, ds))
+    | (lazy (Cons (Two, ds))) -> Lazy.from_val (Cons (One, ds))
     | (lazy (Cons (Zero, ds))) -> lazy (Cons (One, dec ds))
     | _ -> assert false
   ;;
@@ -599,9 +599,9 @@ struct
     lazy
       (match s with
        | (lazy (Cons (Three (Node (_, a, b), c, d), rest))) ->
-         Two (a, b) ^:: lazy (Two (c, d) ^:: rest)
+         Two (a, b) ^:: Lazy.from_val (Two (c, d) ^:: rest)
        | (lazy (Cons (Two (Node (_, a, b), c), rest))) ->
-         Two (a, b) ^:: lazy (One c ^:: rest)
+         Two (a, b) ^:: Lazy.from_val (One c ^:: rest)
        | (lazy (Cons (One (Node (_, a, b)), rest))) -> Two (a, b) ^:: borrow rest
        | (lazy Nil) -> Nil
        | _ -> assert false)
@@ -620,8 +620,8 @@ struct
   let tail = function
     | (lazy Nil) -> raise (Failure "tail: empty list")
     | (lazy (Cons (One _, rest))) -> borrow rest
-    | (lazy (Cons (Two (_, b), rest))) -> lazy (One b ^:: rest)
-    | (lazy (Cons (Three (_, b, c), rest))) -> lazy (Two (b, c) ^:: rest)
+    | (lazy (Cons (Two (_, b), rest))) -> Lazy.from_val (One b ^:: rest)
+    | (lazy (Cons (Three (_, b, c), rest))) -> Lazy.from_val (Two (b, c) ^:: rest)
   ;;
 end
 
