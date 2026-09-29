@@ -518,7 +518,7 @@ module type STREAM = sig
   val reverse : 'a stream -> 'a stream
 end
 
-module Lazz (S : STREAM) = struct
+module LazyRepresentation (S : STREAM) = struct
   open S
 
   type digit =
