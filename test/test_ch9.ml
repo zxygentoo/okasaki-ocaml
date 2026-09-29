@@ -1,8 +1,9 @@
 (* Tests for Chapter 9: the binary random-access list of Figure 9.6 (section 9.2.1), the
    drop of Exercise 9.1, the create of Exercise 9.2, the sparse list of Exercise 9.3 with
    its own drop and create, the zeroless numbers and list of Exercises 9.4 and 9.5, and
-   the zeroless redundant list of Exercise 9.9, each with its own preamble further down.
-   Plain OCaml, no test framework, matching the earlier chapters.
+   the zeroless redundant list of Exercise 9.9 and its scheduled form of Exercise 9.10,
+   each with its own preamble further down. Plain OCaml, no test framework, matching the
+   earlier chapters.
 
    Section 9.2.1 builds a list out of a binary number. A list of n elements holds one
    complete binary leaf tree for every one in the binary representation of n, in
@@ -2046,6 +2047,151 @@ module Lite_tests (R : RANDOM_ACCESS_LIST_LITE) = struct
         "  SKIP  %s: costs at 3 (2^17 - 1) -- over budget at 3 (2^10 - 1)\n"
         name
   ;;
+
+  (* ------------------------------------------ every operation on its own clock *)
+
+  (* For a worst-case bound (Exercise 9.10): every cons, head, tail and is_empty on the
+     clock by itself, and the dearest of a whole sequence held to a constant, the same at
+     both sizes: four digits' worth. Measured, the dearest is some 55 words, a cons that
+     starts a carry and runs its steps of the schedule. A schedule that falls behind, or a
+     tail that leaves its borrow off it, comes to 120 words and more at 3 (2^10 - 1)
+     already; a carry or a borrow run to its end on the spot, some 180; and no schedule at
+     all, thousands. *)
+  let worst_case_budget = 4.0 *. per_digit
+  let dearest = ref 0.0
+  let dearest_at = ref ("", 0)
+  let steps = ref 0
+
+  let clocked op f =
+    incr steps;
+    let r, c = cost f in
+    if c > !dearest
+    then (
+      dearest := c;
+      dearest_at := op, !steps);
+    r
+  ;;
+
+  let c_cons i r = clocked "cons" (fun () -> R.cons i r)
+  let c_tail r = clocked "tail" (fun () -> R.tail r)
+
+  (* is_empty forces the front of the stream as much as head does, so it is on the clock
+     as well. *)
+  let c_head r =
+    if not (clocked "is_empty" (fun () -> R.is_empty r))
+    then ignore (Sys.opaque_identity (clocked "head" (fun () -> R.head r)))
+  ;;
+
+  let c_tails k r =
+    let r = ref r in
+    for _ = 1 to k do
+      r := c_tail !r;
+      c_head !r
+    done;
+    !r
+  ;;
+
+  let worst_sequences k =
+    let m = (1 lsl k) - 1 in
+    let n = 3 * m in
+    let build () =
+      let r = ref R.empty in
+      for i = 1 to n do
+        r := c_cons i !r;
+        c_head !r
+      done;
+      !r
+    in
+    let back_and_forth ~cons_first steps r =
+      let r = ref r in
+      for i = 1 to steps do
+        r := if i mod 2 = 1 = cons_first then c_cons (-i) !r else c_tail !r;
+        c_head !r
+      done;
+      !r
+    in
+    [ ( Printf.sprintf "a build of %d by cons and its drain by tail" n
+      , fun () -> ignore (c_tails n (build ())) )
+    ; ( Printf.sprintf "a build of %d, then %d conses onto that one version" n n
+      , fun () ->
+          let v = build () in
+          for i = 1 to n do
+            c_head (c_cons (-i) v)
+          done )
+    ; ( Printf.sprintf
+          "a build of %d and %d tails, then %d tails of that one version"
+          n
+          (2 * m)
+          (n + (2 * m))
+      , fun () ->
+          let v = c_tails (2 * m) (build ()) in
+          for _ = 1 to n + (2 * m) do
+            c_head (c_tail v)
+          done )
+    ; ( Printf.sprintf
+          "a build of %d, then %d conses and tails in turn, then the drain"
+          n
+          (2 * n)
+      , fun () -> ignore (c_tails n (back_and_forth ~cons_first:true (2 * n) (build ())))
+      )
+    ; ( Printf.sprintf
+          "a build of %d and %d tails, then %d tails and conses in turn, then the drain"
+          n
+          (2 * m)
+          (2 * (n + (2 * m)))
+      , fun () ->
+          let v = c_tails (2 * m) (build ()) in
+          ignore (c_tails m (back_and_forth ~cons_first:false (2 * (n + (2 * m))) v)) )
+    ; ( Printf.sprintf "%d conses that nobody reads, then a head, then the drain" n
+      , fun () ->
+          let r = ref R.empty in
+          for i = 1 to n do
+            r := c_cons i !r
+          done;
+          c_head !r;
+          ignore (c_tails n !r) )
+    ]
+  ;;
+
+  (* True if every sequence's dearest operation was within budget. *)
+  let run_worst_costs_at name k =
+    List.fold_left
+      (fun ok (what, f) ->
+        dearest := 0.0;
+        dearest_at := "", 0;
+        steps := 0;
+        match f () with
+        | () ->
+          let op, i = !dearest_at in
+          let fine = !dearest <= worst_case_budget in
+          check
+            (Printf.sprintf
+               "%s: %s, the dearest is the %s at step %d, %.0f words, budget %.0f"
+               name
+               what
+               op
+               i
+               !dearest
+               worst_case_budget)
+            fine;
+          ok && fine
+        | exception e ->
+          check
+            (Printf.sprintf "%s: %s: raised %s" name what (Printexc.to_string e))
+            false;
+          false)
+      true
+      (worst_sequences k)
+  ;;
+
+  let run_worst_costs name =
+    if run_worst_costs_at name 10
+    then ignore (run_worst_costs_at name 17)
+    else
+      Printf.printf
+        "  SKIP  %s: costs at 3 (2^17 - 1) -- over budget at 3 (2^10 - 1)\n"
+        name
+  ;;
 end
 
 module Redundant = Lite_tests (ZerolessRedundantBinaryRandomAccessList (Okasaki.Ch4.Stream))
@@ -2058,6 +2204,37 @@ let test_redundant () =
   if !failures > before
   then Printf.printf "  SKIP  %s: cost checks -- the contract above does not hold\n" name
   else Redundant.run_costs name
+;;
+
+(* ---------- ScheduledZerolessRedundantBinaryRandomAccessList (Exercise 9.10) *)
+
+(* Exercise 9.10 asks for the same three operations in O(1) worst-case time, by
+   scheduling, as the binomial heaps of section 7.3 do it: the list carries, beside its
+   stream, the carries and borrows that have not yet run, and every cons and tail runs a
+   few steps of them, so that no suspension is forced before the ones it depends on.
+   Nothing the stack can see changes, so the contract is 9.9's, through the same functor,
+   and so is what it cannot see.
+
+   What changes is the clock. Every cons, head and tail goes on it by itself now, and the
+   dearest single operation of each sequence is held to a constant, the same at 3
+   (2^10 - 1) elements and at 3 (2^17 - 1). The sequences are 9.9's: a build and its
+   drain, one old version cons'ed onto and tailed over and over where a carry or a borrow
+   runs the whole length, and back and forth from both of those. And one more, which 9.9
+   would fail: conses that nobody reads, then a head. In 9.9 that head runs every carry
+   the conses left behind, some twelve words an element; here each cons has already done
+   its share. *)
+
+module Scheduled =
+  Lite_tests (ScheduledZerolessRedundantBinaryRandomAccessList (Okasaki.Ch4.Stream))
+
+let test_scheduled () =
+  let name = "ScheduledZerolessRedundantBinaryRandomAccessList" in
+  section (name ^ " (Exercise 9.10)");
+  let before = !failures in
+  Scheduled.run_contract name;
+  if !failures > before
+  then Printf.printf "  SKIP  %s: cost checks -- the contract above does not hold\n" name
+  else Scheduled.run_worst_costs name
 ;;
 
 (* ------------------------------------------------------------------- runner *)
@@ -2082,6 +2259,7 @@ let () =
   run "Zeroless" test_zeroless;
   run "ZerolessBinaryRandomAccessList" test_zeroless_list;
   run "ZerolessRedundantBinaryRandomAccessList" test_redundant;
+  run "ScheduledZerolessRedundantBinaryRandomAccessList" test_scheduled;
   Printf.printf "\n%d checks, %d failures\n\n" !checks !failures;
   if !failures > 0 then exit 1
 ;;

@@ -617,10 +617,99 @@ struct
     | _ -> assert false
   ;;
 
-  let rec tail = function
+  let tail = function
     | (lazy Nil) -> raise (Failure "tail: empty list")
     | (lazy (Cons (One _, rest))) -> borrow rest
     | (lazy (Cons (Two (_, b), rest))) -> lazy (One b ^:: rest)
     | (lazy (Cons (Three (_, b, c), rest))) -> lazy (Two (b, c) ^:: rest)
   ;;
+end
+
+(* Exercise 9.10 As demonstrated by scheduled binomial heaps in Section 7.3, we can apply
+   scheduling to lazy binary numbers to achieve O(l) worst-case bounds. Re-implement cons,
+   head, and tail from the preceding exercise so that each runs in 0(1) worst-case time.
+   You may find it helpful to have two distinct Two constructors (say, Two and Two' ) so
+   that you can distinguish between recursive and non-recursive cases of cons and tail. *)
+
+module ScheduledZerolessRedundantBinaryRandomAccessList (S : STREAM) :
+  RANDOM_ACCESS_LIST_LITE = struct
+  open S
+
+  let ( ^:: ) a b = Cons (a, b)
+
+  type 'a tree =
+    | Leaf of 'a
+    | Node of int * 'a tree * 'a tree
+
+  type 'a digit =
+    | One of 'a tree
+    | Two of 'a tree * 'a tree (* non-recursive case *)
+    | TwoR of 'a tree * 'a tree (* recursive case *)
+    | Three of 'a tree * 'a tree * 'a tree
+
+  type 'a schedule = 'a digit stream list
+  type 'a rlist = 'a digit stream * 'a schedule
+
+  let empty = lazy Nil, []
+
+  let is_empty = function
+    | (lazy Nil), _ -> true
+    | _ -> false
+  ;;
+
+  let size = function
+    | Leaf _ -> 1
+    | Node (w, _, _) -> w
+  ;;
+
+  let link t1 t2 = Node (size t1 + size t2, t1, t2)
+
+  let exec = function
+    | [] -> []
+    | (lazy (Cons (TwoR _, job))) :: sched -> job :: sched
+    | _ :: sched -> sched
+  ;;
+
+  let scheduled s sched = s, exec (exec (s :: sched))
+
+  let rec carry x s =
+    lazy
+      (match s with
+       | (lazy Nil) -> One x ^:: lazy Nil
+       | (lazy (Cons (One a, rest))) -> Two (x, a) ^:: rest
+       | (lazy (Cons ((Two (a, b) | TwoR (a, b)), rest))) -> Three (x, a, b) ^:: rest
+       | (lazy (Cons (Three (a, b, c), rest))) -> TwoR (x, a) ^:: carry (link b c) rest)
+  ;;
+
+  let rec borrow s =
+    lazy
+      (match s with
+       | (lazy (Cons (Three (Node (_, a, b), c, d), rest))) ->
+         Two (a, b) ^:: Lazy.from_val (Two (c, d) ^:: rest)
+       | (lazy (Cons ((Two (Node (_, a, b), c) | TwoR (Node (_, a, b), c)), rest))) ->
+         Two (a, b) ^:: Lazy.from_val (One c ^:: rest)
+       | (lazy (Cons (One (Node (_, a, b)), rest))) -> TwoR (a, b) ^:: borrow rest
+       | (lazy Nil) -> Nil
+       | _ -> assert false)
+  ;;
+
+  let cons e (s, sched) = scheduled (carry (Leaf e) s) sched
+
+  let head (s, _) =
+    match s with
+    | (lazy Nil) -> raise (Failure "head: empty list")
+    | (lazy (Cons (One (Leaf e), _))) -> e
+    | (lazy (Cons ((Two (Leaf e, _) | TwoR (Leaf e, _)), _))) -> e
+    | (lazy (Cons (Three (Leaf e, _, _), _))) -> e
+    | _ -> assert false
+  ;;
+
+  let tail_tree = function
+    | (lazy Nil) -> raise (Failure "tail: empty list")
+    | (lazy (Cons (One _, rest))) -> borrow rest
+    | (lazy (Cons ((Two (_, b) | TwoR (_, b)), rest))) -> Lazy.from_val (One b ^:: rest)
+    | (lazy (Cons (Three (_, b, c), rest))) -> Lazy.from_val (Two (b, c) ^:: rest)
+  ;;
+
+  let tail (s, sched) = scheduled (tail_tree s) sched
 end
