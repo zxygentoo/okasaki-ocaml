@@ -713,3 +713,75 @@ module ScheduledZerolessRedundantBinaryRandomAccessList (S : STREAM) :
 
   let tail (s, sched) = scheduled (tail_tree s) sched
 end
+
+module SegmentedRepresentationOne = struct
+  type digit_block =
+    | Zeros of int
+    | Ones of int
+
+  type nat = digit_block list
+
+  let zeros i bks =
+    if i = 0
+    then bks
+    else (
+      match bks with
+      | [] -> []
+      | Zeros j :: bks -> Zeros (i + j) :: bks
+      | _ -> Zeros i :: bks)
+  ;;
+
+  let ones i bks =
+    if i = 0
+    then bks
+    else (
+      match bks with
+      | Ones j :: bks -> Ones (i + j) :: bks
+      | bks -> Ones i :: bks)
+  ;;
+
+  let rec inc = function
+    | [] -> [ Ones 1 ]
+    | Zeros i :: bks -> ones 1 (zeros (i - 1) bks)
+    | Ones i :: bks -> Zeros i :: inc bks
+  ;;
+
+  let rec dec = function
+    | [] -> raise (Failure "dec: zero")
+    | Ones i :: bks -> zeros 1 (ones (i - 1) bks)
+    | Zeros i :: bks -> Ones i :: dec bks
+  ;;
+end
+
+module SegmentedRepresentationTwo = struct
+  type digits =
+    | Zero
+    | Ones of int
+    | Two
+
+  type nat = digits list
+
+  let ones i ds =
+    if i = 0
+    then ds
+    else (
+      match ds with
+      | Ones j :: ds' -> Ones (i + j) :: ds'
+      | _ -> Ones i :: ds)
+  ;;
+
+  let simple_inc = function
+    | [] -> [ Ones 1 ]
+    | Zero :: ds -> ones 1 ds
+    | Ones i :: ds' -> Two :: ones (i - 1) ds'
+    | _ -> assert false
+  ;;
+
+  let fixup = function
+    | Two :: ds -> Zero :: simple_inc ds
+    | Ones i :: Two :: ds -> Ones i :: Zero :: simple_inc ds
+    | ds -> ds
+  ;;
+
+  let inc ds = fixup (simple_inc ds)
+end

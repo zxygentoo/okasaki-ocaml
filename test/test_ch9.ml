@@ -2,8 +2,8 @@
    drop of Exercise 9.1, the create of Exercise 9.2, the sparse list of Exercise 9.3 with
    its own drop and create, the zeroless numbers and list of Exercises 9.4 and 9.5, and
    the zeroless redundant list of Exercise 9.9 and its scheduled form of Exercise 9.10,
-   each with its own preamble further down. Plain OCaml, no test framework, matching the
-   earlier chapters.
+   and the segmented binary numbers of section 9.2.4, each with its own preamble further
+   down. Plain OCaml, no test framework, matching the earlier chapters.
 
    Section 9.2.1 builds a list out of a binary number. A list of n elements holds one
    complete binary leaf tree for every one in the binary representation of n, in
@@ -2237,6 +2237,499 @@ let test_scheduled () =
   else Scheduled.run_worst_costs name
 ;;
 
+(* ------------------------------------------- segmented binary numbers (9.2.4) *)
+
+(* Section 9.2.4 groups runs of equal digits into blocks, so that a carry or a borrow
+   through a whole run is one step. p.129: "segmented binary numbers support inc and dec
+   in O(1) worst-case time", and of the redundant form that follows, "we can increment a
+   number in O(1) worst-case time".
+
+   SegmentedRepresentationOne is alternating blocks of zeros and ones. p.128: the helpers
+   "merge adjacent blocks of the same digit and discard empty blocks", and zeros "discards
+   any trailing zeros". So every n has exactly one list of blocks, and inc and dec are
+   right exactly when they return it. The model run-length encodes the binary digits of n
+   and knows nothing else of blocks: every n up to 4095, then numerals thousands of digits
+   long in runs of up to 300, whose bits the model keeps as a list. The value alone would
+   not do: a block of length zero adds nothing to it, so a dec that leaves one behind is
+   right by the value and wrong by the shape.
+
+   SegmentedRepresentationTwo has digits ZERO and TWO and blocks of ONEs, and more than
+   one numeral per number. A result is right when it has the right value and keeps the
+   book's invariant (0*1 | 0+1*2)*: the last digit below a TWO that is not a one is a
+   ZERO, and nothing ends in a ZERO. Its blocks of ONEs are never empty and never side by
+   side, which fixup's second clause needs to see a TWO behind the first block. inc is
+   held to that on every regular numeral of up to ten digits, not only the ones counting
+   reaches, on every number up to 2^16 counted from zero, and on long numerals.
+
+   Then the clock, every call on it by itself, and the dearest held to one constant at a
+   thousand and at a hundred thousand, in block lengths and in block counts: the numerals
+   where a carry or borrow that went digit by digit, or a pass over every block, would
+   cost the most. *)
+
+module S1 = SegmentedRepresentationOne
+module S2 = SegmentedRepresentationTwo
+
+(* Binary digits, lowest first, never ending in a 0: the model for both. *)
+let rec bits_of_int n = if n = 0 then [] else (n mod 2) :: bits_of_int (n / 2)
+
+let rec inc_bits = function
+  | [] -> [ 1 ]
+  | 0 :: bs -> 1 :: bs
+  | _ :: bs -> 0 :: inc_bits bs
+;;
+
+let rec dec_bits = function
+  | [] -> invalid_arg "dec_bits: zero"
+  | [ _ ] -> []
+  | 1 :: bs -> 0 :: bs
+  | _ :: bs -> 1 :: dec_bits bs
+;;
+
+(* The one list of blocks for these bits: their runs, lowest first. *)
+let blocks_of_bits bs =
+  let block b i = if b = 0 then S1.Zeros i else S1.Ones i in
+  let rec go b i = function
+    | b' :: bs when b' = b -> go b (i + 1) bs
+    | b' :: bs -> block b i :: go b' 1 bs
+    | [] -> [ block b i ]
+  in
+  match bs with
+  | [] -> []
+  | b :: bs -> go b 1 bs
+;;
+
+let s1_of_int n = blocks_of_bits (bits_of_int n)
+
+(* Spelled out digit by digit: only ever applied to numerals the tests made. *)
+let bits_of_blocks bks =
+  List.concat_map
+    (function
+      | S1.Zeros i -> List.init i (fun _ -> 0)
+      | S1.Ones i -> List.init i (fun _ -> 1))
+    bks
+;;
+
+(* Lowest first, a run as its digit and its length. *)
+let string_of_s1 = function
+  | [] -> "[]"
+  | bks ->
+    String.concat
+      " "
+      (List.map
+         (function
+           | S1.Zeros i -> Printf.sprintf "0^%d" i
+           | S1.Ones i -> Printf.sprintf "1^%d" i)
+         bks)
+;;
+
+(* Alternating runs of length one, [count] blocks, the top one ONEs. *)
+let s1_alternating count =
+  List.init count (fun j -> if (count - 1 - j) mod 2 = 0 then S1.Ones 1 else S1.Zeros 1)
+;;
+
+(* [count] alternating runs of random lengths from 1 to [longest], the top one ONEs. *)
+let s1_random count longest =
+  List.init count (fun j ->
+    let i = 1 + Random.int longest in
+    if (count - 1 - j) mod 2 = 0 then S1.Ones i else S1.Zeros i)
+;;
+
+let test_seg1_contract () =
+  let t label = "SegmentedRepresentationOne: " ^ label in
+  let s = string_of_s1 in
+  all_of (t "inc of every n up to 4095 is the blocks of n + 1") (fun note ->
+    for n = 0 to 4095 do
+      match S1.inc (s1_of_int n) with
+      | r when r = s1_of_int (n + 1) -> ()
+      | r ->
+        note
+          (Printf.sprintf
+             "inc %s = %s, want %s"
+             (s (s1_of_int n))
+             (s r)
+             (s (s1_of_int (n + 1))))
+      | exception e ->
+        note (Printf.sprintf "inc %s raised %s" (s (s1_of_int n)) (Printexc.to_string e))
+    done);
+  refuses ~prefix:"dec:" (t "dec of zero refuses") (fun () -> S1.dec []);
+  all_of (t "dec of every n from 1 to 4095 is the blocks of n - 1") (fun note ->
+    for n = 1 to 4095 do
+      match S1.dec (s1_of_int n) with
+      | r when r = s1_of_int (n - 1) -> ()
+      | r ->
+        note
+          (Printf.sprintf
+             "dec %s = %s, want %s"
+             (s (s1_of_int n))
+             (s r)
+             (s (s1_of_int (n - 1))))
+      | exception e ->
+        note (Printf.sprintf "dec %s raised %s" (s (s1_of_int n)) (Printexc.to_string e))
+    done)
+;;
+
+(* Numerals far past any int. Each takes a hundred incs and then two hundred decs, every
+   step against the model, so that inc and dec also see what the other returned. A chain
+   stops at its first wrong step: what follows a wrong numeral says nothing new. *)
+let test_seg1_long () =
+  let t label = "SegmentedRepresentationOne, long numerals: " ^ label in
+  Random.init 20260929;
+  let rec random () =
+    let x = s1_random (2 + Random.int 40) 300 in
+    if List.length (bits_of_blocks x) < 10 then random () else x
+  in
+  let samples =
+    [ "1^1000", [ S1.Ones 1000 ]
+    ; "0^1000 1", [ S1.Zeros 1000; S1.Ones 1 ]
+    ; "1^300 0^300 1^300", [ S1.Ones 300; S1.Zeros 300; S1.Ones 300 ]
+    ; "1010... in 999 blocks", s1_alternating 999
+    ; "0101... in 1000 blocks", s1_alternating 1000
+    ]
+    @ List.init 40 (fun i -> Printf.sprintf "random sample %d" i, random ())
+  in
+  all_of
+    (t "a hundred incs, then two hundred decs, each the blocks the model gives")
+    (fun note ->
+       List.iter
+         (fun (what, x) ->
+           let rec go step x bits =
+             if step < 300
+             then (
+               let op, f, model =
+                 if step < 100 then "inc", S1.inc, inc_bits else "dec", S1.dec, dec_bits
+               in
+               let want_bits = model bits in
+               let want = blocks_of_bits want_bits in
+               match f x with
+               | r when r = want -> go (step + 1) r want_bits
+               | _ -> note (Printf.sprintf "%s, step %d, %s: wrong blocks" what step op)
+               | exception e ->
+                 note
+                   (Printf.sprintf
+                      "%s, step %d, %s raised %s"
+                      what
+                      step
+                      op
+                      (Printexc.to_string e)))
+           in
+           go 0 x (bits_of_blocks x))
+         samples)
+;;
+
+(* O(1) worst case: one budget whatever the size. An operation here rebuilds at most a few
+   blocks at the front, each a box and a list cell, some 20 words at the dearest; twice
+   what one digit gets elsewhere leaves room for that, and a carry that went digit by
+   digit, or a pass over every block, is out by a factor of a hundred and more at the
+   sizes below. *)
+let flat_budget = 2.0 *. per_digit
+
+(* Each call on the clock by itself, inputs made beforehand; the dearest, and what it was. *)
+let dearest_call calls =
+  let dearest = ref (0.0, "") in
+  List.iter
+    (fun (what, f) ->
+      match cost f with
+      | _, c -> if c > fst !dearest then dearest := c, what
+      | exception e -> dearest := infinity, what ^ " raised " ^ Printexc.to_string e)
+    calls;
+  !dearest
+;;
+
+let within_flat_budget name (c, what) =
+  let fine = c <= flat_budget in
+  check
+    (Printf.sprintf
+       "%s: the dearest is %s at %.0f words, budget %.0f whatever the size"
+       name
+       what
+       c
+       flat_budget)
+    fine;
+  fine
+;;
+
+let test_seg1_costs k =
+  Random.init k;
+  let run = [ S1.Ones k ]
+  and power = [ S1.Zeros k; S1.Ones 1 ]
+  and three = [ S1.Ones k; S1.Zeros k; S1.Ones k ]
+  and four = [ S1.Zeros k; S1.Ones k; S1.Zeros k; S1.Ones k ]
+  and odd = s1_alternating ((2 * k) - 1)
+  and even = s1_alternating (2 * k)
+  and random = s1_random k 8 in
+  let calls =
+    [ ("inc of 1^k", fun () -> S1.inc run)
+    ; ("dec of 0^k 1", fun () -> S1.dec power)
+    ; ("inc of 1^k 0^k 1^k", fun () -> S1.inc three)
+    ; ("dec of 1^k 0^k 1^k", fun () -> S1.dec three)
+    ; ("inc of 0^k 1^k 0^k 1^k", fun () -> S1.inc four)
+    ; ("dec of 0^k 1^k 0^k 1^k", fun () -> S1.dec four)
+    ; ("inc of 1010... in 2k - 1 blocks", fun () -> S1.inc odd)
+    ; ("dec of 1010... in 2k - 1 blocks", fun () -> S1.dec odd)
+    ; ("inc of 0101... in 2k blocks", fun () -> S1.inc even)
+    ; ("dec of 0101... in 2k blocks", fun () -> S1.dec even)
+    ; ("inc of k random blocks", fun () -> S1.inc random)
+    ; ("dec of k random blocks", fun () -> S1.dec random)
+    ]
+  in
+  within_flat_budget
+    (Printf.sprintf "SegmentedRepresentationOne, inc and dec, k=%d" k)
+    (dearest_call calls)
+;;
+
+(* What is wrong with the shape of a numeral, if anything. Block by block: a length is
+   never spelled out, so a numeral that came back wrong cannot run away with memory. *)
+let s2_fault ds =
+  let rec go below prev = function
+    | [] -> if prev = Some S2.Zero then Some "it ends in a ZERO" else None
+    | S2.Ones i :: _ when i <= 0 -> Some (Printf.sprintf "a block of %d ONEs" i)
+    | S2.Ones _ :: _
+      when match prev with
+           | Some (S2.Ones _) -> true
+           | _ -> false -> Some "two blocks of ONEs side by side"
+    | (S2.Ones _ as d) :: ds -> go below (Some d) ds
+    | S2.Two :: _ when below <> Some S2.Zero ->
+      Some "a TWO whose last digit below that is not a one is not a ZERO"
+    | d :: ds -> go (Some d) (Some d) ds
+  in
+  go None None ds
+;;
+
+let s2_length ds =
+  List.fold_left
+    (fun n d ->
+      n
+      +
+      match d with
+      | S2.Ones i -> i
+      | _ -> 1)
+    0
+    ds
+;;
+
+(* The bits of the number a numeral stands for, carrying each TWO up. *)
+let bits_of_s2 ds =
+  let digits =
+    List.concat_map
+      (function
+        | S2.Zero -> [ 0 ]
+        | S2.Two -> [ 2 ]
+        | S2.Ones i -> List.init i (fun _ -> 1))
+      ds
+  in
+  let rec carry c = function
+    | [] -> if c = 0 then [] else [ c ]
+    | d :: ds -> ((d + c) mod 2) :: carry ((d + c) / 2) ds
+  in
+  carry 0 digits
+;;
+
+(* Merges runs of ones into blocks: a digit list as a numeral. *)
+let s2_of_digits ds =
+  List.fold_right
+    (fun d acc ->
+      match d, acc with
+      | 0, _ -> S2.Zero :: acc
+      | 2, _ -> S2.Two :: acc
+      | _, S2.Ones i :: acc -> S2.Ones (i + 1) :: acc
+      | _, _ -> S2.Ones 1 :: acc)
+    ds
+    []
+;;
+
+let string_of_s2 = function
+  | [] -> "[]"
+  | ds ->
+    String.concat
+      " "
+      (List.map
+         (function
+           | S2.Zero -> "0"
+           | S2.Two -> "2"
+           | S2.Ones 1 -> "1"
+           | S2.Ones i -> Printf.sprintf "1^%d" i)
+         ds)
+;;
+
+(* Why [r] is not inc of [x], if it is not. A regular numeral of d digits stands for less
+   than 2^(d+1) - 1 and one of d + 2 for at least 2^(d+1), so a longer result has the
+   wrong value; that is checked first, and the digits spelled out only after. *)
+let s2_inc_fault x r =
+  match s2_fault r with
+  | Some why -> Some why
+  | None ->
+    if s2_length r > s2_length x + 1
+    then Some (Printf.sprintf "%d digits from %d" (s2_length r) (s2_length x))
+    else if bits_of_s2 r <> inc_bits (bits_of_s2 x)
+    then Some "the wrong number"
+    else None
+;;
+
+(* Every regular numeral of exactly k digits. *)
+let rec digit_strings k =
+  if k = 0
+  then [ [] ]
+  else List.concat_map (fun ds -> [ 0 :: ds; 1 :: ds; 2 :: ds ]) (digit_strings (k - 1))
+;;
+
+let regular_numerals k =
+  List.filter_map
+    (fun ds ->
+      let x = s2_of_digits ds in
+      if s2_fault x = None then Some x else None)
+    (digit_strings k)
+;;
+
+(* A numeral in a failure message, unless it is too long to read. *)
+let show_s2 ds =
+  if List.length ds <= 40
+  then string_of_s2 ds
+  else Printf.sprintf "%d blocks" (List.length ds)
+;;
+
+(* incs from [x], [steps] of them, stopping at the first wrong one. *)
+let s2_chain note what steps x =
+  let rec go step x =
+    if step < steps
+    then (
+      match S2.inc x with
+      | r ->
+        (match s2_inc_fault x r with
+         | None -> go (step + 1) r
+         | Some why ->
+           note
+             (Printf.sprintf
+                "%s, inc number %d gives %s: %s"
+                what
+                (step + 1)
+                (show_s2 r)
+                why))
+      | exception e ->
+        note
+          (Printf.sprintf
+             "%s, inc number %d raised %s"
+             what
+             (step + 1)
+             (Printexc.to_string e)))
+  in
+  go 0 x
+;;
+
+let test_seg2_contract () =
+  let t label = "SegmentedRepresentationTwo: " ^ label in
+  all_of (t "inc of every regular numeral of up to 10 digits") (fun note ->
+    for k = 0 to 10 do
+      List.iter (fun x -> s2_chain note (string_of_s2 x) 1 x) (regular_numerals k)
+    done);
+  all_of (t "every number up to 2^16, counted up from zero") (fun note ->
+    s2_chain note "from zero" (1 lsl 16) [])
+;;
+
+(* Groups of the invariant, 0*1 and 0+1*2, at random, with runs of up to [longest] ONEs. *)
+let s2_random groups longest =
+  s2_of_digits
+    (List.concat
+       (List.init groups (fun _ ->
+          if Random.bool ()
+          then List.init (Random.int 4) (fun _ -> 0) @ [ 1 ]
+          else
+            List.init (1 + Random.int 3) (fun _ -> 0)
+            @ List.init (Random.int (longest + 1)) (fun _ -> 1)
+            @ [ 2 ])))
+;;
+
+let test_seg2_long () =
+  let t label = "SegmentedRepresentationTwo, long numerals: " ^ label in
+  Random.init 20260929;
+  let samples =
+    [ "1^1000", [ S2.Ones 1000 ]
+    ; "0 1^1000 2 1^1000", [ S2.Zero; S2.Ones 1000; S2.Two; S2.Ones 1000 ]
+    ; "1^1000 0 2", [ S2.Ones 1000; S2.Zero; S2.Two ]
+    ; "0202... in 1000 blocks", List.concat (List.init 500 (fun _ -> [ S2.Zero; S2.Two ]))
+    ; ( "0101... in 1000 blocks"
+      , List.concat (List.init 500 (fun _ -> [ S2.Zero; S2.Ones 1 ])) )
+    ]
+    @ List.init 30 (fun i ->
+      Printf.sprintf "random sample %d" i, s2_random (5 + Random.int 35) 200)
+  in
+  all_of (t "a hundred incs from each") (fun note ->
+    List.iter (fun (what, x) -> s2_chain note what 100 x) samples)
+;;
+
+let test_seg2_costs k =
+  Random.init k;
+  let run = [ S2.Ones k ]
+  and behind = [ S2.Zero; S2.Ones k; S2.Two; S2.Ones k ]
+  and below = [ S2.Ones k; S2.Zero; S2.Two ]
+  and twos = List.concat (List.init k (fun _ -> [ S2.Zero; S2.Two ]))
+  and ones = List.concat (List.init k (fun _ -> [ S2.Zero; S2.Ones 1 ]))
+  and random = s2_random k 8 in
+  let calls =
+    [ ("inc of 1^k", fun () -> S2.inc run)
+    ; ("inc of 0 1^k 2 1^k", fun () -> S2.inc behind)
+    ; ("inc of 1^k 0 2", fun () -> S2.inc below)
+    ; ("inc of (0 2)^k", fun () -> S2.inc twos)
+    ; ("inc of (0 1)^k", fun () -> S2.inc ones)
+    ; ("inc of k random groups", fun () -> S2.inc random)
+    ]
+  in
+  within_flat_budget
+    (Printf.sprintf "SegmentedRepresentationTwo, inc, k=%d" k)
+    (dearest_call calls)
+;;
+
+(* Counting up from zero, every inc on the clock; stops at a result the shape check or its
+   length gives away, which the contract has already failed. *)
+let test_seg2_counting_cost () =
+  let n = 1 lsl 17 in
+  let dearest = ref (0.0, "") in
+  let rec go i x =
+    if i < n
+    then (
+      match cost (fun () -> S2.inc x) with
+      | r, c ->
+        if c > fst !dearest then dearest := c, Printf.sprintf "inc of %d" i;
+        if s2_fault r = None && s2_length r <= s2_length x + 1
+        then go (i + 1) r
+        else dearest := infinity, Printf.sprintf "inc of %d, a malformed result" i
+      | exception e ->
+        dearest := infinity, Printf.sprintf "inc of %d raised %s" i (Printexc.to_string e))
+  in
+  go 0 [];
+  within_flat_budget
+    (Printf.sprintf "SegmentedRepresentationTwo, counting from 0 to %d" n)
+    !dearest
+;;
+
+(* For each representation, what it returns first; only then what it costs. *)
+let test_segmented () =
+  section "Segmented binary numbers (section 9.2.4)";
+  let before = !failures in
+  test_seg1_contract ();
+  test_seg1_long ();
+  if !failures > before
+  then
+    Printf.printf
+      "  SKIP  SegmentedRepresentationOne: costs -- the checks above do not hold\n"
+  else if test_seg1_costs 1_000
+  then ignore (test_seg1_costs 100_000)
+  else
+    Printf.printf
+      "  SKIP  SegmentedRepresentationOne: costs at k=100000 -- over budget at k=1000\n";
+  let before = !failures in
+  test_seg2_contract ();
+  test_seg2_long ();
+  if !failures > before
+  then
+    Printf.printf
+      "  SKIP  SegmentedRepresentationTwo: costs -- the checks above do not hold\n"
+  else if test_seg2_counting_cost () && test_seg2_costs 1_000
+  then ignore (test_seg2_costs 100_000)
+  else
+    Printf.printf
+      "  SKIP  SegmentedRepresentationTwo: costs at k=100000 -- over budget before\n"
+;;
+
 (* ------------------------------------------------------------------- runner *)
 
 (* A regression can make a function raise where the test did not expect it. Report that as
@@ -2260,6 +2753,7 @@ let () =
   run "ZerolessBinaryRandomAccessList" test_zeroless_list;
   run "ZerolessRedundantBinaryRandomAccessList" test_redundant;
   run "ScheduledZerolessRedundantBinaryRandomAccessList" test_scheduled;
+  run "Segmented binary numbers" test_segmented;
   Printf.printf "\n%d checks, %d failures\n\n" !checks !failures;
   if !failures > 0 then exit 1
 ;;
