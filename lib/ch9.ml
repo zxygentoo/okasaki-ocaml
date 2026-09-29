@@ -61,7 +61,7 @@ module SparseByWeight = struct
   ;;
 end
 
-module type RANDOM_ACCESS_LIST = sig
+module type RANDOM_ACCESS_LIST_LITE = sig
   type 'a rlist
 
   val empty : 'a rlist
@@ -69,6 +69,11 @@ module type RANDOM_ACCESS_LIST = sig
   val cons : 'a -> 'a rlist -> 'a rlist
   val head : 'a rlist -> 'a
   val tail : 'a rlist -> 'a rlist
+end
+
+module type RANDOM_ACCESS_LIST = sig
+  include RANDOM_ACCESS_LIST_LITE
+
   val lookup : int -> 'a rlist -> 'a
   val update : int -> 'a -> 'a rlist -> 'a rlist
 end
@@ -497,5 +502,125 @@ module ZerolessBinaryRandomAccessList : RANDOM_ACCESS_LIST = struct
       else if i < sa + sb
       then Two (a, update_tree (i - sa) e b) :: xs
       else x :: update (i - sa - sb) e xs
+  ;;
+end
+
+module type STREAM = sig
+  type 'a stream_cell =
+    | Nil
+    | Cons of 'a * 'a stream
+
+  and 'a stream = 'a stream_cell lazy_t
+
+  val ( ++ ) : 'a stream -> 'a stream -> 'a stream
+  val take : int -> 'a stream -> 'a stream
+  val drop : int -> 'a stream -> 'a stream
+  val reverse : 'a stream -> 'a stream
+end
+
+module Lazz (S : STREAM) = struct
+  open S
+
+  type digit =
+    | Zero
+    | One
+    | Two
+
+  type nat = digit stream
+
+  let rec inc = function
+    | (lazy Nil) -> lazy (Cons (One, lazy Nil))
+    | (lazy (Cons (Zero, ds))) -> lazy (Cons (One, ds))
+    | (lazy (Cons (One, ds))) -> lazy (Cons (Two, ds))
+    | (lazy (Cons (Two, ds))) -> lazy (Cons (One, inc ds))
+  ;;
+
+  let rec dec = function
+    | (lazy (Cons (One, (lazy Nil)))) -> lazy Nil
+    | (lazy (Cons (One, ds))) -> lazy (Cons (Zero, ds))
+    | (lazy (Cons (Two, ds))) -> lazy (Cons (One, ds))
+    | (lazy (Cons (Zero, ds))) -> lazy (Cons (One, dec ds))
+    | _ -> assert false
+  ;;
+end
+
+(* Exercise 9.9 Implement cons, head, and tail for random-access lists based on zeroless
+   redundant binary numbers, using the type
+
+   datatype a Digit = ONE of a Tree | Two of a Tree x a Tree | THREE of a Tree x a Tree x
+   a Tree
+
+   type a RList = Digit Stream
+
+   Show that all three functions run in 0(1) amortized time.
+*)
+
+module ZerolessRedundantBinaryRandomAccessList (S : STREAM) : RANDOM_ACCESS_LIST_LITE =
+struct
+  open S
+
+  let ( ^:: ) a b = Cons (a, b)
+
+  type 'a tree =
+    | Leaf of 'a
+    | Node of int * 'a tree * 'a tree
+
+  type 'a digit =
+    | One of 'a tree
+    | Two of 'a tree * 'a tree
+    | Three of 'a tree * 'a tree * 'a tree
+
+  type 'a rlist = 'a digit stream
+
+  let empty = lazy Nil
+
+  let is_empty = function
+    | (lazy Nil) -> true
+    | _ -> false
+  ;;
+
+  let size = function
+    | Leaf _ -> 1
+    | Node (w, _, _) -> w
+  ;;
+
+  let link t1 t2 = Node (size t1 + size t2, t1, t2)
+
+  let rec carry x s =
+    lazy
+      (match s with
+       | (lazy Nil) -> One x ^:: empty
+       | (lazy (Cons (One a, rest))) -> Two (x, a) ^:: rest
+       | (lazy (Cons (Two (a, b), rest))) -> Three (x, a, b) ^:: rest
+       | (lazy (Cons (Three (a, b, c), rest))) -> Two (x, a) ^:: carry (link b c) rest)
+  ;;
+
+  let rec borrow s =
+    lazy
+      (match s with
+       | (lazy (Cons (Three (Node (_, a, b), c, d), rest))) ->
+         Two (a, b) ^:: lazy (Two (c, d) ^:: rest)
+       | (lazy (Cons (Two (Node (_, a, b), c), rest))) ->
+         Two (a, b) ^:: lazy (One c ^:: rest)
+       | (lazy (Cons (One (Node (_, a, b)), rest))) -> Two (a, b) ^:: borrow rest
+       | (lazy Nil) -> Nil
+       | _ -> assert false)
+  ;;
+
+  let cons e s = carry (Leaf e) s
+
+  let head = function
+    | (lazy Nil) -> raise (Failure "head: empty list")
+    | (lazy (Cons (One (Leaf e), _))) -> e
+    | (lazy (Cons (Two (Leaf e, _), _))) -> e
+    | (lazy (Cons (Three (Leaf e, _, _), _))) -> e
+    | _ -> assert false
+  ;;
+
+  let rec tail = function
+    | (lazy Nil) -> raise (Failure "tail: empty list")
+    | (lazy (Cons (One _, rest))) -> borrow rest
+    | (lazy (Cons (Two (_, b), rest))) -> lazy (One b ^:: rest)
+    | (lazy (Cons (Three (_, b, c), rest))) -> lazy (Two (b, c) ^:: rest)
   ;;
 end

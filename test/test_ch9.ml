@@ -1,8 +1,8 @@
 (* Tests for Chapter 9: the binary random-access list of Figure 9.6 (section 9.2.1), the
    drop of Exercise 9.1, the create of Exercise 9.2, the sparse list of Exercise 9.3 with
-   its own drop and create, and the zeroless numbers and list of Exercises 9.4 and 9.5,
-   each with its own preamble further down. Plain OCaml, no test framework, matching the
-   earlier chapters.
+   its own drop and create, the zeroless numbers and list of Exercises 9.4 and 9.5, and
+   the zeroless redundant list of Exercise 9.9, each with its own preamble further down.
+   Plain OCaml, no test framework, matching the earlier chapters.
 
    Section 9.2.1 builds a list out of a binary number. A list of n elements holds one
    complete binary leaf tree for every one in the binary representation of n, in
@@ -1661,6 +1661,405 @@ let test_zeroless_list () =
         "  SKIP  ZerolessBinaryRandomAccessList: head at n=100000 -- over budget at n=1000\n")
 ;;
 
+(* ------------------- ZerolessRedundantBinaryRandomAccessList (Exercise 9.9) *)
+
+(* Exercise 9.9 asks for cons, head and tail on a random-access list over zeroless
+   redundant binary numbers: digits ONE, TWO and THREE of trees, the i-th holding trees of
+   size 2^i, in a stream, with all three in O(1) amortised time. Section 9.2.3 (p.126) has
+   the numbers, and the trees are those of the lists above. The module offers the stack
+   and nothing else (RANDOM_ACCESS_LIST_LITE), so the contract is about the order the
+   elements come back in: every size from 0 to 70, both built by cons and left by tails
+   from a longer list, read back, emptied, and moved back and forth by a cons and a tail
+   in turn; a list of twenty thousand, whose digits run to thirteen positions, and a
+   random walk from it; and random steps over a pool of versions, old ones used again,
+   against a list model. The messages are the ones the other lists here use. What the
+   stack cannot see is where the trees are: a carry or a borrow that left a tree at the
+   wrong level, in the right order, reads back correctly, and at these sizes costs no
+   more. A lookup would see it, and this module has none.
+
+   Amortised costs change what goes on the clock. A single operation may be dear, since it
+   can do work that earlier ones left for later, so no single operation is held to
+   anything. The clock goes on whole sequences, from the empty list to the last operation,
+   and what is held to a budget is the mean, words per cons or tail, a constant whatever
+   the size: the same budget at 3 (2^10 - 1) elements and at 3 (2^17 - 1). Each cons and
+   tail is followed by a head, which reads the front of the stream it returns. An
+   amortised bound in this book is one that survives persistence (section 6.2; 5.6 shows
+   what goes wrong otherwise), so two of the sequences use one old version over and over,
+   each time where a carry or a borrow could run the whole length: the list of 3 (2^k - 1)
+   elements built by cons, which the carry of the exercise leaves with a THREE at every
+   position, given as many conses as it took to build; and the list that 2 (2^k - 1) tails
+   then leave with a ONE at every position, given as many tails as it took to make. Two
+   more go back and forth, a cons and a tail in turn, from each of those lists, and then
+   drain what they end with. And the plainest: a build by cons and its drain by tail. *)
+
+module Lite_tests (R : RANDOM_ACCESS_LIST_LITE) = struct
+  let of_list xs = List.fold_right R.cons xs R.empty
+  let to_list r = drain_with ~is_empty:R.is_empty ~head:R.head ~tail:R.tail r
+  let rec tails k r = if k = 0 then r else tails (k - 1) (R.tail r)
+
+  (* k, k + 1, ..., k + n - 1. *)
+  let from k n = List.init n (fun i -> k + i)
+
+  let show_list l =
+    let n = List.length l in
+    if n <= 12
+    then string_of_int_list l
+    else
+      Printf.sprintf
+        "%s... (%d elements)"
+        (string_of_int_list (List.filteri (fun i _ -> i < 10) l))
+        n
+  ;;
+
+  (* [r] read back, for [all_of]: a note unless it is [expect]. *)
+  let reads note what expect r =
+    match to_list (r ()) with
+    | got when got = expect -> ()
+    | got -> note (Printf.sprintf "%s reads back %s" what (show_list got))
+    | exception e -> note (Printf.sprintf "%s: raised %s" what (Printexc.to_string e))
+  ;;
+
+  (* The n elements 0 to n - 1, reached two ways: built by cons, and left by 40 tails from
+     a list 40 longer, whose digits the borrows have made. *)
+  let versions n =
+    [ ("built by cons", fun () -> of_list (from 0 n))
+    ; ("left by tails", fun () -> tails 40 (of_list (from (-40) (n + 40))))
+    ]
+  ;;
+
+  let run_contract name =
+    let t label = Printf.sprintf "%s: %s" name label in
+    check (t "empty is empty") (R.is_empty R.empty);
+    check (t "a singleton is not empty") (not (R.is_empty (R.cons 1 R.empty)));
+    check_raises (t "head on empty raises") "head: empty list" (fun () -> R.head R.empty);
+    check_raises (t "tail on empty raises") "tail: empty list" (fun () ->
+      ignore (R.is_empty (R.tail R.empty)));
+    surviving
+      (t "head is the element cons'ed last")
+      (fun () -> R.head (R.cons 3 (R.cons 2 (R.cons 1 R.empty))))
+      (fun h -> check_int (t "head is the element cons'ed last") ~expect:3 ~actual:h);
+    all_of (t "tail removes it and nothing else") (fun note ->
+      reads note "tail of [3;2;1]" [ 2; 1 ] (fun () -> R.tail (of_list [ 3; 2; 1 ])));
+    all_of (t "equal elements are all kept, in order") (fun note ->
+      reads note "[7;7;1;7]" [ 7; 7; 1; 7 ] (fun () -> of_list [ 7; 7; 1; 7 ]));
+    all_of
+      (t "every size from 0 to 70, built by cons or left by tails, reads back in order")
+      (fun note ->
+         for n = 0 to 70 do
+           List.iter
+             (fun (how, r) -> reads note (Printf.sprintf "n=%d %s" n how) (from 0 n) r)
+             (versions n)
+         done);
+    all_of (t "a list emptied by tails is empty again, sizes 1 to 70") (fun note ->
+      for n = 1 to 70 do
+        try
+          let r = tails n (of_list (from 0 n)) in
+          if not (R.is_empty r) then note (Printf.sprintf "n=%d: not empty" n);
+          (match R.head r with
+           | _ -> note (Printf.sprintf "n=%d: head did not raise" n)
+           | exception Failure m when m = "head: empty list" -> ()
+           | exception e ->
+             note (Printf.sprintf "n=%d: head raised %s" n (Printexc.to_string e)));
+          (match R.tail r with
+           | _ -> note (Printf.sprintf "n=%d: tail did not raise" n)
+           | exception Failure m when m = "tail: empty list" -> ()
+           | exception e ->
+             note (Printf.sprintf "n=%d: tail raised %s" n (Printexc.to_string e)));
+          reads note (Printf.sprintf "n=%d: a cons onto it" n) [ 7 ] (fun () ->
+            R.cons 7 r)
+        with
+        | e -> note (Printf.sprintf "n=%d: raised %s" n (Printexc.to_string e))
+      done);
+    (* Forty steps, a cons and a tail in turn, starting with either, from every size and
+       both ways of reaching it, the head read after every step: a carry and a borrow at
+       the same positions, again and again. *)
+    all_of
+      (t
+         "back and forth by cons and tail, 40 steps from every size from 0 to 70 either \
+          way: the head after every step, and the list at the end")
+      (fun note ->
+         for n = 0 to 70 do
+           List.iter
+             (fun (how, r) ->
+               List.iter
+                 (fun cons_first ->
+                   let what =
+                     Printf.sprintf
+                       "n=%d %s, %s first"
+                       n
+                       how
+                       (if cons_first then "cons" else "tail")
+                   in
+                   try
+                     let r = ref (r ())
+                     and model = ref (from 0 n) in
+                     for i = 1 to 40 do
+                       if i mod 2 = 1 = cons_first
+                       then (
+                         r := R.cons (-i) !r;
+                         model := -i :: !model)
+                       else (
+                         r := R.tail !r;
+                         model := List.tl !model);
+                       match !model with
+                       | x :: _ when R.head !r <> x ->
+                         note
+                           (Printf.sprintf
+                              "%s, step %d: head %d, want %d"
+                              what
+                              i
+                              (R.head !r)
+                              x)
+                       | _ -> ()
+                     done;
+                     reads note what !model (fun () -> !r)
+                   with
+                   | e ->
+                     note (Printf.sprintf "%s: raised %s" what (Printexc.to_string e)))
+                 (if n = 0 then [ true ] else [ true; false ]))
+             (versions n)
+         done);
+    (* Twenty thousand elements: the build read back, then a random walk of as many conses
+       and tails from it, the head checked at every step, and where it ends read back. *)
+    all_of
+      (t
+         "a list of 20000 reads back, and so does a random walk of 20000 steps from it, \
+          the head checked at each")
+      (fun note ->
+         let n = 20_000 in
+         reads note "the build of 20000" (from 0 n) (fun () -> of_list (from 0 n));
+         Random.init 20260929;
+         try
+           let r = ref (of_list (from 0 n))
+           and model = ref (from 0 n) in
+           for i = 1 to 20_000 do
+             if !model = [] || Random.bool ()
+             then (
+               r := R.cons (-i) !r;
+               model := -i :: !model)
+             else (
+               r := R.tail !r;
+               model := List.tl !model);
+             match !model with
+             | x :: _ when R.head !r <> x ->
+               note (Printf.sprintf "walk step %d: head %d, want %d" i (R.head !r) x)
+             | _ -> ()
+           done;
+           reads note "the end of the walk" !model (fun () -> !r)
+         with
+         | e -> note ("the walk raised " ^ Printexc.to_string e));
+    (* Random steps over a pool of versions: each takes a version at random, old or new,
+       conses onto it or takes its tail, checks the result against a list model, and puts
+       it in the pool in place of one at random. Every version left in the pool is read
+       back at the end. *)
+    all_of
+      (t
+         "5000 random steps over a pool of versions, old ones used again: is_empty and \
+          head after each, and every version read back at the end")
+      (fun note ->
+         Random.init 20260930;
+         let size = 64 in
+         let pool = Array.make size (R.empty, []) in
+         for i = 1 to 5000 do
+           let r, model = pool.(Random.int size) in
+           try
+             let r', model' =
+               if model = [] || Random.int 3 > 0
+               then R.cons i r, i :: model
+               else R.tail r, List.tl model
+             in
+             if R.is_empty r' <> (model' = [])
+             then note (Printf.sprintf "step %d: is_empty is wrong" i);
+             (match model' with
+              | x :: _ when R.head r' <> x ->
+                note (Printf.sprintf "step %d: head %d, want %d" i (R.head r') x)
+              | _ -> ());
+             pool.(Random.int size) <- r', model'
+           with
+           | e -> note (Printf.sprintf "step %d: raised %s" i (Printexc.to_string e))
+         done;
+         Array.iteri
+           (fun j (r, model) ->
+             reads note (Printf.sprintf "pool version %d" j) model (fun () -> r))
+           pool);
+    (* Persistence, plainly: every version of a build of 40, and of the drain after it,
+       reads as it did once all of them have been cons'ed onto and tailed. *)
+    all_of
+      (t "every version of a build of 40, and of its drain, still reads as it did")
+      (fun note ->
+         try
+           let built = Array.make 41 R.empty in
+           for i = 1 to 40 do
+             built.(i) <- R.cons (40 - i) built.(i - 1)
+           done;
+           let drained = Array.make 41 built.(40) in
+           for i = 1 to 40 do
+             drained.(i) <- R.tail drained.(i - 1)
+           done;
+           let use v =
+             ignore (Sys.opaque_identity (R.cons 99 v));
+             if not (R.is_empty v) then ignore (Sys.opaque_identity (R.tail v))
+           in
+           Array.iter use built;
+           Array.iter use drained;
+           Array.iteri
+             (fun i v ->
+               reads
+                 note
+                 (Printf.sprintf "build version %d" i)
+                 (from (40 - i) i)
+                 (fun () -> v))
+             built;
+           Array.iteri
+             (fun i v ->
+               reads
+                 note
+                 (Printf.sprintf "drain version %d" i)
+                 (from i (40 - i))
+                 (fun () -> v))
+             drained
+         with
+         | e -> note ("raised " ^ Printexc.to_string e))
+  ;;
+
+  (* ------------------------------------------------ whole sequences on the clock *)
+
+  (* Two digits' worth, a cons or a tail. Measured, the dearest mean here is some 29
+     words, the build and its drain; the sequences on one old version come to 24.
+     Something that does O(log n) work where these sequences aim is out by a factor of two
+     at 3 (2^10 - 1), and further at 3 (2^17 - 1). *)
+  let amortised_budget = 2.0 *. per_digit
+  let read r = ignore (Sys.opaque_identity (R.head r))
+
+  let build n =
+    let r = ref R.empty in
+    for i = 1 to n do
+      r := R.cons i !r;
+      read !r
+    done;
+    !r
+  ;;
+
+  let rec tails_reading k r =
+    if k = 0
+    then r
+    else (
+      let r = R.tail r in
+      if not (R.is_empty r) then read r;
+      tails_reading (k - 1) r)
+  ;;
+
+  (* [steps] conses and tails in turn, starting with either. *)
+  let back_and_forth ~cons_first steps r =
+    let r = ref r in
+    for i = 1 to steps do
+      r := if i mod 2 = 1 = cons_first then R.cons (-i) !r else R.tail !r;
+      if not (R.is_empty !r) then read !r
+    done;
+    !r
+  ;;
+
+  (* Words per cons or tail over a sequence: [f] runs it and says how many it made. *)
+  let mean f =
+    let before = words () in
+    let ops = f () in
+    float_of_int (words () - before) /. float_of_int ops
+  ;;
+
+  let sequences k =
+    let m = (1 lsl k) - 1 in
+    let n = 3 * m in
+    [ ( Printf.sprintf "a build of %d by cons and its drain by tail" n
+      , fun () ->
+          ignore (Sys.opaque_identity (tails_reading n (build n)));
+          2 * n )
+    ; ( Printf.sprintf "a build of %d, then %d conses onto that one version" n n
+      , fun () ->
+          let v = build n in
+          for i = 1 to n do
+            read (R.cons (-i) v)
+          done;
+          2 * n )
+    ; ( Printf.sprintf
+          "a build of %d and %d tails, then %d tails of that one version"
+          n
+          (2 * m)
+          (n + (2 * m))
+      , fun () ->
+          let v = tails_reading (2 * m) (build n) in
+          for _ = 1 to n + (2 * m) do
+            let r = R.tail v in
+            if not (R.is_empty r) then read r
+          done;
+          2 * (n + (2 * m)) )
+    ; ( Printf.sprintf
+          "a build of %d, then %d conses and tails in turn, then the drain"
+          n
+          (2 * n)
+      , fun () ->
+          let r = back_and_forth ~cons_first:true (2 * n) (build n) in
+          ignore (Sys.opaque_identity (tails_reading n r));
+          4 * n )
+    ; ( Printf.sprintf
+          "a build of %d and %d tails, then %d tails and conses in turn, then the drain"
+          n
+          (2 * m)
+          (2 * (n + (2 * m)))
+      , fun () ->
+          let v = tails_reading (2 * m) (build n) in
+          let r = back_and_forth ~cons_first:false (2 * (n + (2 * m))) v in
+          ignore (Sys.opaque_identity (tails_reading m r));
+          ((n + (2 * m)) * 3) + m )
+    ]
+  ;;
+
+  (* True if every sequence was within budget. *)
+  let run_costs_at name k =
+    List.fold_left
+      (fun ok (what, f) ->
+        let label = Printf.sprintf "%s: %s" name what in
+        match mean f with
+        | c ->
+          let fine = c <= amortised_budget in
+          check
+            (Printf.sprintf
+               "%s, %.1f words a cons or tail, budget %.0f"
+               label
+               c
+               amortised_budget)
+            fine;
+          ok && fine
+        | exception e ->
+          check (Printf.sprintf "%s: raised %s" label (Printexc.to_string e)) false;
+          false)
+      true
+      (sequences k)
+  ;;
+
+  (* The same budget at two sizes 128 times apart, the large one guarded on the small, as
+     everywhere in these files. *)
+  let run_costs name =
+    if run_costs_at name 10
+    then ignore (run_costs_at name 17)
+    else
+      Printf.printf
+        "  SKIP  %s: costs at 3 (2^17 - 1) -- over budget at 3 (2^10 - 1)\n"
+        name
+  ;;
+end
+
+module Redundant = Lite_tests (ZerolessRedundantBinaryRandomAccessList (Okasaki.Ch4.Stream))
+
+let test_redundant () =
+  let name = "ZerolessRedundantBinaryRandomAccessList" in
+  section (name ^ " (Exercise 9.9)");
+  let before = !failures in
+  Redundant.run_contract name;
+  if !failures > before
+  then Printf.printf "  SKIP  %s: cost checks -- the contract above does not hold\n" name
+  else Redundant.run_costs name
+;;
+
 (* ------------------------------------------------------------------- runner *)
 
 (* A regression can make a function raise where the test did not expect it. Report that as
@@ -1682,6 +2081,7 @@ let () =
   run "sparse create" test_sparse_create;
   run "Zeroless" test_zeroless;
   run "ZerolessBinaryRandomAccessList" test_zeroless_list;
+  run "ZerolessRedundantBinaryRandomAccessList" test_redundant;
   Printf.printf "\n%d checks, %d failures\n\n" !checks !failures;
   if !failures > 0 then exit 1
 ;;
