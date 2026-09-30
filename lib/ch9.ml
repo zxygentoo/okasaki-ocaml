@@ -851,12 +851,16 @@ module SegmentedBinomialHeap (E : ORDERED) : HEAP with module Element = E = stru
     | Some x, Some y -> Some (smaller x y)
   ;;
 
+  (* tree stuff *)
+
   let root (Node (e, _)) = e
   let children (Node (_, xs)) = xs
 
   let link (Node (e1, ts1) as t1) (Node (e2, ts2) as t2) =
     if Element.leq e1 e2 then Node (e1, t2 :: ts1) else Node (e2, t1 :: ts2)
   ;;
+
+  (* tree <-> digit stuff *)
 
   let add_zero = function
     | [] -> []
@@ -870,6 +874,14 @@ module SegmentedBinomialHeap (E : ORDERED) : HEAP with module Element = E = stru
     | _, _ -> Ones ts :: ds
   ;;
 
+  let cons_step ts ds =
+    match ts with
+    | [] -> add_zero ds
+    | [ _ ] -> add_ones ts ds
+    | [ a; b ] -> Two (a, b) :: ds
+    | _ -> assert false
+  ;;
+
   let uncons_step = function
     | Zero :: ts -> [], ts
     | Ones [ o ] :: ts -> [ o ], ts
@@ -879,14 +891,6 @@ module SegmentedBinomialHeap (E : ORDERED) : HEAP with module Element = E = stru
   ;;
 
   let uncons_step_or_empty h = if is_empty h then [], [] else uncons_step h
-
-  let cons_step ts ds =
-    match ts with
-    | [] -> add_zero ds
-    | [ _ ] -> add_ones ts ds
-    | [ a; b ] -> Two (a, b) :: ds
-    | _ -> assert false
-  ;;
 
   let remove_root e = function
     | [ x ] when Element.eq (root x) e -> Some (children x, [])
@@ -943,13 +947,13 @@ module SegmentedBinomialHeap (E : ORDERED) : HEAP with module Element = E = stru
 
   (* find_min *)
 
+  (* O(log n), spelled out with option type yet less allocation *)
+
   let find_digit_min = function
     | Zero -> None
     | Ones os -> List.fold_left (fun acc x -> smaller_opt acc (Some (root x))) None os
     | Two (a, b) -> Some (smaller (root a) (root b))
   ;;
-
-  (* O(log n), spelled out with option type yet less allocation *)
 
   let _find_min_opt ds =
     match List.fold_left (fun e' d -> smaller_opt e' (find_digit_min d)) None ds with
@@ -957,14 +961,15 @@ module SegmentedBinomialHeap (E : ORDERED) : HEAP with module Element = E = stru
     | None -> raise (Failure "find_min: empty heap")
   ;;
 
-  let flatten =
-    List.concat_map (function
-      | Zero -> []
-      | Ones ts -> ts
-      | Two (a, b) -> [ a; b ])
+  (* O(log n), shorter, reads nicer, but does around twice allocations *)
+
+  let decode = function
+    | Zero -> []
+    | Ones ts -> ts
+    | Two (a, b) -> [ a; b ]
   ;;
 
-  (* O(log n), shorter, reads nicer, but does around twice allocations *)
+  let flatten = List.concat_map decode
 
   let find_min_flatten h =
     match List.map root (flatten h) with
