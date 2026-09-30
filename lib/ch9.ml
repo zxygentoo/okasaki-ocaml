@@ -982,23 +982,23 @@ module SegmentedBinomialHeap (E : ORDERED) : HEAP with module Element = E = stru
   (* delete_min *)
 
   let rec remove_min_tree e h =
-    match h with
-    | [] -> assert false
-    | _ ->
+    if is_empty h
+    then assert false
+    else (
       let s, rest = uncons_step_or_empty h in
-      (match remove_root e s with
-       | Some (children, left) -> children, cons_step left rest
-       | None ->
-         let children, rest' = remove_min_tree e rest in
-         children, cons_step s rest')
+      match remove_root e s with
+      | Some (children, left) -> children, cons_step left rest
+      | None ->
+        let children, rest' = remove_min_tree e rest in
+        children, cons_step s rest')
   ;;
 
   let delete_min h =
-    match h with
-    | [] -> raise (Failure "delete_min: empty heap")
-    | _ ->
+    if is_empty h
+    then raise (Failure "delete_min: empty heap")
+    else (
       let e = find_min h in
       let children, rest = remove_min_tree e h in
-      merge (add_ones (List.rev children) []) rest
+      merge (add_ones (List.rev children) []) rest)
   ;;
 end
