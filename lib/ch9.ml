@@ -234,7 +234,7 @@ module BinaryRandomAccessList : RANDOM_ACCESS_LIST_WITH_DROP_AND_CREATE = struct
     | Node (_, a, _) -> a
   ;;
 
-  let create_top_down n e =
+  let _create_top_down n e =
     let rec build w t m acc =
       if w / 2 = 0
       then (if n mod 2 = 0 then Zero else One (Leaf e)) :: acc
@@ -784,4 +784,216 @@ module SegmentedRepresentationTwo = struct
   ;;
 
   let inc ds = fixup (simple_inc ds)
+end
+
+module type ORDERED = sig
+  type t
+
+  val eq : t -> t -> bool
+  val lt : t -> t -> bool
+  val leq : t -> t -> bool
+end
+
+module type HEAP = sig
+  module Element : ORDERED
+
+  type heap
+
+  val empty : heap
+  val is_empty : heap -> bool
+  val insert : Element.t -> heap -> heap
+  val merge : heap -> heap -> heap
+  val find_min : heap -> Element.t
+  val delete_min : heap -> heap
+end
+
+(* Exercise 9.11 Extend binomial heaps with segmentation so that insert runs in 0(1)
+   worst-case time. Use the type
+
+   datatype Tree = NODE of Elem.T x Tree list
+
+   datatype Digit = ZERO | ONES of Tree list | Two of Tree x Tree
+
+   type Heap = Digit list
+
+   Restore the invariant after a merge by eliminating all Twos.
+*)
+
+module SegmentedBinomialHeap (E : ORDERED) : HEAP with module Element = E = struct
+  module Element = E
+
+  type tree = Node of E.t * tree list
+
+  type digit =
+    | Zero
+    | Ones of tree list
+    | Two of tree * tree
+
+  type heap = digit list
+
+  (* empty and is_empty *)
+
+  let empty = []
+
+  let is_empty = function
+    | [] -> true
+    | _ -> false
+  ;;
+
+  (* helpers *)
+
+  let smaller a b = if Element.leq a b then a else b
+
+  let smaller_opt a b =
+    match a, b with
+    | _, None -> a
+    | None, _ -> b
+    | Some x, Some y -> Some (smaller x y)
+  ;;
+
+  let root (Node (e, _)) = e
+  let children (Node (_, xs)) = xs
+
+  let link (Node (e1, ts1) as t1) (Node (e2, ts2) as t2) =
+    if Element.leq e1 e2 then Node (e1, t2 :: ts1) else Node (e2, t1 :: ts2)
+  ;;
+
+  let add_zero = function
+    | [] -> []
+    | ds -> Zero :: ds
+  ;;
+
+  let add_ones ts ds =
+    match ts, ds with
+    | [], _ -> ds
+    | _, Ones os :: ds' -> Ones (ts @ os) :: ds'
+    | _, _ -> Ones ts :: ds
+  ;;
+
+  let uncons_step = function
+    | Zero :: ts -> [], ts
+    | Ones [ o ] :: ts -> [ o ], ts
+    | Ones (o :: os) :: ts -> [ o ], Ones os :: ts
+    | Two (a, b) :: ts -> [ a; b ], ts
+    | _ -> assert false
+  ;;
+
+  let uncons_step_or_empty h = if is_empty h then [], [] else uncons_step h
+
+  let cons_step ts ds =
+    match ts with
+    | [] -> add_zero ds
+    | [ _ ] -> add_ones ts ds
+    | [ a; b ] -> Two (a, b) :: ds
+    | _ -> assert false
+  ;;
+
+  let remove_root e = function
+    | [ x ] when Element.eq (root x) e -> Some (children x, [])
+    | [ a; b ] when Element.eq (root a) e -> Some (children a, [ b ])
+    | [ a; b ] when Element.eq (root b) e -> Some (children b, [ a ])
+    | _ -> None
+  ;;
+
+  (* insert *)
+
+  let insert_tree t = function
+    | [] -> [ Ones [ t ] ]
+    | Zero :: Ones os :: ds -> Ones (t :: os) :: ds
+    | Zero :: ds -> Ones [ t ] :: ds
+    | Ones [ x ] :: ds -> Two (t, x) :: ds
+    | Ones (o :: os) :: ds -> Two (t, o) :: Ones os :: ds
+    | _ -> assert false
+  ;;
+
+  let fixup = function
+    | Two (x, y) :: ds -> Zero :: insert_tree (link x y) ds
+    | (Ones _ as d) :: Two (x, y) :: ds -> d :: Zero :: insert_tree (link x y) ds
+    | ds -> ds
+  ;;
+
+  let insert e ds = fixup (insert_tree (Node (e, [])) ds)
+
+  (* merge *)
+
+  let merge_step x y carry =
+    match x @ y @ carry with
+    | [] -> [], []
+    | [ _ ] as t -> t, []
+    | [ a; b ] -> [], [ link a b ]
+    | [ a; b; c ] -> [ a ], [ link b c ]
+    | [ a; b; c; d ] -> [], [ link a b; link c d ]
+    | [ a; b; c; d; e ] -> [ a ], [ link b c; link d e ]
+    | _ -> assert false (* the invariant keeps the pool length <= 5 *)
+  ;;
+
+  let rec merge_steps ha hb carry =
+    match ha, hb, carry with
+    | [], [], [] -> []
+    | _ ->
+      let a, ha' = uncons_step_or_empty ha in
+      let b, hb' = uncons_step_or_empty hb in
+      let r, carry' = merge_step a b carry in
+      cons_step r (merge_steps ha' hb' carry')
+  ;;
+
+  let merge h1 h2 =
+    if is_empty h1 then h2 else if is_empty h2 then h1 else merge_steps h1 h2 []
+  ;;
+
+  (* find_min *)
+
+  let find_digit_min = function
+    | Zero -> None
+    | Ones os -> List.fold_left (fun acc x -> smaller_opt acc (Some (root x))) None os
+    | Two (a, b) -> Some (smaller (root a) (root b))
+  ;;
+
+  (* O(log n), spelled out with option type yet less allocation *)
+
+  let _find_min_opt ds =
+    match List.fold_left (fun e' d -> smaller_opt e' (find_digit_min d)) None ds with
+    | Some e -> e
+    | None -> raise (Failure "find_min: empty heap")
+  ;;
+
+  let flatten =
+    List.concat_map (function
+      | Zero -> []
+      | Ones ts -> ts
+      | Two (a, b) -> [ a; b ])
+  ;;
+
+  (* O(log n), shorter, reads nicer, but does around twice allocations *)
+
+  let find_min_flatten h =
+    match List.map root (flatten h) with
+    | [] -> raise (Failure "find_min: empty heap")
+    | r :: rs -> List.fold_left smaller r rs
+  ;;
+
+  let find_min = find_min_flatten
+
+  (* delete_min *)
+
+  let rec remove_min_tree e h =
+    match h with
+    | [] -> assert false
+    | _ ->
+      let s, rest = uncons_step_or_empty h in
+      (match remove_root e s with
+       | Some (children, left) -> children, cons_step left rest
+       | None ->
+         let children, rest' = remove_min_tree e rest in
+         children, cons_step s rest')
+  ;;
+
+  let delete_min h =
+    match h with
+    | [] -> raise (Failure "delete_min: empty heap")
+    | _ ->
+      let e = find_min h in
+      let children, rest = remove_min_tree e h in
+      merge (add_ones (List.rev children) []) rest
+  ;;
 end

@@ -2,8 +2,9 @@
    drop of Exercise 9.1, the create of Exercise 9.2, the sparse list of Exercise 9.3 with
    its own drop and create, the zeroless numbers and list of Exercises 9.4 and 9.5, and
    the zeroless redundant list of Exercise 9.9 and its scheduled form of Exercise 9.10,
-   and the segmented binary numbers of section 9.2.4, each with its own preamble further
-   down. Plain OCaml, no test framework, matching the earlier chapters.
+   the segmented binary numbers of section 9.2.4 and the segmented binomial heap of
+   Exercise 9.11, each with its own preamble further down. Plain OCaml, no test framework,
+   matching the earlier chapters.
 
    Section 9.2.1 builds a list out of a binary number. A list of n elements holds one
    complete binary leaf tree for every one in the binary representation of n, in
@@ -2730,6 +2731,536 @@ let test_segmented () =
       "  SKIP  SegmentedRepresentationTwo: costs at k=100000 -- over budget before\n"
 ;;
 
+(* ------------------------------------------ SegmentedBinomialHeap (Exercise 9.11) *)
+
+(* Exercise 9.11 asks for binomial heaps extended with segmentation, "so that insert runs
+   in O(1) worst-case time", over digits ZERO, ONES of a list of trees and TWO of two
+   trees, and says: "Restore the invariant after a merge by eliminating all Twos."
+   find_min, merge and delete_min keep the O(log n) worst case of the binomial heaps of
+   section 3.2.
+
+   The heap is abstract behind HEAP, so the contract is what a client sees: a drain by
+   find_min and delete_min comes out sorted, with every element exactly once. It is
+   checked on every size up to 64, on the merge of every pair of sizes up to 24, on the
+   futures of one shared heap, and on a random trace of inserts, merges and delete_mins
+   over earlier versions against a sorted list. Ties get their own check, with elements
+   that the order calls equal but a tag tells apart: each has to come out exactly once,
+   which holds only if delete_min takes out the very element find_min returned.
+
+   A sorted drain cannot see a tree at the wrong rank: heap order survives any link, so a
+   heap whose trees sit at the wrong positions still drains sorted. The shape is read
+   through find_min instead, which compares every root but the first once. Two counts
+   follow from the book. After n inserts into the empty heap, insert being the section's
+   inc with trees, there is one tree per unit of the numeral inc reaches from zero, and
+   SegmentedRepresentationTwo.inc says what that numeral is. After a merge of two
+   non-empty heaps no TWO is left and the tree at rank r holds 2^r elements, so there is
+   exactly one tree per 1 bit of n. A tree at the wrong rank shows up there as soon as it
+   is deleted: the digits then stop adding up to n, and the next merge's count is off.
+
+   Then the clocks, every operation on them by itself: comparisons, through a counting
+   element type, which see every link, and words, which see everything else. fixup links
+   at most once, so an insert is held to one comparison and to the flat budget in words,
+   from every heap and at every size; the dearest case is the all-ones heap a merge
+   leaves, one block of k trees, where the insert of section 3.2 carries k times.
+   find_min, merge and delete_min are held to 6L + 6 comparisons and 160L + 160 words, L =
+   log2 (n + 1), about twice what the dearest of them spends. That the probe can tell O(1)
+   from O(log n) is checked on Figure 3.4's heap. *)
+
+let comparisons = ref 0
+
+module Counting_int = struct
+  type t = int
+
+  let eq a b =
+    incr comparisons;
+    a = b
+  ;;
+
+  let lt a b =
+    incr comparisons;
+    a < b
+  ;;
+
+  let leq a b =
+    incr comparisons;
+    a <= b
+  ;;
+end
+
+module SH = SegmentedBinomialHeap (Counting_int)
+
+let popcount n =
+  let rec go acc n = if n = 0 then acc else go (acc + (n land 1)) (n lsr 1) in
+  go 0 n
+;;
+
+(* The result of one call of [f], with the comparisons and the words it spent. *)
+let spent f =
+  comparisons := 0;
+  let before = words () in
+  let r = Sys.opaque_identity (f ()) in
+  r, (!comparisons, words () - before)
+;;
+
+let sh_of_list xs = List.fold_left (fun h x -> SH.insert x h) SH.empty xs
+let sh_drain h = drain_with ~is_empty:SH.is_empty ~head:SH.find_min ~tail:SH.delete_min h
+
+(* Trees in [h]: find_min compares every root but the first once. *)
+let sh_trees h =
+  if SH.is_empty h
+  then 0
+  else (
+    let _, (c, _) = spent (fun () -> SH.find_min h) in
+    c + 1)
+;;
+
+(* ----------------------------------------------------------------- contract *)
+
+(* Order by key only: the tag tells equal elements apart. *)
+module Keyed = struct
+  type t = int * int
+
+  let eq (a, _) (b, _) = a = b
+  let lt (a, _) (b, _) = a < b
+  let leq (a, _) (b, _) = a <= b
+end
+
+module SK = SegmentedBinomialHeap (Keyed)
+
+let test_sh_contract () =
+  let t label = "SegmentedBinomialHeap: " ^ label in
+  check (t "empty is empty") (SH.is_empty SH.empty);
+  check (t "a singleton is not empty") (not (SH.is_empty (SH.insert 1 SH.empty)));
+  check_raises (t "find_min of the empty heap") "find_min: empty heap" (fun () ->
+    SH.find_min SH.empty);
+  check_raises (t "delete_min of the empty heap") "delete_min: empty heap" (fun () ->
+    SH.delete_min SH.empty);
+  let drains_to note what want h =
+    match sh_drain h with
+    | out when out = want -> ()
+    | out -> note (Printf.sprintf "%s drains to %s" what (string_of_int_list out))
+    | exception e -> note (Printf.sprintf "%s raised %s" what (Printexc.to_string e))
+  in
+  Random.init 20260930;
+  all_of
+    (t "every size up to 64, ascending, descending and random, drains sorted")
+    (fun note ->
+       for n = 0 to 64 do
+         List.iter
+           (fun (kind, xs) ->
+             drains_to
+               note
+               (Printf.sprintf "%d %s inserts" n kind)
+               (List.sort compare xs)
+               (sh_of_list xs))
+           [ "ascending", upto n
+           ; "descending", List.rev (upto n)
+           ; "random", List.init n (fun _ -> Random.int 16)
+           ]
+       done);
+  all_of
+    (t "the merge of every pair of sizes up to 24 drains to the sorted union")
+    (fun note ->
+       for a = 0 to 24 do
+         for b = 0 to 24 do
+           let xs = List.init a (fun _ -> Random.int 16)
+           and ys = List.init b (fun _ -> Random.int 16) in
+           drains_to
+             note
+             (Printf.sprintf "the merge of %d and %d" a b)
+             (List.sort compare (xs @ ys))
+             (SH.merge (sh_of_list xs) (sh_of_list ys))
+         done
+       done);
+  all_of (t "four futures of one heap, and the heap itself, untouched") (fun note ->
+    let h = sh_of_list [ 5; 3; 8; 1 ] in
+    let a = SH.insert 0 h
+    and b = SH.insert 4 h
+    and c = SH.delete_min h
+    and d = SH.merge h h in
+    drains_to note "insert 0" [ 0; 1; 3; 5; 8 ] a;
+    drains_to note "insert 4" [ 1; 3; 4; 5; 8 ] b;
+    drains_to note "delete_min" [ 3; 5; 8 ] c;
+    drains_to note "merge with itself" [ 1; 1; 3; 3; 5; 5; 8; 8 ] d;
+    drains_to note "the heap" [ 1; 3; 5; 8 ] h);
+  all_of
+    (t
+       "a random trace of 6000 inserts, merges and delete_mins over earlier versions, \
+        against a sorted list")
+    (fun note ->
+       let n = 6_000 in
+       let v = Array.make (n + 1) SH.empty
+       and model = Array.make (n + 1) []
+       and size = Array.make (n + 1) 0 in
+       for i = 1 to n do
+         let p = Random.int i
+         and q = Random.int i in
+         let what, h, m, s =
+           match Random.int 4 with
+           | 2 when size.(p) + size.(q) <= 600 ->
+             ( "merge"
+             , SH.merge v.(p) v.(q)
+             , List.merge compare model.(p) model.(q)
+             , size.(p) + size.(q) )
+           | 3 when size.(p) > 0 ->
+             "delete_min", SH.delete_min v.(p), List.tl model.(p), size.(p) - 1
+           | _ ->
+             let x = Random.int 1000 in
+             "insert", SH.insert x v.(p), List.merge compare [ x ] model.(p), size.(p) + 1
+         in
+         v.(i) <- h;
+         model.(i) <- m;
+         size.(i) <- s;
+         match m with
+         | [] ->
+           if not (SH.is_empty h) then note (Printf.sprintf "%s %d is not empty" what i)
+         | x :: _ ->
+           if SH.is_empty h
+           then note (Printf.sprintf "%s %d is empty" what i)
+           else if SH.find_min h <> x
+           then
+             note (Printf.sprintf "%s %d: find_min %d, want %d" what i (SH.find_min h) x)
+       done;
+       for i = 0 to n do
+         if i mod 200 = 0
+         then drains_to note (Printf.sprintf "version %d" i) model.(i) v.(i)
+       done);
+  all_of
+    (t "equal keys, distinct tags: every element comes out exactly once, in order")
+    (fun note ->
+       let sk_of_list = List.fold_left (fun h x -> SK.insert x h) SK.empty in
+       for n = 1 to 80 do
+         let xs = List.init n (fun tag -> Random.int 4, tag) in
+         let half = List.filteri (fun i _ -> i < n / 2) xs
+         and rest = List.filteri (fun i _ -> i >= n / 2) xs in
+         List.iter
+           (fun (how, h) ->
+             match
+               drain_with ~is_empty:SK.is_empty ~head:SK.find_min ~tail:SK.delete_min h
+             with
+             | out ->
+               let keys = List.map fst out in
+               if List.sort compare out <> List.sort compare xs
+               then note (Printf.sprintf "%d %s: not every element once" n how)
+               else if keys <> List.sort compare keys
+               then note (Printf.sprintf "%d %s: out of order" n how)
+             | exception e ->
+               note (Printf.sprintf "%d %s raised %s" n how (Printexc.to_string e)))
+           [ "inserts", sk_of_list xs
+           ; "merged halves", SK.merge (sk_of_list half) (sk_of_list rest)
+           ]
+       done)
+;;
+
+(* -------------------------------------------------------------------- shape *)
+
+let test_sh_shape () =
+  let t label = "SegmentedBinomialHeap, shape: " ^ label in
+  let module N = SegmentedRepresentationTwo in
+  let units =
+    List.fold_left
+      (fun s -> function
+        | N.Zero -> s
+        | N.Two -> s + 2
+        | N.Ones i -> s + i)
+      0
+  in
+  all_of
+    (t
+       "after n inserts from empty, one tree per unit of the numeral inc reaches, n up \
+        to 2000")
+    (fun note ->
+       let h = ref SH.empty
+       and num = ref [] in
+       for n = 1 to 2000 do
+         h := SH.insert n !h;
+         num := N.inc !num;
+         let got = sh_trees !h
+         and want = units !num in
+         if got <> want then note (Printf.sprintf "n=%d: %d trees, want %d" n got want)
+       done);
+  all_of
+    (t
+       "after every merge of two non-empty heaps in a random trace of 6000 operations, \
+        one tree per 1 bit of n")
+    (fun note ->
+       Random.init 20260930;
+       let n = 6_000 in
+       let v = Array.make (n + 1) SH.empty
+       and size = Array.make (n + 1) 0 in
+       for i = 1 to n do
+         let p = Random.int i
+         and q = Random.int i in
+         match Random.int 4 with
+         | 2 when size.(p) > 0 && size.(q) > 0 && size.(p) + size.(q) <= 1 lsl 20 ->
+           let s = size.(p) + size.(q) in
+           v.(i) <- SH.merge v.(p) v.(q);
+           size.(i) <- s;
+           let got = sh_trees v.(i) in
+           if got <> popcount s
+           then
+             note
+               (Printf.sprintf
+                  "merge %d, of %d and %d: %d trees, want %d"
+                  i
+                  size.(p)
+                  size.(q)
+                  got
+                  (popcount s))
+         | 3 when size.(p) > 0 ->
+           v.(i) <- SH.delete_min v.(p);
+           size.(i) <- size.(p) - 1
+         | _ ->
+           v.(i) <- SH.insert i v.(p);
+           size.(i) <- size.(p) + 1
+       done)
+;;
+
+(* ------------------------------------------- every operation on its own clock *)
+
+let sh_log2 n = log (float_of_int n) /. log 2.
+let sh_insert_comparisons = 1.0
+let sh_insert_words = flat_budget
+let sh_query_comparisons l = (6. *. l) +. 6.
+let sh_query_words l = (160. *. l) +. 160.
+
+(* The dearest operation of a run, as a fraction of its budget: within its bound when the
+   fraction is at most one. *)
+let sh_dearer (ratio, what) ~at ~op ~size (c, w) =
+  let cb, wb =
+    if op = "insert"
+    then sh_insert_comparisons, sh_insert_words
+    else (
+      let l = sh_log2 (size + 1) in
+      sh_query_comparisons l, sh_query_words l)
+  in
+  let r = Float.max (float_of_int c /. cb) (float_of_int w /. wb) in
+  if r > ratio
+  then
+    ( r
+    , Printf.sprintf
+        "%s #%d on %d elements, %d comparisons and %d words (budget %.0f, %.0f)"
+        op
+        at
+        size
+        c
+        w
+        cb
+        wb )
+  else ratio, what
+;;
+
+let sh_within name (ratio, what) =
+  let fine = ratio <= 1.0 in
+  check (Printf.sprintf "%s: the dearest is %s" name what) fine;
+  fine
+;;
+
+type sh_op =
+  | Insert of int
+  | Find_min
+  | Delete_min
+
+(* Runs [ops] from the empty heap, every operation on the clocks by itself; the dearest
+   insert and the dearest query. *)
+let sh_run ops =
+  let h = ref SH.empty
+  and size = ref 0
+  and sum = ref 0
+  and ins = ref (0.0, "nothing")
+  and query = ref (0.0, "nothing") in
+  Array.iteri
+    (fun i op ->
+      match op with
+      | Insert x ->
+        let h', cw = spent (fun () -> SH.insert x !h) in
+        ins := sh_dearer !ins ~at:i ~op:"insert" ~size:!size cw;
+        h := h';
+        incr size
+      | Find_min ->
+        let x, cw = spent (fun () -> SH.find_min !h) in
+        query := sh_dearer !query ~at:i ~op:"find_min" ~size:!size cw;
+        sum := !sum + x
+      | Delete_min ->
+        let h', cw = spent (fun () -> SH.delete_min !h) in
+        query := sh_dearer !query ~at:i ~op:"delete_min" ~size:!size cw;
+        h := h';
+        decr size)
+    ops;
+  ignore (Sys.opaque_identity !sum);
+  !ins, !query
+;;
+
+(* Each insert followed by a find_min, then a drain. *)
+let sh_build_then_drain xs =
+  let n = Array.length xs in
+  Array.init (3 * n) (fun i ->
+    if i < 2 * n then if i mod 2 = 0 then Insert xs.(i / 2) else Find_min else Delete_min)
+;;
+
+let sh_sequences n =
+  Random.init n;
+  [ ( "n ascending inserts, each then a find_min, then n delete_mins"
+    , sh_build_then_drain (Array.init n Fun.id) )
+  ; ( "n random inserts, each then a find_min, then n delete_mins"
+    , sh_build_then_drain (Array.init n (fun _ -> Random.int 1_000_000)) )
+  ; ( "n equal inserts, each then a find_min, then n delete_mins"
+    , sh_build_then_drain (Array.make n 7) )
+  ; ( "insert then delete_min at a steady size of 1000, n times over"
+    , Array.init
+        (1000 + (2 * n))
+        (fun i ->
+          if i < 1000 then Insert i else if i mod 2 = 0 then Insert i else Delete_min) )
+  ]
+;;
+
+(* True if every sequence stayed within both budgets at n. *)
+let test_sh_sequences n =
+  List.for_all
+    (fun ok -> ok)
+    (List.map
+       (fun (what, ops) ->
+         let ins, query = sh_run ops in
+         let name = Printf.sprintf "SegmentedBinomialHeap, n=%d, %s" n what in
+         let a = sh_within (name ^ ", insert") ins in
+         let b = sh_within (name ^ ", queries") query in
+         a && b)
+       (sh_sequences n))
+;;
+
+(* The all-ones heap of 2^k - 1 elements, as a merge leaves it, one block of k trees: the
+   insert of section 3.2 would carry k times here. *)
+let test_sh_all_ones () =
+  let d = ref (0.0, "nothing") in
+  for k = 1 to 17 do
+    let h = SH.merge (sh_of_list (upto ((1 lsl k) - 2))) (SH.insert (-1) SH.empty) in
+    let _, cw = spent (fun () -> SH.insert (-2) h) in
+    d := sh_dearer !d ~at:k ~op:"insert" ~size:((1 lsl k) - 1) cw
+  done;
+  ignore
+    (sh_within
+       "SegmentedBinomialHeap: insert into the all-ones heap of 2^k - 1 a merge leaves, \
+        k = 1..17"
+       !d)
+;;
+
+(* n singletons merged pairwise, every merge on the clocks against the heap it makes, and
+   the result drained. *)
+let test_sh_merges n =
+  let d = ref (0.0, "nothing")
+  and at = ref 0 in
+  let rec round = function
+    | (a, sa) :: (b, sb) :: rest ->
+      incr at;
+      let m, cw = spent (fun () -> SH.merge a b) in
+      d := sh_dearer !d ~at:!at ~op:"merge" ~size:(sa + sb) cw;
+      (m, sa + sb) :: round rest
+    | l -> l
+  in
+  let rec go = function
+    | [ (h, _) ] -> h
+    | [] -> SH.empty
+    | l -> go (round l)
+  in
+  let h = ref (go (List.init n (fun i -> SH.insert i SH.empty, 1))) in
+  for i = 1 to n do
+    let h', cw = spent (fun () -> SH.delete_min !h) in
+    d := sh_dearer !d ~at:i ~op:"delete_min" ~size:(n - i + 1) cw;
+    h := h'
+  done;
+  ignore
+    (sh_within
+       (Printf.sprintf
+          "SegmentedBinomialHeap: %d singletons merged pairwise, then drained"
+          n)
+       !d)
+;;
+
+(* A random trace over earlier versions, each operation on the clocks against the heap it
+   is applied to or makes. Sizes are tracked, since merging versions of versions makes
+   heaps far larger than the trace is long. *)
+let test_sh_versions () =
+  let n = 20_000 in
+  Random.init 20260930;
+  let v = Array.make (n + 1) SH.empty
+  and size = Array.make (n + 1) 0
+  and ins = ref (0.0, "nothing")
+  and query = ref (0.0, "nothing") in
+  for i = 1 to n do
+    let p = Random.int i
+    and q = Random.int i in
+    match Random.int 4 with
+    | 2 when size.(p) + size.(q) <= 1 lsl 40 ->
+      let h, cw = spent (fun () -> SH.merge v.(p) v.(q)) in
+      v.(i) <- h;
+      size.(i) <- size.(p) + size.(q);
+      query := sh_dearer !query ~at:i ~op:"merge" ~size:size.(i) cw
+    | 3 when size.(p) > 0 ->
+      let h, cw = spent (fun () -> SH.delete_min v.(p)) in
+      query := sh_dearer !query ~at:i ~op:"delete_min" ~size:size.(p) cw;
+      v.(i) <- h;
+      size.(i) <- size.(p) - 1
+    | _ ->
+      let h, cw = spent (fun () -> SH.insert i v.(p)) in
+      ins := sh_dearer !ins ~at:i ~op:"insert" ~size:size.(p) cw;
+      v.(i) <- h;
+      size.(i) <- size.(p) + 1
+  done;
+  ignore (Sys.opaque_identity v);
+  let name =
+    "SegmentedBinomialHeap: a random trace of 20000 operations over earlier versions"
+  in
+  ignore (sh_within (name ^ ", insert") !ins);
+  ignore (sh_within (name ^ ", merge and delete_min") !query)
+;;
+
+(* Whether the probe can tell O(1) from O(log n): Figure 3.4's insert into the all-ones
+   heap of 2^16 - 1 links 16 times on the spot, and the same clock must see every link. *)
+module Strict_heap = Okasaki.Ch3.BinomialHeap (Counting_int)
+
+let test_sh_guard () =
+  let k = 16 in
+  let h =
+    List.fold_left
+      (fun h x -> Strict_heap.insert x h)
+      Strict_heap.empty
+      (upto ((1 lsl k) - 1))
+  in
+  let _, (c, _) = spent (fun () -> Strict_heap.insert (-1) h) in
+  check
+    (Printf.sprintf
+       "guard: the same probe sees Figure 3.4's insert into the all-ones heap of 2^%d - \
+        1 link %d times"
+       k
+       c)
+    (c >= k)
+;;
+
+(* What it returns, then its shape, then its costs, the large size only after the small. *)
+let test_segmented_heap () =
+  section "SegmentedBinomialHeap (Exercise 9.11)";
+  let before = !failures in
+  test_sh_contract ();
+  test_sh_shape ();
+  if !failures > before
+  then
+    Printf.printf
+      "  SKIP  SegmentedBinomialHeap: costs -- the contract or the shape above does not \
+       hold\n"
+  else (
+    test_sh_guard ();
+    test_sh_all_ones ();
+    if test_sh_sequences 1_000
+    then (
+      ignore (test_sh_sequences 100_000);
+      test_sh_merges 1_000;
+      test_sh_merges 100_000;
+      test_sh_versions ())
+    else
+      Printf.printf
+        "  SKIP  SegmentedBinomialHeap: costs at n=100000 -- over budget at n=1000\n")
+;;
+
 (* ------------------------------------------------------------------- runner *)
 
 (* A regression can make a function raise where the test did not expect it. Report that as
@@ -2754,6 +3285,7 @@ let () =
   run "ZerolessRedundantBinaryRandomAccessList" test_redundant;
   run "ScheduledZerolessRedundantBinaryRandomAccessList" test_scheduled;
   run "Segmented binary numbers" test_segmented;
+  run "SegmentedBinomialHeap" test_segmented_heap;
   Printf.printf "\n%d checks, %d failures\n\n" !checks !failures;
   if !failures > 0 then exit 1
 ;;
