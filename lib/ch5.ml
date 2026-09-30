@@ -180,34 +180,6 @@ module SplayHeap (E : ORDERED) : HEAP_WITH_SORT with module Element = E = struct
           else T (T (a, x, b1), y, smaller k b2))
   ;;
 
-  let rec partition k = function
-    | E -> E, E
-    | T (a, x, b) as h ->
-      if Element.leq x k
-      then (
-        match b with
-        | E -> h, E
-        | T (b1, y, b2) ->
-          if Element.leq y k
-          then (
-            let small, big = partition k b2 in
-            T (T (a, x, b1), y, small), big)
-          else (
-            let small, big = partition k b1 in
-            T (a, x, small), T (big, y, b2)))
-      else (
-        match a with
-        | E -> E, h
-        | T (a1, y, a2) ->
-          if Element.leq y k
-          then (
-            let small, big = partition k a2 in
-            T (a1, y, small), T (big, x, b))
-          else (
-            let small, big = partition k a1 in
-            small, T (big, y, T (a2, x, b))))
-  ;;
-
   let partition x h = smaller x h, bigger x h
 
   let insert x h =

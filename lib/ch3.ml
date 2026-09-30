@@ -424,7 +424,7 @@ module RedBlackSet (Element : ORDERED) :
     | body -> T body
   ;;
 
-  let insert_basic x s =
+  let _insert_basic x s =
     let rec ins = function
       | E -> T (R, E, x, E)
       | T (color, a, y, b) as s' ->
@@ -533,7 +533,7 @@ module RedBlackSet (Element : ORDERED) :
     | t -> T t
   ;;
 
-  let insert_further_split x s =
+  let _insert_further_split x s =
     let rec ins = function
       | E -> T (R, E, x, E), `Done
       | T (color, a, y, b) as s' ->
