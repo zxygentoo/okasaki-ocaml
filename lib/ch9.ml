@@ -1066,34 +1066,37 @@ module SegmentedRepresentation = struct
 
   type nat = digits list
 
+  let zero = function
+    | [] -> []
+    | ds -> Zero :: ds
+  ;;
+
+  let yellow y = function
+    | Yellows ys :: ds -> Yellows (y :: ys) :: ds
+    | ds -> Yellows [ y ] :: ds
+  ;;
+
+  let block ys ds =
+    match ys with
+    | [] -> ds
+    | _ -> Yellows ys :: ds
+  ;;
+
   let simple_inc = function
     | [] -> [ Yellows [ One ] ]
-    | Zero :: Yellows (One :: ys) :: ds -> Yellows (One :: One :: ys) :: ds
-    | Zero :: Yellows (Three :: ys) :: ds -> Yellows (One :: Three :: ys) :: ds
-    | Zero :: ds -> Yellows [ One ] :: ds
-    | Two :: Yellows (One :: ys) :: ds -> Yellows (Three :: One :: ys) :: ds
-    | Two :: Yellows (Three :: ys) :: ds -> Yellows (Three :: Three :: ys) :: ds
-    | Two :: ds -> Yellows [ Three ] :: ds
-    | Yellows [ One ] :: ds -> Two :: ds
-    | Yellows [ Three ] :: ds -> Four :: ds
-    | Yellows (One :: ys) :: ds -> Two :: Yellows ys :: ds
-    | Yellows (Three :: ys) :: ds -> Four :: Yellows ys :: ds
+    | Zero :: ds -> yellow One ds
+    | Two :: ds -> yellow Three ds
+    | Yellows (Three :: ys) :: ds -> Four :: block ys ds
+    | Yellows (One :: ys) :: ds -> Two :: block ys ds
     | _ -> assert false
   ;;
 
   let simple_dec = function
     | [] -> raise (Failure "dec: zero")
-    | [ Yellows [ One ] ] -> []
-    | Yellows [ One ] :: ds -> Zero :: ds
-    | Yellows (One :: ys) :: ds -> Zero :: Yellows ys :: ds
-    | Two :: Yellows (One :: ys) :: ds -> Yellows (One :: One :: ys) :: ds
-    | Two :: Yellows (Three :: ys) :: ds -> Yellows (One :: Three :: ys) :: ds
-    | Two :: ds -> Yellows [ One ] :: ds
-    | Yellows [ Three ] :: ds -> Two :: ds
-    | Yellows (Three :: ys) :: ds -> Two :: Yellows ys :: ds
-    | Four :: Yellows (One :: ys) :: ds -> Yellows (Three :: One :: ys) :: ds
-    | Four :: Yellows (Three :: ys) :: ds -> Yellows (Three :: Three :: ys) :: ds
-    | Four :: ds -> Yellows [ Three ] :: ds
+    | Two :: ds -> yellow One ds
+    | Yellows (Three :: ys) :: ds -> Two :: block ys ds
+    | Yellows (One :: ys) :: ds -> zero (block ys ds)
+    | Four :: ds -> yellow Three ds
     | _ -> assert false
   ;;
 
