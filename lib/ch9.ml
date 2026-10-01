@@ -1002,3 +1002,108 @@ module SegmentedBinomialHeap (E : ORDERED) : HEAP with module Element = E = stru
       merge (add_ones (List.rev children) []) rest)
   ;;
 end
+
+(* Exercise 9.12 The example implementation of binary numbers based on recursive slowdown
+   supports inc in O(1) worst-case time, but might require up to O(log n) for dec.
+   Reimplement segmented, redundant binary numbers to support both inc and dec in O(1)
+   worst-case time by allowing each digit to be 0, 1, 2, 3, or 4, where 0 and 4 are red, 1
+   and 3 are yellow, and 2 is green. *)
+
+(* O(log n) dense representation version *)
+
+module DenseRepresentation = struct
+  type digits =
+    | Zero
+    | One
+    | Two
+    | Three
+    | Four
+
+  type nat = digits list
+
+  let simple_inc = function
+    | [] -> [ One ]
+    | Zero :: s -> One :: s
+    | One :: s -> Two :: s
+    | Two :: s -> Three :: s
+    | Three :: s -> Four :: s
+    | _ -> assert false
+  ;;
+
+  let simple_dec = function
+    | [] -> raise (Failure "dec: zero")
+    | [ One ] -> []
+    | One :: s -> Zero :: s
+    | Two :: s -> One :: s
+    | Three :: s -> Two :: s
+    | Four :: s -> Three :: s
+    | _ -> assert false
+  ;;
+
+  let rec fixup = function
+    | Zero :: ds -> Two :: simple_dec ds
+    | Four :: ds -> Two :: simple_inc ds
+    | ((One | Three) as d) :: ds -> d :: fixup ds
+    | ds -> ds
+  ;;
+
+  let inc ds = fixup (simple_inc ds)
+  let dec ds = fixup (simple_dec ds)
+end
+
+(* O(1) segmented representation version *)
+
+module SegmentedRepresentation = struct
+  type yellow =
+    | One
+    | Three
+
+  type digits =
+    | Zero
+    | Yellows of yellow list
+    | Two
+    | Four
+
+  type nat = digits list
+
+  let simple_inc = function
+    | [] -> [ Yellows [ One ] ]
+    | Zero :: Yellows (One :: ys) :: ds -> Yellows (One :: One :: ys) :: ds
+    | Zero :: Yellows (Three :: ys) :: ds -> Yellows (One :: Three :: ys) :: ds
+    | Zero :: ds -> Yellows [ One ] :: ds
+    | Two :: Yellows (One :: ys) :: ds -> Yellows (Three :: One :: ys) :: ds
+    | Two :: Yellows (Three :: ys) :: ds -> Yellows (Three :: Three :: ys) :: ds
+    | Two :: ds -> Yellows [ Three ] :: ds
+    | Yellows [ One ] :: ds -> Two :: ds
+    | Yellows [ Three ] :: ds -> Four :: ds
+    | Yellows (One :: ys) :: ds -> Two :: Yellows ys :: ds
+    | Yellows (Three :: ys) :: ds -> Four :: Yellows ys :: ds
+    | _ -> assert false
+  ;;
+
+  let simple_dec = function
+    | [] -> raise (Failure "dec: zero")
+    | [ Yellows [ One ] ] -> []
+    | Yellows [ One ] :: ds -> Zero :: ds
+    | Yellows (One :: ys) :: ds -> Zero :: Yellows ys :: ds
+    | Two :: Yellows (One :: ys) :: ds -> Yellows (One :: One :: ys) :: ds
+    | Two :: Yellows (Three :: ys) :: ds -> Yellows (One :: Three :: ys) :: ds
+    | Two :: ds -> Yellows [ One ] :: ds
+    | Yellows [ Three ] :: ds -> Two :: ds
+    | Yellows (Three :: ys) :: ds -> Two :: Yellows ys :: ds
+    | Four :: Yellows (One :: ys) :: ds -> Yellows (Three :: One :: ys) :: ds
+    | Four :: Yellows (Three :: ys) :: ds -> Yellows (Three :: Three :: ys) :: ds
+    | Four :: ds -> Yellows [ Three ] :: ds
+    | _ -> assert false
+  ;;
+
+  let rec fixup = function
+    | Zero :: ds -> Two :: simple_dec ds
+    | Four :: ds -> Two :: simple_inc ds
+    | (Yellows _ as d1) :: ((Zero | Four) as d2) :: ds -> d1 :: fixup (d2 :: ds)
+    | ds -> ds
+  ;;
+
+  let inc ds = fixup (simple_inc ds)
+  let dec ds = fixup (simple_dec ds)
+end

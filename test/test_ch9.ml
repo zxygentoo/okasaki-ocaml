@@ -2,9 +2,9 @@
    drop of Exercise 9.1, the create of Exercise 9.2, the sparse list of Exercise 9.3 with
    its own drop and create, the zeroless numbers and list of Exercises 9.4 and 9.5, and
    the zeroless redundant list of Exercise 9.9 and its scheduled form of Exercise 9.10,
-   the segmented binary numbers of section 9.2.4 and the segmented binomial heap of
-   Exercise 9.11, each with its own preamble further down. Plain OCaml, no test framework,
-   matching the earlier chapters.
+   the segmented binary numbers of section 9.2.4, the segmented binomial heap of Exercise
+   9.11 and the segmented numbers with digits 0 to 4 of Exercise 9.12, each with its own
+   preamble further down. Plain OCaml, no test framework, matching the earlier chapters.
 
    Section 9.2.1 builds a list out of a binary number. A list of n elements holds one
    complete binary leaf tree for every one in the binary representation of n, in
@@ -3261,6 +3261,458 @@ let test_segmented_heap () =
         "  SKIP  SegmentedBinomialHeap: costs at n=100000 -- over budget at n=1000\n")
 ;;
 
+(* ------------------ segmented redundant numbers, digits 0 to 4 (Exercise 9.12) *)
+
+(* Exercise 9.12 asks for segmented, redundant binary numbers with both inc and dec in
+   O(1) worst-case time, "by allowing each digit to be 0, 1, 2, 3, or 4, where 0 and 4 are
+   red, 1 and 3 are yellow, and 2 is green". p.130 gives the rest of the recipe: "The
+   invariant is that the last non-yellow level before a red level is always green", a
+   fixup "checking if the first non-yellow level is red", and "Consecutive yellow levels
+   are grouped in a block to support efficient access to the first non-yellow level."
+
+   DenseRepresentation keeps the digits in a plain list, and its fixup walks the yellow
+   digits one at a time to reach the first that is not; SegmentedRepresentation groups
+   them in blocks. Both go through one contract. A number has more than one
+   numeral, so a result is right when it stands for the right number, keeps the invariant
+   (which makes the first non-yellow digit never red, so the next inc or dec can change the
+   first digit unchecked), and does not end in a 0. Blocks are never empty and never side
+   by side: a second block straight after the first would hide the first non-yellow digit
+   from a fixup that looks one block deep. That is held on inc and dec of every regular
+   numeral of up to eight digits, not only the ones counting reaches, on counting to 2^16
+   and back, on a random walk, and on numerals over a thousand digits long, far past any
+   int, whose number the model keeps as bits.
+
+   Then the clock, for the blocks only, every call on it by itself and the dearest held to
+   one constant at a thousand and at a hundred thousand. The families are long blocks
+   where rank 0 leaves one or joins one, a red digit behind a long block, long blocks where
+   its carry or borrow lands, and long runs of red digits each with its 2 below, which a
+   fixup that went on past the first red digit would walk. The dense module is the guard:
+   the same clock has to see its fixup walk a run of yellows. At the larger size the
+   calls go on a stopwatch as well, for a walk that allocates nothing. *)
+
+module FD = DenseRepresentation
+module FS = SegmentedRepresentation
+
+(* What is wrong with a digit list, lowest first, if anything. *)
+let five_fault ds =
+  let rec go rank below = function
+    | [] -> None
+    | [ 0 ] -> Some (Printf.sprintf "it ends in a 0, at rank %d" rank)
+    | ((0 | 4) as d) :: _ when below <> Some 2 ->
+      Some
+        (Printf.sprintf
+           "the red %d at rank %d has %s"
+           d
+           rank
+           (match below with
+            | None -> "no non-yellow digit below it"
+            | Some b -> Printf.sprintf "a %d as the last non-yellow digit below it" b))
+    | (1 | 3) :: ds -> go (rank + 1) below ds
+    | d :: ds -> go (rank + 1) (Some d) ds
+  in
+  go 0 None ds
+;;
+
+(* The bits of the number a digit list stands for, carrying up whatever is over 1. *)
+let five_bits ds =
+  let rec carry c = function
+    | [] -> bits_of_int c
+    | d :: ds -> ((d + c) mod 2) :: carry ((d + c) / 2) ds
+  in
+  carry 0 ds
+;;
+
+(* Every digit list of exactly k digits, and the regular ones of up to k. *)
+let rec five_strings k =
+  if k = 0
+  then [ [] ]
+  else
+    List.concat_map
+      (fun ds -> List.map (fun d -> d :: ds) [ 0; 1; 2; 3; 4 ])
+      (five_strings (k - 1))
+;;
+
+let five_regular_up_to k =
+  List.concat_map
+    (fun k -> List.filter (fun ds -> five_fault ds = None) (five_strings k))
+    (upto (k + 1))
+;;
+
+let five_short = lazy (five_regular_up_to 8)
+
+(* [groups] at random, each a run of up to [longest] yellow digits and then a 2, or a red
+   digit where the last non-yellow digit below is a 2; a 1 on top if it ends in a 0. *)
+let five_random groups longest =
+  let rec yellows n acc =
+    if n = 0 then acc else yellows (n - 1) ((if Random.bool () then 1 else 3) :: acc)
+  in
+  let rec go n green acc =
+    if n = 0
+    then acc
+    else (
+      let acc = yellows (Random.int (longest + 1)) acc in
+      let d = if green && Random.bool () then if Random.bool () then 0 else 4 else 2 in
+      go (n - 1) (d = 2) (d :: acc))
+  in
+  List.rev
+    (match go groups false [] with
+     | 0 :: _ as acc -> 1 :: acc
+     | acc -> acc)
+;;
+
+(* Numerals with runs k digits long, where a wrong inc or dec shows, and a slow one costs
+   the most. Y1 and Y3 are runs of alternating yellows starting with a 1 and a 3. *)
+let five_families k =
+  let run d = List.init k (fun _ -> d) in
+  let y1 = List.init k (fun i -> if i mod 2 = 0 then 1 else 3)
+  and y3 = List.init k (fun i -> if i mod 2 = 0 then 3 else 1)
+  and pairs a b = List.concat (List.init k (fun _ -> [ a; b ])) in
+  [ "1^k", run 1
+  ; "3^k", run 3
+  ; "Y1", y1
+  ; "Y3", y3
+  ; "2 Y1", 2 :: y1
+  ; "2 Y3", 2 :: y3
+  ; "2^k", run 2
+  ; "2 Y1 4 Y1", (2 :: y1) @ (4 :: y1)
+  ; "2 Y1 4 Y3", (2 :: y1) @ (4 :: y3)
+  ; "2 Y1 4 2 Y1", (2 :: y1) @ (4 :: 2 :: y1)
+  ; "2 Y1 0 Y1", (2 :: y1) @ (0 :: y1)
+  ; "2 Y1 0 Y3", (2 :: y1) @ (0 :: y3)
+  ; "2 Y1 0 2 Y1", (2 :: y1) @ (0 :: 2 :: y1)
+  ; "(2 4)^k", pairs 2 4
+  ; "(2 0)^k 1", pairs 2 0 @ [ 1 ]
+  ]
+;;
+
+(* What the tests need of each module: inc and dec, and a way in and out of its digits. *)
+module type FIVE = sig
+  type nat
+
+  val name : string
+  val inc : nat -> nat
+  val dec : nat -> nat
+
+  (* A regular digit list, lowest first, as the module writes it. *)
+  val of_digits : int list -> nat
+
+  (* Its digits, lowest first. *)
+  val to_digits : nat -> int list
+
+  (* What is wrong with its blocks, if anything. *)
+  val block_fault : nat -> string option
+
+  (* For a failure message. *)
+  val show : nat -> string
+end
+
+module Five_dense : FIVE with type nat = FD.nat = struct
+  type nat = FD.nat
+
+  let name = "DenseRepresentation"
+  let inc = FD.inc
+  let dec = FD.dec
+
+  let of_digits =
+    List.map (function
+      | 0 -> FD.Zero
+      | 1 -> FD.One
+      | 2 -> FD.Two
+      | 3 -> FD.Three
+      | _ -> FD.Four)
+  ;;
+
+  let to_digits =
+    List.map (function
+      | FD.Zero -> 0
+      | FD.One -> 1
+      | FD.Two -> 2
+      | FD.Three -> 3
+      | FD.Four -> 4)
+  ;;
+
+  let block_fault _ = None
+  let show x = String.concat " " (List.map string_of_int (to_digits x))
+end
+
+module Five_segmented : FIVE with type nat = FS.nat = struct
+  type nat = FS.nat
+
+  let name = "SegmentedRepresentation"
+  let inc = FS.inc
+  let dec = FS.dec
+  let yellow d = if d = 1 then FS.One else FS.Three
+
+  let yellow_digit = function
+    | FS.One -> 1
+    | FS.Three -> 3
+  ;;
+
+  (* Every run of 1s and 3s as one block, as long as the run. *)
+  let of_digits ds =
+    List.fold_right
+      (fun d acc ->
+        match d, acc with
+        | 0, _ -> FS.Zero :: acc
+        | 2, _ -> FS.Two :: acc
+        | 4, _ -> FS.Four :: acc
+        | _, FS.Yellows ys :: acc -> FS.Yellows (yellow d :: ys) :: acc
+        | _, _ -> FS.Yellows [ yellow d ] :: acc)
+      ds
+      []
+  ;;
+
+  let to_digits =
+    List.concat_map (function
+      | FS.Zero -> [ 0 ]
+      | FS.Two -> [ 2 ]
+      | FS.Four -> [ 4 ]
+      | FS.Yellows ys -> List.map yellow_digit ys)
+  ;;
+
+  let rec block_fault = function
+    | [] -> None
+    | FS.Yellows [] :: _ -> Some "an empty block"
+    | FS.Yellows _ :: FS.Yellows _ :: _ -> Some "two blocks side by side"
+    | _ :: ds -> block_fault ds
+  ;;
+
+  (* A block in parentheses. *)
+  let show x =
+    String.concat
+      " "
+      (List.map
+         (function
+           | FS.Zero -> "0"
+           | FS.Two -> "2"
+           | FS.Four -> "4"
+           | FS.Yellows ys ->
+             "("
+             ^ String.concat " " (List.map (fun y -> string_of_int (yellow_digit y)) ys)
+             ^ ")")
+         x)
+  ;;
+end
+
+module Five_tests (N : FIVE) = struct
+  let t label = N.name ^ ": " ^ label
+
+  (* A numeral in a failure message, unless it is too long to read. *)
+  let show x =
+    let n = List.length (N.to_digits x) in
+    if n <= 40 then "[" ^ N.show x ^ "]" else Printf.sprintf "a numeral of %d digits" n
+  ;;
+
+  (* Why [r] is not what [model] says of [x], if it is not. *)
+  let fault ~model x r =
+    match N.block_fault r with
+    | Some why -> Some why
+    | None ->
+      let ds = N.to_digits r in
+      (match five_fault ds with
+       | Some why -> Some why
+       | None ->
+         if five_bits ds <> model (five_bits (N.to_digits x))
+         then Some "the wrong number"
+         else None)
+  ;;
+
+  (* inc or dec of [x], checked: the result, or None once [note] has heard what is wrong. *)
+  let step note where op x =
+    let name, f, model =
+      match op with
+      | `Inc -> "inc", N.inc, inc_bits
+      | `Dec -> "dec", N.dec, dec_bits
+    in
+    match f x with
+    | r ->
+      (match fault ~model x r with
+       | None -> Some r
+       | Some why ->
+         note (Printf.sprintf "%s%s %s = %s: %s" where name (show x) (show r) why);
+         None)
+    | exception e ->
+      note (Printf.sprintf "%s%s %s raised %s" where name (show x) (Printexc.to_string e));
+      None
+  ;;
+
+  (* [ops] steps from [x], each checked, stopping at the first wrong one. *)
+  let chain note what ops x =
+    let rec go i x = function
+      | [] -> ()
+      | op :: ops ->
+        (match step note (Printf.sprintf "%s, step %d: " what i) op x with
+         | Some r -> go (i + 1) r ops
+         | None -> ())
+    in
+    go 1 x ops
+  ;;
+
+  let test_contract () =
+    refuses ~prefix:"dec:" (t "dec of zero refuses") (fun () -> N.dec (N.of_digits []));
+    all_of (t "inc and dec of every regular numeral of up to 8 digits") (fun note ->
+      List.iter
+        (fun ds ->
+          let x = N.of_digits ds in
+          ignore (step note "" `Inc x);
+          if ds <> [] then ignore (step note "" `Dec x))
+        (Lazy.force five_short));
+    all_of (t "counting up to 2^16 from zero, then back down to zero") (fun note ->
+      let n = 1 lsl 16 in
+      chain
+        note
+        "counting"
+        (List.init (2 * n) (fun i -> if i < n then `Inc else `Dec))
+        (N.of_digits []));
+    all_of (t "a random walk of 200000 incs and decs from zero") (fun note ->
+      Random.init 20261001;
+      let rec ops i v acc =
+        if i = 200_000
+        then List.rev acc
+        else if v = 0 || Random.int 5 < 3
+        then ops (i + 1) (v + 1) (`Inc :: acc)
+        else ops (i + 1) (v - 1) (`Dec :: acc)
+      in
+      chain note "the walk" (ops 0 0 []) (N.of_digits []))
+  ;;
+
+  (* Numerals far past any int. Each takes a hundred incs and then two hundred decs, every
+     step against the model, so that inc and dec also see what the other returned. *)
+  let test_long () =
+    Random.init 20261001;
+    let samples =
+      five_families 500
+      @ List.init 20 (fun i -> Printf.sprintf "random sample %d" i, five_random 200 12)
+    in
+    let ops = List.init 300 (fun i -> if i < 100 then `Inc else `Dec) in
+    all_of
+      (t "a hundred incs, then two hundred decs, from numerals over a thousand digits long")
+      (fun note ->
+         List.iter (fun (what, ds) -> chain note what ops (N.of_digits ds)) samples)
+  ;;
+end
+
+module Five_dense_tests = Five_tests (Five_dense)
+module Five_segmented_tests = Five_tests (Five_segmented)
+
+(* Whether the clock can tell O(1) from O(log n): the dense fixup rebuilds every yellow
+   digit in front of the red one, so dec of 2 1^k 4 costs at least k words. *)
+let test_five_guard () =
+  let k = 1000 in
+  let x = Five_dense.of_digits ((2 :: List.init k (fun _ -> 1)) @ [ 4 ]) in
+  let name = Printf.sprintf "guard: the same clock sees the dense dec of 2 1^%d 4" k in
+  match cost (fun () -> FD.dec x) with
+  | _, c -> check (Printf.sprintf "%s walk its yellows, %.0f words" name c) (c >= float k)
+  | exception e -> check (Printf.sprintf "%s: raised %s" name (Printexc.to_string e)) false
+;;
+
+(* inc and dec of every family at k, inputs made beforehand. *)
+let five_calls k =
+  Random.init k;
+  List.concat_map
+    (fun (what, ds) ->
+      let x = Five_segmented.of_digits ds in
+      [ ("inc of " ^ what, fun () -> FS.inc x); ("dec of " ^ what, fun () -> FS.dec x) ])
+    (five_families k @ [ "k random groups", five_random k 8 ])
+;;
+
+let test_five_costs k =
+  within_flat_budget
+    (Printf.sprintf "SegmentedRepresentation, inc and dec, k=%d" k)
+    (dearest_call (five_calls k))
+;;
+
+(* The clock cannot see a walk that allocates nothing, a List.length on a block say. So at
+   the larger size every call goes on the stopwatch too, ten thousand times over. Ten
+   thousand of any of them take under a millisecond of processor time; ten thousand of
+   one that walks a block of a hundred thousand digits take over a second, even when
+   nothing is allocated. *)
+let five_reps = 10_000
+let five_cpu_limit = 0.1
+
+let test_five_stopwatch k =
+  let slowest = ref (0.0, "") in
+  (try
+     List.iter
+       (fun (what, f) ->
+         let started = Sys.time () in
+         for _ = 1 to five_reps do
+           ignore (Sys.opaque_identity (f ()))
+         done;
+         let took = Sys.time () -. started in
+         if took > fst !slowest then slowest := took, what;
+         if took > five_cpu_limit then raise Exit)
+       (five_calls k)
+   with
+   | Exit -> ()
+   | e -> slowest := infinity, "a call that raised " ^ Printexc.to_string e);
+  let took, what = !slowest in
+  check
+    (Printf.sprintf
+       "SegmentedRepresentation, inc and dec, k=%d: the slowest is %s, %d calls in %.3f \
+        s of processor time, limit %.1f s"
+       k
+       what
+       five_reps
+       took
+       five_cpu_limit)
+    (took <= five_cpu_limit)
+;;
+
+(* Counting up to 2^17 from zero, a random walk as long, and back down to zero, every inc
+   and dec on the clock; stops at a result the contract has already failed. *)
+let test_five_counting_cost () =
+  let n = 1 lsl 17 in
+  Random.init n;
+  let dearest = ref (0.0, "") in
+  let rec go i v x =
+    if i < 2 * n || v > 0
+    then (
+      let name, f, v' =
+        if i < n || (i < 2 * n && (v = 0 || Random.bool ()))
+        then "inc", FS.inc, v + 1
+        else "dec", FS.dec, v - 1
+      in
+      match cost (fun () -> f x) with
+      | r, c ->
+        if c > fst !dearest then dearest := c, Printf.sprintf "%s of %d" name v;
+        if Five_segmented.block_fault r = None
+           && five_fault (Five_segmented.to_digits r) = None
+        then go (i + 1) v' r
+        else dearest := infinity, Printf.sprintf "%s of %d, a malformed result" name v
+      | exception e ->
+        dearest
+        := infinity, Printf.sprintf "%s of %d raised %s" name v (Printexc.to_string e))
+  in
+  go 0 0 [];
+  within_flat_budget
+    (Printf.sprintf
+       "SegmentedRepresentation, counting to %d, a random walk and back down to 0"
+       n)
+    !dearest
+;;
+
+(* Both modules through the contract; then the clock, for the blocks only. *)
+let test_five () =
+  section "Segmented redundant numbers, digits 0 to 4 (Exercise 9.12)";
+  Five_dense_tests.test_contract ();
+  Five_dense_tests.test_long ();
+  let before = !failures in
+  Five_segmented_tests.test_contract ();
+  Five_segmented_tests.test_long ();
+  if !failures > before
+  then
+    Printf.printf
+      "  SKIP  SegmentedRepresentation: costs -- the checks above do not hold\n"
+  else (
+    test_five_guard ();
+    if test_five_counting_cost () && test_five_costs 1_000
+    then (if test_five_costs 100_000 then test_five_stopwatch 100_000)
+    else
+      Printf.printf
+        "  SKIP  SegmentedRepresentation: costs at k=100000 -- over budget before\n")
+;;
+
 (* ------------------------------------------------------------------- runner *)
 
 (* A regression can make a function raise where the test did not expect it. Report that as
@@ -3286,6 +3738,7 @@ let () =
   run "ScheduledZerolessRedundantBinaryRandomAccessList" test_scheduled;
   run "Segmented binary numbers" test_segmented;
   run "SegmentedBinomialHeap" test_segmented_heap;
+  run "Segmented numbers, digits 0 to 4" test_five;
   Printf.printf "\n%d checks, %d failures\n\n" !checks !failures;
   if !failures > 0 then exit 1
 ;;
