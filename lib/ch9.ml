@@ -85,6 +85,8 @@ module type RANDOM_ACCESS_LIST_WITH_DROP_AND_CREATE = sig
   val create : int -> 'a -> 'a rlist
 end
 
+(* Figure 9.6 *)
+
 module BinaryRandomAccessList : RANDOM_ACCESS_LIST_WITH_DROP_AND_CREATE = struct
   type 'a tree =
     | Leaf of 'a
@@ -1109,4 +1111,153 @@ module SegmentedRepresentation = struct
 
   let inc ds = fixup (simple_inc ds)
   let dec ds = fixup (simple_dec ds)
+end
+
+(* Exercise 9.13 Implement cons, head, tail, and lookup for a numerical representation of
+   random-access lists based on the number system of the previous exercise. Your
+   implementation should support cons, head, and tail in O(1) worst-case time, and lookup
+   in O(log i) worst-case time. *)
+
+module type RANDOM_ACCESS_LIST_LITE_WITH_LOOKUP = sig
+  include RANDOM_ACCESS_LIST_LITE
+
+  val lookup : int -> 'a rlist -> 'a
+end
+
+module SegmentedRandomAccessList : RANDOM_ACCESS_LIST_LITE_WITH_LOOKUP = struct
+  type 'a tree =
+    | Leaf of 'a
+    | Node of int * 'a tree * 'a tree
+
+  type 'a yellow =
+    | One of 'a tree
+    | Three of 'a tree * 'a tree * 'a tree
+
+  type 'a digit =
+    | Zero
+    | Yellows of 'a yellow list
+    | Two of 'a tree * 'a tree
+    | Four of 'a tree * 'a tree * 'a tree * 'a tree
+
+  type 'a rlist = 'a digit list
+
+  (* tree helpers *)
+
+  let size = function
+    | Leaf _ -> 1
+    | Node (w, _, _) -> w
+  ;;
+
+  let link a b = Node (size a + size b, a, b)
+
+  let split = function
+    | Node (_, a, b) -> a, b
+    | Leaf _ -> assert false
+  ;;
+
+  (* digit helpers *)
+
+  let zero = function
+    | [] -> []
+    | ds -> Zero :: ds
+  ;;
+
+  let yellow y = function
+    | Yellows ys :: ds -> Yellows (y :: ys) :: ds
+    | ds -> Yellows [ y ] :: ds
+  ;;
+
+  let block ys ds =
+    match ys with
+    | [] -> ds
+    | _ -> Yellows ys :: ds
+  ;;
+
+  (* rlist helpers *)
+
+  let push t = function
+    | [] -> [ Yellows [ One t ] ]
+    | Zero :: ds -> yellow (One t) ds
+    | Two (a, b) :: ds -> yellow (Three (t, a, b)) ds
+    | Yellows (Three (a, b, c) :: ys) :: ds -> Four (t, a, b, c) :: block ys ds
+    | Yellows (One a :: ys) :: ds -> Two (t, a) :: block ys ds
+    | _ -> assert false
+  ;;
+
+  let pop = function
+    | Two (a, b) :: ds -> a, yellow (One b) ds
+    | Yellows (Three (a, b, c) :: ys) :: ds -> a, Two (b, c) :: block ys ds
+    | Yellows (One a :: ys) :: ds -> a, zero (block ys ds)
+    | Four (a, b, c, d) :: ds -> a, yellow (Three (b, c, d)) ds
+    | _ -> assert false
+  ;;
+
+  let rec fixup = function
+    | Zero :: ds ->
+      let hd, rest = pop ds in
+      let a, b = split hd in
+      Two (a, b) :: rest
+    | Four (a, b, c, d) :: ds -> Two (a, b) :: push (link c d) ds
+    | (Yellows _ as d1) :: ((Zero | Four _) as d2) :: ds -> d1 :: fixup (d2 :: ds)
+    | ds -> ds
+  ;;
+
+  (* interface *)
+
+  let empty = []
+
+  let is_empty = function
+    | [] -> true
+    | _ -> false
+  ;;
+
+  let cons e ds = fixup (push (Leaf e) ds)
+
+  let head = function
+    | [] -> raise (Failure "head: empty list")
+    | Yellows (One (Leaf e) :: _) :: _ -> e
+    | Two (Leaf e, _) :: _ -> e
+    | Yellows (Three (Leaf e, _, _) :: _) :: _ -> e
+    | _ -> assert false
+  ;;
+
+  let tail = function
+    | [] -> raise (Failure "tail: empty list")
+    | ds -> fixup (snd (pop ds))
+  ;;
+
+  let uncons_step = function
+    | Zero :: ds -> [], ds
+    | Yellows (One a :: ys) :: ds -> [ a ], block ys ds
+    | Two (a, b) :: ds -> [ a; b ], ds
+    | Yellows (Three (a, b, c) :: ys) :: ds -> [ a; b; c ], block ys ds
+    | Four (a, b, c, d) :: ds -> [ a; b; c; d ], ds
+    | _ -> assert false
+  ;;
+
+  let rec lookup_tree i = function
+    | Leaf x when i = 0 -> Some x
+    | Node (w, t1, t2) ->
+      if i < w / 2 then lookup_tree i t1 else lookup_tree (i - (w / 2)) t2
+    | _ -> None
+  ;;
+
+  let lookup_trees i ts =
+    List.fold_left
+      (fun ((r, sz) as res) t ->
+        if Option.is_some r
+        then res
+        else (if i < sz + size t then lookup_tree (i - sz) t else r), sz + size t)
+      (None, 0)
+      ts
+  ;;
+
+  let rec lookup i = function
+    | [] -> raise (Failure "lookup: not found")
+    | ds ->
+      let ts, ds' = uncons_step ds in
+      (match lookup_trees i ts with
+       | Some e, _ -> e
+       | None, sz -> lookup (i - sz) ds')
+  ;;
 end

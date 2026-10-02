@@ -3,8 +3,9 @@
    its own drop and create, the zeroless numbers and list of Exercises 9.4 and 9.5, and
    the zeroless redundant list of Exercise 9.9 and its scheduled form of Exercise 9.10,
    the segmented binary numbers of section 9.2.4, the segmented binomial heap of Exercise
-   9.11 and the segmented numbers with digits 0 to 4 of Exercise 9.12, each with its own
-   preamble further down. Plain OCaml, no test framework, matching the earlier chapters.
+   9.11, the segmented numbers with digits 0 to 4 of Exercise 9.12 and the random-access
+   list over them of Exercise 9.13, each with its own preamble further down. Plain OCaml,
+   no test framework, matching the earlier chapters.
 
    Section 9.2.1 builds a list out of a binary number. A list of n elements holds one
    complete binary leaf tree for every one in the binary representation of n, in
@@ -3713,6 +3714,244 @@ let test_five () =
         "  SKIP  SegmentedRepresentation: costs at k=100000 -- over budget before\n")
 ;;
 
+(* ---------------------------------- SegmentedRandomAccessList (Exercise 9.13) *)
+
+(* Exercise 9.13 asks for cons, head, tail and lookup on a random-access list over the
+   numbers of Exercise 9.12, with "cons, head, and tail in O(1) worst-case time, and lookup
+   in O(log i) worst-case time". The digits hold trees: digit d at position r holds d
+   complete binary leaf trees of 2^r elements each, in order, so cons is inc with a leaf,
+   tail is dec, a carry links two trees and a borrow splits one.
+
+   cons, head and tail go through the tests of Exercises 9.9 and 9.10: the order the
+   elements come back in, and every operation on the clock by itself, the dearest held to
+   one constant at two sizes. Those cannot see where the trees are; lookup can. It is held
+   to every index of every size up to 300, built by cons and left by tails; to refusing
+   one past either end; to a random walk of conses and tails with every index looked up
+   along the way, which leaves lists with red digits further up; and to old versions,
+   looked up after newer ones were made from them.
+
+   O(log i) is a bound in the index, not in the length. Every index of lists of 2^10 and
+   2^17 elements goes on the clock, each against its own budget of a constant per binary
+   digit of i, and three more. The clock sees only what lookup allocates, and a lookup
+   that walked the whole list first, to count it say, could allocate nothing. So a
+   stopwatch holds lookup 0 in a list of a million to twice what it takes in a list of
+   eight. Figure 9.6's lookup is the guard: it is O(log n), and the same stopwatch has to
+   see its lookup 0 grow with the length. *)
+
+module SL = SegmentedRandomAccessList
+module Seg_list = Lite_tests (SL)
+
+(* [r] holds 0 to n - 1: every index looked up. *)
+let seg_looks note what n r =
+  for i = 0 to n - 1 do
+    match SL.lookup i r with
+    | v when v = i -> ()
+    | v -> note (Printf.sprintf "%s: lookup %d = %d" what i v)
+    | exception e ->
+      note (Printf.sprintf "%s: lookup %d raised %s" what i (Printexc.to_string e))
+  done
+;;
+
+let test_seg_list_lookup name =
+  let t label = Printf.sprintf "%s: %s" name label in
+  all_of
+    (t "lookup of every index, sizes 0 to 300, built by cons or left by tails")
+    (fun note ->
+       for n = 0 to 300 do
+         List.iter
+           (fun (how, r) -> seg_looks note (Printf.sprintf "n=%d %s" n how) n (r ()))
+           (Seg_list.versions n)
+       done);
+  all_of (t "lookup one past either end refuses, sizes 0 to 300") (fun note ->
+    for n = 0 to 300 do
+      List.iter
+        (fun (how, r) ->
+          let r = r () in
+          List.iter
+            (fun i ->
+              match SL.lookup i r with
+              | _ -> note (Printf.sprintf "n=%d %s: lookup %d returned" n how i)
+              | exception Failure m when m = "lookup: not found" -> ()
+              | exception e ->
+                note
+                  (Printf.sprintf
+                     "n=%d %s: lookup %d raised %s"
+                     n
+                     how
+                     i
+                     (Printexc.to_string e)))
+            [ -1; n ])
+        (Seg_list.versions n)
+    done);
+  all_of
+    (t "a random walk of 100000 conses and tails, every index looked up every 997 steps")
+    (fun note ->
+       Random.init 20261002;
+       let r = ref SL.empty
+       and model = ref []
+       and next = ref 0 in
+       for step = 1 to 100_000 do
+         (match !model with
+          | _ :: rest when Random.int 5 >= 3 ->
+            r := SL.tail !r;
+            model := rest
+          | _ ->
+            r := SL.cons !next !r;
+            model := !next :: !model;
+            incr next);
+         if step mod 997 = 0
+         then
+           List.iteri
+             (fun i v ->
+               match SL.lookup i !r with
+               | w when w = v -> ()
+               | w -> note (Printf.sprintf "step %d: lookup %d = %d, want %d" step i w v)
+               | exception e ->
+                 note
+                   (Printf.sprintf
+                      "step %d: lookup %d raised %s"
+                      step
+                      i
+                      (Printexc.to_string e)))
+             !model
+       done);
+  all_of
+    (t "old versions look up as they did, after newer ones were made from them")
+    (fun note ->
+       let n = 1000 in
+       let base = Seg_list.of_list (Seg_list.from 0 n) in
+       let newer =
+         List.init 200 (fun j ->
+           if j mod 2 = 0
+           then `Consed (j, SL.cons (-j) base)
+           else `Tailed (1 + (j mod 7), Seg_list.tails (1 + (j mod 7)) base))
+       in
+       seg_looks note "the shared version, after 200 newer ones" n base;
+       List.iter
+         (function
+           | `Consed (j, r) ->
+             (match SL.lookup 0 r with
+              | v when v = -j -> ()
+              | v -> note (Printf.sprintf "cons %d onto it: lookup 0 = %d" (-j) v));
+             seg_looks note (Printf.sprintf "cons %d onto it, tail again" (-j)) n (SL.tail r)
+           | `Tailed (k, r) ->
+             for i = 0 to n - k - 1 do
+               match SL.lookup i r with
+               | v when v = i + k -> ()
+               | v -> note (Printf.sprintf "%d tails of it: lookup %d = %d" k i v)
+             done)
+         newer)
+;;
+
+(* A constant per binary digit of i, and three more. A lookup that takes each position's
+   trees off as a list and folds over them allocates for every position it passes, and
+   more for every tree: measured, some 13 words a digit with a running total, some 28 with
+   a pair rebuilt for every tree. Twice what a digit gets elsewhere leaves room for both,
+   and none for a lookup that walks every position, which at i = 0 is out by the length of
+   the list. *)
+let lookup_budget i = 2.0 *. per_digit *. float_of_int (digits i + 3)
+
+(* Every index on the clock by itself, each against its own budget. True if all were in. *)
+let test_seg_list_lookup_costs name n =
+  let worst = ref (0.0, "", 0, 0.0) in
+  List.iter
+    (fun (how, r) ->
+      let r = r () in
+      for i = 0 to n - 1 do
+        match cost (fun () -> SL.lookup i r) with
+        | _, c ->
+          let ratio, _, _, _ = !worst in
+          if c /. lookup_budget i > ratio then worst := c /. lookup_budget i, how, i, c
+        | exception e ->
+          worst := infinity, how ^ " raised " ^ Printexc.to_string e, i, infinity
+      done)
+    (Seg_list.versions n);
+  let ratio, how, i, c = !worst in
+  check
+    (Printf.sprintf
+       "%s: lookup of every index at n=%d, the dearest against its budget is lookup %d \
+        (%s), %.0f words, budget %.0f"
+       name
+       n
+       i
+       how
+       c
+       (lookup_budget i))
+    (ratio <= 1.0);
+  ratio <= 1.0
+;;
+
+(* Processor time for a million calls, the best of three. *)
+let lookup_stopwatch f =
+  let once () =
+    let started = Sys.time () in
+    for _ = 1 to 1_000_000 do
+      ignore (Sys.opaque_identity (f ()))
+    done;
+    Sys.time () -. started
+  in
+  min (once ()) (min (once ()) (once ()))
+;;
+
+(* lookup 0 in a list of 8 and in a list of 2^20, each built by cons: the time of the
+   second over the first. *)
+module Lookup_growth (R : sig
+    type 'a rlist
+
+    val empty : 'a rlist
+    val cons : 'a -> 'a rlist -> 'a rlist
+    val lookup : int -> 'a rlist -> 'a
+  end) =
+struct
+  let ratio () =
+    let build n = List.fold_left (fun r i -> R.cons i r) R.empty (List.rev (upto n)) in
+    let small = build 8
+    and large = build (1 lsl 20) in
+    let s = lookup_stopwatch (fun () -> R.lookup 0 small)
+    and l = lookup_stopwatch (fun () -> R.lookup 0 large) in
+    l /. s
+  ;;
+end
+
+module Seg_growth = Lookup_growth (SL)
+module Binary_growth = Lookup_growth (BinaryRandomAccessList)
+
+let lookup_growth_limit = 2.0
+
+let test_seg_list_lookup_stopwatch name =
+  let g = Binary_growth.ratio () in
+  check
+    (Printf.sprintf
+       "guard: the same stopwatch sees Figure 9.6's lookup 0 grow with the length, %.1f \
+        times as long at 2^20 as at 8"
+       g)
+    (g > lookup_growth_limit);
+  let r = Seg_growth.ratio () in
+  check
+    (Printf.sprintf
+       "%s: lookup 0 takes %.1f times as long at 2^20 elements as at 8, limit %.1f"
+       name
+       r
+       lookup_growth_limit)
+    (r <= lookup_growth_limit)
+;;
+
+(* The stack first, then lookup; each one's costs only once what it returns holds. *)
+let test_seg_list () =
+  let name = "SegmentedRandomAccessList" in
+  section (name ^ " (Exercise 9.13)");
+  let before = !failures in
+  Seg_list.run_contract name;
+  test_seg_list_lookup name;
+  if !failures > before
+  then Printf.printf "  SKIP  %s: cost checks -- the contract above does not hold\n" name
+  else (
+    Seg_list.run_worst_costs name;
+    if test_seg_list_lookup_costs name (1 lsl 10)
+    then ignore (test_seg_list_lookup_costs name (1 lsl 17));
+    test_seg_list_lookup_stopwatch name)
+;;
+
 (* ------------------------------------------------------------------- runner *)
 
 (* A regression can make a function raise where the test did not expect it. Report that as
@@ -3739,6 +3978,7 @@ let () =
   run "Segmented binary numbers" test_segmented;
   run "SegmentedBinomialHeap" test_segmented_heap;
   run "Segmented numbers, digits 0 to 4" test_five;
+  run "SegmentedRandomAccessList" test_seg_list;
   Printf.printf "\n%d checks, %d failures\n\n" !checks !failures;
   if !failures > 0 then exit 1
 ;;
