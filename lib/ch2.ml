@@ -1,3 +1,5 @@
+(* Figure 2.1 *)
+
 module type STACK = sig
   type 'a stack
 
@@ -9,6 +11,8 @@ module type STACK = sig
   val update : int -> 'a -> 'a stack -> 'a stack
   val ( ++ ) : 'a stack -> 'a stack -> 'a stack
 end
+
+(* Figure 2.2 *)
 
 module ListStack : STACK = struct
   type 'a stack = 'a list
@@ -39,6 +43,8 @@ module ListStack : STACK = struct
 
   let ( ++ ) = ( @ )
 end
+
+(* Figure 2.3 *)
 
 module CustomStack : STACK = struct
   type 'a stack =
@@ -104,6 +110,8 @@ module type ORDERED = sig
   val leq : t -> t -> bool
 end
 
+(* Figure 2.7 *)
+
 module type SET = sig
   type elem
   type set
@@ -112,6 +120,8 @@ module type SET = sig
   val member : elem -> set -> bool
   val insert : elem -> set -> set
 end
+
+(* Figure 2.9 *)
 
 module UnbalancedSet (Element : ORDERED) : SET with type elem = Element.t = struct
   type elem = Element.t

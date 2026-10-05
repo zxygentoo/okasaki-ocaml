@@ -4,8 +4,8 @@
    the zeroless redundant list of Exercise 9.9 and its scheduled form of Exercise 9.10,
    the segmented binary numbers of section 9.2.4, the segmented binomial heap of Exercise
    9.11, the segmented numbers with digits 0 to 4 of Exercise 9.12 and the random-access
-   list over them of Exercise 9.13, each with its own preamble further down. Plain OCaml,
-   no test framework, matching the earlier chapters.
+   list over them of Exercise 9.13, each with its own preamble further down. Alcotest
+   cases written in the checks of harness.ml, as in the earlier chapters.
 
    Section 9.2.1 builds a list out of a binary number. A list of n elements holds one
    complete binary leaf tree for every one in the binary representation of n, in
@@ -38,91 +38,13 @@
    sees a linear operation at all is the update of a plain list. *)
 
 open Okasaki.Ch9
+open Harness
 
-(* ------------------------------------------------------------------ harness *)
-
-let checks = ref 0
-let failures = ref 0
-
-let check name cond =
-  incr checks;
-  if not cond
-  then (
-    incr failures;
-    Printf.printf "  FAIL  %s\n" name)
-;;
-
-let check_eq name ~expect ~actual to_string =
-  incr checks;
-  if expect <> actual
-  then (
-    incr failures;
-    Printf.printf
-      "  FAIL  %s: expected %s, got %s\n"
-      name
-      (to_string expect)
-      (to_string actual))
-;;
-
-let check_int name ~expect ~actual = check_eq name ~expect ~actual string_of_int
-
-(* [f] must raise Failure [msg]: the implementation's own message for an empty list or an
-   index out of bounds, where the book raises EMPTY and SUBSCRIPT. *)
-let check_raises name msg f =
-  incr checks;
-  match f () with
-  | _ ->
-    incr failures;
-    Printf.printf "  FAIL  %s: expected Failure \"%s\", got no exception\n" name msg
-  | exception Failure m when m = msg -> ()
-  | exception e ->
-    incr failures;
-    Printf.printf
-      "  FAIL  %s: expected Failure \"%s\", got %s\n"
-      name
-      msg
-      (Printexc.to_string e)
-;;
-
-(* [f] must refuse with the implementation's own Failure, whatever it says after [prefix]:
-   for refusals whose wording the implementation is free to choose. *)
-let refuses ~prefix name f =
-  incr checks;
-  match f () with
-  | _ ->
-    incr failures;
-    Printf.printf
-      "  FAIL  %s: expected Failure \"%s ...\", got no exception\n"
-      name
-      prefix
-  | exception Failure m when String.starts_with ~prefix m -> ()
-  | exception e ->
-    incr failures;
-    Printf.printf
-      "  FAIL  %s: expected Failure \"%s ...\", got %s\n"
-      name
-      prefix
-      (Printexc.to_string e)
-;;
-
-(* Run [f], and hand its result to [k] if it returned one. An exception is that one
-   check's failure and not the section's, so the checks after it still get to run. *)
-let surviving name f k =
-  match f () with
-  | v -> k v
-  | exception e ->
-    incr checks;
-    incr failures;
-    Printf.printf "  FAIL  %s: raised %s\n" name (Printexc.to_string e)
-;;
-
-let section name = Printf.printf "%s\n" name
-let string_of_int_list l = "[" ^ String.concat ";" (List.map string_of_int l) ^ "]"
 let upto n = List.init n Fun.id
 
 (* head/tail to exhaustion. A list whose tail does not advance would never come to an end,
    and neither would the list this builds, so a drain past any size used here gives up and
-   raises: the checks around it report that as the failure it is. *)
+   raises, and the case it is in ends there as the failure it is. *)
 let drain_limit = 100_000
 
 let drain_with ~is_empty ~head ~tail q =
@@ -180,25 +102,22 @@ module Rlist_tests (R : RANDOM_ACCESS_LIST) = struct
   let run_contract name =
     let t label = Printf.sprintf "%s: %s" name label in
     let eq label expect r =
-      surviving
-        (t label)
-        (fun () -> to_list (r ()))
-        (fun actual -> check_eq (t label) ~expect ~actual string_of_int_list)
+      check_eq (t label) ~expect ~actual:(to_list (r ())) string_of_int_list
     in
     check (t "empty is empty") (R.is_empty R.empty);
     check (t "a singleton is not empty") (not (R.is_empty (R.cons 1 R.empty)));
-    check_raises (t "head on empty raises") "head: empty list" (fun () -> R.head R.empty);
-    check_raises (t "tail on empty raises") "tail: empty list" (fun () ->
+    check_failure (t "head on empty raises") "head: empty list" (fun () -> R.head R.empty);
+    check_failure (t "tail on empty raises") "tail: empty list" (fun () ->
       ignore (R.is_empty (R.tail R.empty)));
-    check_raises (t "lookup on empty raises") "lookup: not found" (fun () ->
+    check_failure (t "lookup on empty raises") "lookup: not found" (fun () ->
       R.lookup 0 R.empty);
-    check_raises (t "update on empty raises") "update: not found" (fun () ->
+    check_failure (t "update on empty raises") "update: not found" (fun () ->
       ignore (R.is_empty (R.update 0 1 R.empty)));
     (* A stack at the front. *)
-    surviving
+    check_int
       (t "head is the element cons'ed last")
-      (fun () -> R.head (R.cons 3 (R.cons 2 (R.cons 1 R.empty))))
-      (fun h -> check_int (t "head is the element cons'ed last") ~expect:3 ~actual:h);
+      ~expect:3
+      ~actual:(R.head (R.cons 3 (R.cons 2 (R.cons 1 R.empty))));
     eq "tail removes it and nothing else" [ 2; 1 ] (fun () ->
       R.tail (of_list [ 3; 2; 1 ]));
     eq "equal elements are all kept, in order" [ 7; 7; 1; 7 ] (fun () ->
@@ -372,37 +291,32 @@ module Rlist_tests (R : RANDOM_ACCESS_LIST) = struct
     eq "the version it came from does not" (upto 10) (fun () ->
       ignore (R.update 3 99 v);
       v);
-    surviving
-      (t "every earlier version can still be used")
-      (fun () ->
-        let versions = List.init 40 (fun i -> of_list (upto i)) in
-        List.iter
-          (fun v ->
-            ignore (R.cons 99 v);
-            if not (R.is_empty v)
-            then (
-              ignore (R.tail v);
-              ignore (R.update 0 99 v)))
-          versions;
-        List.mapi
-          (fun i v -> if to_list v = upto i && lookups i v = upto i then 0 else 1)
-          versions
-        |> List.fold_left ( + ) 0)
-      (fun stale ->
-        check_int (t "every earlier version stays correct") ~expect:0 ~actual:stale)
+    let versions = List.init 40 (fun i -> of_list (upto i)) in
+    List.iter
+      (fun v ->
+        ignore (R.cons 99 v);
+        if not (R.is_empty v)
+        then (
+          ignore (R.tail v);
+          ignore (R.update 0 99 v)))
+      versions;
+    let stale =
+      List.mapi
+        (fun i v -> if to_list v = upto i && lookups i v = upto i then 0 else 1)
+        versions
+      |> List.fold_left ( + ) 0
+    in
+    check_int (t "every earlier version stays correct") ~expect:0 ~actual:stale
   ;;
 
   (* ------------------------------------------ every operation on its own clock *)
 
   (* Every version of a build by cons, each cons on the clock; then head from every
      version, tail down the whole drain, and lookup and update at every index of the full
-     list. The dearest of each is what the bound is about. True if all five stayed within
-     the budget. *)
+     list. The dearest of each is what the bound is about. *)
   let run_costs_at name n =
     let t label = Printf.sprintf "%s: %s" name label in
-    let ok = ref true in
     let within label (k, c) =
-      let fine = c <= budget n in
       check
         (t
            (Printf.sprintf
@@ -412,8 +326,7 @@ module Rlist_tests (R : RANDOM_ACCESS_LIST) = struct
               c
               n
               (budget n)))
-        fine;
-      if not fine then ok := false
+        (c <= budget n)
     in
     let v = Array.make (n + 1) R.empty
     and dear = ref (0, 0.0) in
@@ -455,17 +368,16 @@ module Rlist_tests (R : RANDOM_ACCESS_LIST) = struct
       ignore (Sys.opaque_identity r');
       if c > snd !dear then dear := i, c
     done;
-    within "update, at every index" !dear;
-    !ok
+    within "update, at every index" !dear
   ;;
 
-  (* O(log n) worst-case, at two sizes a hundred times apart. The large size is guarded on
-     the small one, as everywhere in these files: an operation that is secretly linear
-     makes the large run quadratic, and that is not a failure but a hang. *)
+  (* O(log n) worst-case, at two sizes a hundred times apart. The small size comes first
+     and guards the large one, as everywhere in these files: an operation that is secretly
+     linear makes the large run quadratic, and that is not a failure but a hang. A check
+     that fails at n=1000 ends the case instead. *)
   let run_costs name =
-    if run_costs_at name 1_000
-    then ignore (run_costs_at name 100_000)
-    else Printf.printf "  SKIP  %s: costs at n=100000 -- over budget at n=1000\n" name
+    run_costs_at name 1_000;
+    run_costs_at name 100_000
   ;;
 end
 
@@ -523,18 +435,12 @@ let test_guard () =
 
 module Binary = Rlist_tests (BinaryRandomAccessList)
 
-(* What a list costs means nothing until it behaves like one. *)
+(* What a list costs means nothing until it behaves like one: the contract comes first,
+   here and in every case below, and the case ends there if it does not hold. *)
 let test_binary () =
-  section "BinaryRandomAccessList (9.2.1)";
-  let before = !failures in
   Binary.run_contract "BinaryRandomAccessList";
-  if !failures > before
-  then
-    Printf.printf
-      "  SKIP  BinaryRandomAccessList: cost checks -- the contract above does not hold\n"
-  else (
-    test_guard ();
-    Binary.run_costs "BinaryRandomAccessList")
+  test_guard ();
+  Binary.run_costs "BinaryRandomAccessList"
 ;;
 
 (* --------------------------------------------------------- drop (Exercise 9.1) *)
@@ -576,19 +482,15 @@ module Drop_tests (R : WITH_DROP) = struct
   let run_contract name =
     let t label = Printf.sprintf "%s: %s" name label in
     let eq label expect r =
-      surviving
-        (t label)
-        (fun () -> to_list (r ()))
-        (fun actual -> check_eq (t label) ~expect ~actual string_of_int_list)
+      check_eq (t label) ~expect ~actual:(to_list (r ())) string_of_int_list
     in
     eq "drop 0 of empty is empty" [] (fun () -> R.drop 0 R.empty);
     eq "drop 0 changes nothing" [ 1; 2; 3 ] (fun () -> R.drop 0 (of_list [ 1; 2; 3 ]));
     eq "drop 1 of two" [ 2 ] (fun () -> R.drop 1 (of_list [ 1; 2 ]));
     eq "drop 2 of two is empty" [] (fun () -> R.drop 2 (of_list [ 1; 2 ]));
-    surviving
-      (t "drop 2 of two")
-      (fun () -> R.drop 2 (of_list [ 1; 2 ]))
-      (fun r -> check (t "drop 2 of two is empty by is_empty too") (R.is_empty r));
+    check
+      (t "drop 2 of two is empty by is_empty too")
+      (R.is_empty (R.drop 2 (of_list [ 1; 2 ])));
     eq "drop 3 of five" [ 4; 5 ] (fun () -> R.drop 3 (of_list [ 1; 2; 3; 4; 5 ]));
     refuses (t "drop 1 of empty refuses") (fun () -> R.drop 1 R.empty);
     refuses (t "drop past the end refuses") (fun () -> R.drop 4 (of_list [ 1; 2; 3 ]));
@@ -803,7 +705,6 @@ module Drop_tests (R : WITH_DROP) = struct
       ignore (Sys.opaque_identity r');
       if c > snd !dear then dear := k, c
     done;
-    let fine = snd !dear <= budget n in
     check
       (t
          (Printf.sprintf
@@ -812,26 +713,20 @@ module Drop_tests (R : WITH_DROP) = struct
             (fst !dear)
             (snd !dear)
             (budget n)))
-      fine;
-    fine
+      (snd !dear <= budget n)
   ;;
 
   let run_costs name =
-    if run_costs_at name 1_000
-    then ignore (run_costs_at name 100_000)
-    else Printf.printf "  SKIP  %s: costs at n=100000 -- over budget at n=1000\n" name
+    run_costs_at name 1_000;
+    run_costs_at name 100_000
   ;;
 end
 
 module Binary_drop = Drop_tests (BinaryRandomAccessList)
 
 let test_drop () =
-  section "drop (Exercise 9.1)";
-  let before = !failures in
   Binary_drop.run_contract "BinaryRandomAccessList.drop";
-  if !failures > before
-  then Printf.printf "  SKIP  drop: cost checks -- the contract above does not hold\n"
-  else Binary_drop.run_costs "BinaryRandomAccessList.drop"
+  Binary_drop.run_costs "BinaryRandomAccessList.drop"
 ;;
 
 (* ------------------------------------------------------- create (Exercise 9.2) *)
@@ -884,16 +779,10 @@ module Create_tests (R : WITH_CREATE) = struct
   let run_contract name =
     let t label = Printf.sprintf "%s: %s" name label in
     let eq label expect r =
-      surviving
-        (t label)
-        (fun () -> to_list (r ()))
-        (fun actual -> check_eq (t label) ~expect ~actual string_of_int_list)
+      check_eq (t label) ~expect ~actual:(to_list (r ())) string_of_int_list
     in
     eq "create 0 is empty" [] (fun () -> R.create 0 7);
-    surviving
-      (t "create 0")
-      (fun () -> R.create 0 7)
-      (fun r -> check (t "create 0 is empty by is_empty too") (R.is_empty r));
+    check (t "create 0 is empty by is_empty too") (R.is_empty (R.create 0 7));
     eq "create 1 is a singleton" [ 7 ] (fun () -> R.create 1 7);
     eq "create 2 is a pair" [ 7; 7 ] (fun () -> R.create 2 7);
     eq "create 5, a one, a zero and a one" (replicate 5 7) (fun () -> R.create 5 7);
@@ -1037,8 +926,7 @@ module Create_tests (R : WITH_CREATE) = struct
       (t "everything agrees with a list model, 300 random runs from a created list")
       ~expect:0
       ~actual:!bad_model;
-    (* Persistence: a created list is a version like any other. Made inside each check, so
-       that a create that raises fails the check and not the section. *)
+    (* Persistence: a created list is a version like any other. Each check makes its own. *)
     eq
       "an updated version reads the update"
       (List.mapi (fun k x -> if k = 3 then 99 else x) (replicate 10 0))
@@ -1058,12 +946,10 @@ module Create_tests (R : WITH_CREATE) = struct
 
   (* create at every size up to n; then lookup and update at every index of the created
      list of size n, and a drain of it by tail. The dearest of each is what the bound is
-     about. True if all four stayed within the budget. *)
+     about. *)
   let run_costs_at name n =
     let t label = Printf.sprintf "%s: %s" name label in
-    let ok = ref true in
     let within label (k, c) =
-      let fine = c <= budget n in
       check
         (t
            (Printf.sprintf
@@ -1073,8 +959,7 @@ module Create_tests (R : WITH_CREATE) = struct
               c
               n
               (budget n)))
-        fine;
-      if not fine then ok := false
+        (c <= budget n)
     in
     let dear = ref (0, 0.0) in
     for m = 0 to n do
@@ -1108,8 +993,7 @@ module Create_tests (R : WITH_CREATE) = struct
       if c > snd !dear then dear := i, c
     done;
     ignore (Sys.opaque_identity !r);
-    within "tail, at every size of a drain from a created list" !dear;
-    !ok
+    within "tail, at every size of a drain from a created list" !dear
   ;;
 
   (* ------------------------------------------------------------------ the ladder *)
@@ -1179,7 +1063,7 @@ module Create_tests (R : WITH_CREATE) = struct
   ;;
 
   (* 2^20 - 1 and 2^20 copies, 2^21 - 1 and 2^21, and so on to 2^50, up to the first rung
-     that does not hold. True if they all did. *)
+     that does not hold. *)
   let run_ladder name =
     let rec climb k =
       if k > 50
@@ -1201,31 +1085,23 @@ module Create_tests (R : WITH_CREATE) = struct
          (match bad with
           | None -> ""
           | Some (label, why) -> Printf.sprintf " -- %s copies: %s" label why))
-      (bad = None);
-    bad = None
+      (bad = None)
   ;;
 
-  (* O(log n) worst-case: the sweep at n=1000, the ladder, and the sweep at n=100000, each
-     guarded on the one before. *)
+  (* O(log n) worst-case: the sweep at n=1000, the ladder, and the sweep at n=100000, in
+     that order, each reached only if the one before held. *)
   let run_costs name =
-    let skip what why = Printf.printf "  SKIP  %s: %s -- %s\n" name what why in
-    if not (run_costs_at name 1_000)
-    then skip "the ladder and costs at n=100000" "over budget at n=1000"
-    else if not (run_ladder name)
-    then skip "costs at n=100000" "the ladder did not hold"
-    else ignore (run_costs_at name 100_000)
+    run_costs_at name 1_000;
+    run_ladder name;
+    run_costs_at name 100_000
   ;;
 end
 
 module Binary_create = Create_tests (BinaryRandomAccessList)
 
 let test_create () =
-  section "create (Exercise 9.2)";
-  let before = !failures in
   Binary_create.run_contract "BinaryRandomAccessList.create";
-  if !failures > before
-  then Printf.printf "  SKIP  create: cost checks -- the contract above does not hold\n"
-  else Binary_create.run_costs "BinaryRandomAccessList.create"
+  Binary_create.run_costs "BinaryRandomAccessList.create"
 ;;
 
 (* --------------------------- SparseBinaryRandomAccessList (Exercise 9.3) *)
@@ -1246,15 +1122,8 @@ let test_create () =
 module Sparse = Rlist_tests (SparseBinaryRandomAccessList)
 
 let test_sparse () =
-  section "SparseBinaryRandomAccessList (Exercise 9.3)";
-  let before = !failures in
   Sparse.run_contract "SparseBinaryRandomAccessList";
-  if !failures > before
-  then
-    Printf.printf
-      "  SKIP  SparseBinaryRandomAccessList: cost checks -- the contract above does not \
-       hold\n"
-  else Sparse.run_costs "SparseBinaryRandomAccessList"
+  Sparse.run_costs "SparseBinaryRandomAccessList"
 ;;
 
 (* ------------------------------------------ sparse drop and create (Exercise 9.3) *)
@@ -1272,24 +1141,13 @@ module Sparse_drop = Drop_tests (SparseBinaryRandomAccessList)
 module Sparse_create = Create_tests (SparseBinaryRandomAccessList)
 
 let test_sparse_drop () =
-  section "SparseBinaryRandomAccessList.drop (Exercises 9.1 and 9.3)";
-  let before = !failures in
   Sparse_drop.run_contract "SparseBinaryRandomAccessList.drop";
-  if !failures > before
-  then
-    Printf.printf "  SKIP  sparse drop: cost checks -- the contract above does not hold\n"
-  else Sparse_drop.run_costs "SparseBinaryRandomAccessList.drop"
+  Sparse_drop.run_costs "SparseBinaryRandomAccessList.drop"
 ;;
 
 let test_sparse_create () =
-  section "SparseBinaryRandomAccessList.create (Exercises 9.2 and 9.3)";
-  let before = !failures in
   Sparse_create.run_contract "SparseBinaryRandomAccessList.create";
-  if !failures > before
-  then
-    Printf.printf
-      "  SKIP  sparse create: cost checks -- the contract above does not hold\n"
-  else Sparse_create.run_costs "SparseBinaryRandomAccessList.create"
+  Sparse_create.run_costs "SparseBinaryRandomAccessList.create"
 ;;
 
 (* ------------------------------------------- zeroless binary numbers (Exercise 9.4) *)
@@ -1467,7 +1325,7 @@ let test_zeroless_long () =
 
 (* The dearest dec over every numeral of exactly k digits, and the dearest add over every
    pair in which the longer has exactly k, for k from 1 to 8, stopping at the first k that
-   is over budget. True if none was. *)
+   is over budget. *)
 let test_zeroless_short_costs () =
   let t label = "Zeroless: " ^ label in
   let upto k = List.concat (List.init (k + 1) numerals) in
@@ -1510,8 +1368,7 @@ let test_zeroless_short_costs () =
             c
             k
             (digit_budget k)))
-    (over = None);
-  over = None
+    (over = None)
 ;;
 
 (* Long families at k digits: each call on the clock by itself, inputs made beforehand. *)
@@ -1545,7 +1402,6 @@ let test_zeroless_long_costs k =
       | exception e -> dearest := infinity, what ^ " raised " ^ Printexc.to_string e)
     calls;
   let c, what = !dearest in
-  let fine = c <= digit_budget k in
   check
     (Printf.sprintf
        "Zeroless, %d digits: the dearest of dec and add is %s at %.0f words, budget %.0f"
@@ -1553,27 +1409,17 @@ let test_zeroless_long_costs k =
        what
        c
        (digit_budget k))
-    fine;
-  fine
+    (c <= digit_budget k)
 ;;
 
 (* Short numerals first, for what they are and then for what they cost; only then the long
    ones, which an add that is not linear in the digits would never finish. *)
 let test_zeroless () =
-  section "Zeroless binary numbers (Exercise 9.4)";
-  let before = !failures in
   test_zeroless_contract ();
-  if !failures > before
-  then
-    Printf.printf
-      "  SKIP  Zeroless: long numerals and costs -- the checks above do not hold\n"
-  else if not (test_zeroless_short_costs ())
-  then Printf.printf "  SKIP  Zeroless: long numerals -- over budget on short ones\n"
-  else (
-    test_zeroless_long ();
-    if test_zeroless_long_costs 1_000
-    then ignore (test_zeroless_long_costs 100_000)
-    else Printf.printf "  SKIP  Zeroless: costs at 100000 digits -- over budget at 1000\n")
+  test_zeroless_short_costs ();
+  test_zeroless_long ();
+  test_zeroless_long_costs 1_000;
+  test_zeroless_long_costs 100_000
 ;;
 
 (* ----------------------------- ZerolessBinaryRandomAccessList (Exercise 9.5) *)
@@ -1632,36 +1478,22 @@ let test_zeroless_head_at n =
   in
   match dearest () with
   | c ->
-    let fine = c <= per_digit in
     check
       (Printf.sprintf
          "%s, dearest at %.0f words, budget %.0f whatever n"
          name
          c
          per_digit)
-      fine;
-    fine
+      (c <= per_digit)
   | exception e ->
-    check (Printf.sprintf "%s: raised %s" name (Printexc.to_string e)) false;
-    false
+    check (Printf.sprintf "%s: raised %s" name (Printexc.to_string e)) false
 ;;
 
 let test_zeroless_list () =
-  section "ZerolessBinaryRandomAccessList (Exercise 9.5)";
-  let before = !failures in
   Zeroless_list.run_contract "ZerolessBinaryRandomAccessList";
-  if !failures > before
-  then
-    Printf.printf
-      "  SKIP  ZerolessBinaryRandomAccessList: cost checks -- the contract above does \
-       not hold\n"
-  else (
-    Zeroless_list.run_costs "ZerolessBinaryRandomAccessList";
-    if test_zeroless_head_at 1_000
-    then ignore (test_zeroless_head_at 100_000)
-    else
-      Printf.printf
-        "  SKIP  ZerolessBinaryRandomAccessList: head at n=100000 -- over budget at n=1000\n")
+  Zeroless_list.run_costs "ZerolessBinaryRandomAccessList";
+  test_zeroless_head_at 1_000;
+  test_zeroless_head_at 100_000
 ;;
 
 (* ------------------- ZerolessRedundantBinaryRandomAccessList (Exercise 9.9) *)
@@ -1734,13 +1566,13 @@ module Lite_tests (R : RANDOM_ACCESS_LIST_LITE) = struct
     let t label = Printf.sprintf "%s: %s" name label in
     check (t "empty is empty") (R.is_empty R.empty);
     check (t "a singleton is not empty") (not (R.is_empty (R.cons 1 R.empty)));
-    check_raises (t "head on empty raises") "head: empty list" (fun () -> R.head R.empty);
-    check_raises (t "tail on empty raises") "tail: empty list" (fun () ->
+    check_failure (t "head on empty raises") "head: empty list" (fun () -> R.head R.empty);
+    check_failure (t "tail on empty raises") "tail: empty list" (fun () ->
       ignore (R.is_empty (R.tail R.empty)));
-    surviving
+    check_int
       (t "head is the element cons'ed last")
-      (fun () -> R.head (R.cons 3 (R.cons 2 (R.cons 1 R.empty))))
-      (fun h -> check_int (t "head is the element cons'ed last") ~expect:3 ~actual:h);
+      ~expect:3
+      ~actual:(R.head (R.cons 3 (R.cons 2 (R.cons 1 R.empty))));
     all_of (t "tail removes it and nothing else") (fun note ->
       reads note "tail of [3;2;1]" [ 2; 1 ] (fun () -> R.tail (of_list [ 3; 2; 1 ])));
     all_of (t "equal elements are all kept, in order") (fun note ->
@@ -2016,38 +1848,29 @@ module Lite_tests (R : RANDOM_ACCESS_LIST_LITE) = struct
     ]
   ;;
 
-  (* True if every sequence was within budget. *)
   let run_costs_at name k =
-    List.fold_left
-      (fun ok (what, f) ->
+    List.iter
+      (fun (what, f) ->
         let label = Printf.sprintf "%s: %s" name what in
         match mean f with
         | c ->
-          let fine = c <= amortised_budget in
           check
             (Printf.sprintf
                "%s, %.1f words a cons or tail, budget %.0f"
                label
                c
                amortised_budget)
-            fine;
-          ok && fine
+            (c <= amortised_budget)
         | exception e ->
-          check (Printf.sprintf "%s: raised %s" label (Printexc.to_string e)) false;
-          false)
-      true
+          check (Printf.sprintf "%s: raised %s" label (Printexc.to_string e)) false)
       (sequences k)
   ;;
 
-  (* The same budget at two sizes 128 times apart, the large one guarded on the small, as
-     everywhere in these files. *)
+  (* The same budget at two sizes 128 times apart, the small one first, as everywhere in
+     these files. *)
   let run_costs name =
-    if run_costs_at name 10
-    then ignore (run_costs_at name 17)
-    else
-      Printf.printf
-        "  SKIP  %s: costs at 3 (2^17 - 1) -- over budget at 3 (2^10 - 1)\n"
-        name
+    run_costs_at name 10;
+    run_costs_at name 17
   ;;
 
   (* ------------------------------------------ every operation on its own clock *)
@@ -2155,17 +1978,15 @@ module Lite_tests (R : RANDOM_ACCESS_LIST_LITE) = struct
     ]
   ;;
 
-  (* True if every sequence's dearest operation was within budget. *)
   let run_worst_costs_at name k =
-    List.fold_left
-      (fun ok (what, f) ->
+    List.iter
+      (fun (what, f) ->
         dearest := 0.0;
         dearest_at := "", 0;
         steps := 0;
         match f () with
         | () ->
           let op, i = !dearest_at in
-          let fine = !dearest <= worst_case_budget in
           check
             (Printf.sprintf
                "%s: %s, the dearest is the %s at step %d, %.0f words, budget %.0f"
@@ -2175,24 +1996,17 @@ module Lite_tests (R : RANDOM_ACCESS_LIST_LITE) = struct
                i
                !dearest
                worst_case_budget)
-            fine;
-          ok && fine
+            (!dearest <= worst_case_budget)
         | exception e ->
           check
             (Printf.sprintf "%s: %s: raised %s" name what (Printexc.to_string e))
-            false;
-          false)
-      true
+            false)
       (worst_sequences k)
   ;;
 
   let run_worst_costs name =
-    if run_worst_costs_at name 10
-    then ignore (run_worst_costs_at name 17)
-    else
-      Printf.printf
-        "  SKIP  %s: costs at 3 (2^17 - 1) -- over budget at 3 (2^10 - 1)\n"
-        name
+    run_worst_costs_at name 10;
+    run_worst_costs_at name 17
   ;;
 end
 
@@ -2200,12 +2014,8 @@ module Redundant = Lite_tests (ZerolessRedundantBinaryRandomAccessList (Okasaki.
 
 let test_redundant () =
   let name = "ZerolessRedundantBinaryRandomAccessList" in
-  section (name ^ " (Exercise 9.9)");
-  let before = !failures in
   Redundant.run_contract name;
-  if !failures > before
-  then Printf.printf "  SKIP  %s: cost checks -- the contract above does not hold\n" name
-  else Redundant.run_costs name
+  Redundant.run_costs name
 ;;
 
 (* ---------- ScheduledZerolessRedundantBinaryRandomAccessList (Exercise 9.10) *)
@@ -2231,12 +2041,8 @@ module Scheduled =
 
 let test_scheduled () =
   let name = "ScheduledZerolessRedundantBinaryRandomAccessList" in
-  section (name ^ " (Exercise 9.10)");
-  let before = !failures in
   Scheduled.run_contract name;
-  if !failures > before
-  then Printf.printf "  SKIP  %s: cost checks -- the contract above does not hold\n" name
-  else Scheduled.run_worst_costs name
+  Scheduled.run_worst_costs name
 ;;
 
 (* ------------------------------------------- segmented binary numbers (9.2.4) *)
@@ -2438,7 +2244,6 @@ let dearest_call calls =
 ;;
 
 let within_flat_budget name (c, what) =
-  let fine = c <= flat_budget in
   check
     (Printf.sprintf
        "%s: the dearest is %s at %.0f words, budget %.0f whatever the size"
@@ -2446,8 +2251,7 @@ let within_flat_budget name (c, what) =
        what
        c
        flat_budget)
-    fine;
-  fine
+    (c <= flat_budget)
 ;;
 
 let test_seg1_costs k =
@@ -2703,33 +2507,21 @@ let test_seg2_counting_cost () =
     !dearest
 ;;
 
-(* For each representation, what it returns first; only then what it costs. *)
-let test_segmented () =
-  section "Segmented binary numbers (section 9.2.4)";
-  let before = !failures in
+(* A case for each representation: what it returns first, and only then what it costs, the
+   large size last. *)
+let test_seg1 () =
   test_seg1_contract ();
   test_seg1_long ();
-  if !failures > before
-  then
-    Printf.printf
-      "  SKIP  SegmentedRepresentationOne: costs -- the checks above do not hold\n"
-  else if test_seg1_costs 1_000
-  then ignore (test_seg1_costs 100_000)
-  else
-    Printf.printf
-      "  SKIP  SegmentedRepresentationOne: costs at k=100000 -- over budget at k=1000\n";
-  let before = !failures in
+  test_seg1_costs 1_000;
+  test_seg1_costs 100_000
+;;
+
+let test_seg2 () =
   test_seg2_contract ();
   test_seg2_long ();
-  if !failures > before
-  then
-    Printf.printf
-      "  SKIP  SegmentedRepresentationTwo: costs -- the checks above do not hold\n"
-  else if test_seg2_counting_cost () && test_seg2_costs 1_000
-  then ignore (test_seg2_costs 100_000)
-  else
-    Printf.printf
-      "  SKIP  SegmentedRepresentationTwo: costs at k=100000 -- over budget before\n"
+  test_seg2_counting_cost ();
+  test_seg2_costs 1_000;
+  test_seg2_costs 100_000
 ;;
 
 (* ------------------------------------------ SegmentedBinomialHeap (Exercise 9.11) *)
@@ -2832,9 +2624,9 @@ let test_sh_contract () =
   let t label = "SegmentedBinomialHeap: " ^ label in
   check (t "empty is empty") (SH.is_empty SH.empty);
   check (t "a singleton is not empty") (not (SH.is_empty (SH.insert 1 SH.empty)));
-  check_raises (t "find_min of the empty heap") "find_min: empty heap" (fun () ->
+  check_failure (t "find_min of the empty heap") "find_min: empty heap" (fun () ->
     SH.find_min SH.empty);
-  check_raises (t "delete_min of the empty heap") "delete_min: empty heap" (fun () ->
+  check_failure (t "delete_min of the empty heap") "delete_min: empty heap" (fun () ->
     SH.delete_min SH.empty);
   let drains_to note what want h =
     match sh_drain h with
@@ -3052,9 +2844,7 @@ let sh_dearer (ratio, what) ~at ~op ~size (c, w) =
 ;;
 
 let sh_within name (ratio, what) =
-  let fine = ratio <= 1.0 in
-  check (Printf.sprintf "%s: the dearest is %s" name what) fine;
-  fine
+  check (Printf.sprintf "%s: the dearest is %s" name what) (ratio <= 1.0)
 ;;
 
 type sh_op =
@@ -3115,18 +2905,15 @@ let sh_sequences n =
   ]
 ;;
 
-(* True if every sequence stayed within both budgets at n. *)
+(* Every sequence against both budgets at n. *)
 let test_sh_sequences n =
-  List.for_all
-    (fun ok -> ok)
-    (List.map
-       (fun (what, ops) ->
-         let ins, query = sh_run ops in
-         let name = Printf.sprintf "SegmentedBinomialHeap, n=%d, %s" n what in
-         let a = sh_within (name ^ ", insert") ins in
-         let b = sh_within (name ^ ", queries") query in
-         a && b)
-       (sh_sequences n))
+  List.iter
+    (fun (what, ops) ->
+      let ins, query = sh_run ops in
+      let name = Printf.sprintf "SegmentedBinomialHeap, n=%d, %s" n what in
+      sh_within (name ^ ", insert") ins;
+      sh_within (name ^ ", queries") query)
+    (sh_sequences n)
 ;;
 
 (* The all-ones heap of 2^k - 1 elements, as a merge leaves it, one block of k trees: the
@@ -3138,11 +2925,10 @@ let test_sh_all_ones () =
     let _, cw = spent (fun () -> SH.insert (-2) h) in
     d := sh_dearer !d ~at:k ~op:"insert" ~size:((1 lsl k) - 1) cw
   done;
-  ignore
-    (sh_within
-       "SegmentedBinomialHeap: insert into the all-ones heap of 2^k - 1 a merge leaves, \
-        k = 1..17"
-       !d)
+  sh_within
+    "SegmentedBinomialHeap: insert into the all-ones heap of 2^k - 1 a merge leaves, k = \
+     1..17"
+    !d
 ;;
 
 (* n singletons merged pairwise, every merge on the clocks against the heap it makes, and
@@ -3169,12 +2955,11 @@ let test_sh_merges n =
     d := sh_dearer !d ~at:i ~op:"delete_min" ~size:(n - i + 1) cw;
     h := h'
   done;
-  ignore
-    (sh_within
-       (Printf.sprintf
-          "SegmentedBinomialHeap: %d singletons merged pairwise, then drained"
-          n)
-       !d)
+  sh_within
+    (Printf.sprintf
+       "SegmentedBinomialHeap: %d singletons merged pairwise, then drained"
+       n)
+    !d
 ;;
 
 (* A random trace over earlier versions, each operation on the clocks against the heap it
@@ -3211,8 +2996,8 @@ let test_sh_versions () =
   let name =
     "SegmentedBinomialHeap: a random trace of 20000 operations over earlier versions"
   in
-  ignore (sh_within (name ^ ", insert") !ins);
-  ignore (sh_within (name ^ ", merge and delete_min") !query)
+  sh_within (name ^ ", insert") !ins;
+  sh_within (name ^ ", merge and delete_min") !query
 ;;
 
 (* Whether the probe can tell O(1) from O(log n): Figure 3.4's insert into the all-ones
@@ -3239,27 +3024,15 @@ let test_sh_guard () =
 
 (* What it returns, then its shape, then its costs, the large size only after the small. *)
 let test_segmented_heap () =
-  section "SegmentedBinomialHeap (Exercise 9.11)";
-  let before = !failures in
   test_sh_contract ();
   test_sh_shape ();
-  if !failures > before
-  then
-    Printf.printf
-      "  SKIP  SegmentedBinomialHeap: costs -- the contract or the shape above does not \
-       hold\n"
-  else (
-    test_sh_guard ();
-    test_sh_all_ones ();
-    if test_sh_sequences 1_000
-    then (
-      ignore (test_sh_sequences 100_000);
-      test_sh_merges 1_000;
-      test_sh_merges 100_000;
-      test_sh_versions ())
-    else
-      Printf.printf
-        "  SKIP  SegmentedBinomialHeap: costs at n=100000 -- over budget at n=1000\n")
+  test_sh_guard ();
+  test_sh_all_ones ();
+  test_sh_sequences 1_000;
+  test_sh_sequences 100_000;
+  test_sh_merges 1_000;
+  test_sh_merges 100_000;
+  test_sh_versions ()
 ;;
 
 (* ------------------ segmented redundant numbers, digits 0 to 4 (Exercise 9.12) *)
@@ -3693,25 +3466,21 @@ let test_five_counting_cost () =
     !dearest
 ;;
 
-(* Both modules through the contract; then the clock, for the blocks only. *)
-let test_five () =
-  section "Segmented redundant numbers, digits 0 to 4 (Exercise 9.12)";
+(* Both modules through the contract, a case each; then the clock, for the blocks only,
+   the large size and the stopwatch last. *)
+let test_five_dense () =
   Five_dense_tests.test_contract ();
-  Five_dense_tests.test_long ();
-  let before = !failures in
+  Five_dense_tests.test_long ()
+;;
+
+let test_five_segmented () =
   Five_segmented_tests.test_contract ();
   Five_segmented_tests.test_long ();
-  if !failures > before
-  then
-    Printf.printf
-      "  SKIP  SegmentedRepresentation: costs -- the checks above do not hold\n"
-  else (
-    test_five_guard ();
-    if test_five_counting_cost () && test_five_costs 1_000
-    then (if test_five_costs 100_000 then test_five_stopwatch 100_000)
-    else
-      Printf.printf
-        "  SKIP  SegmentedRepresentation: costs at k=100000 -- over budget before\n")
+  test_five_guard ();
+  test_five_counting_cost ();
+  test_five_costs 1_000;
+  test_five_costs 100_000;
+  test_five_stopwatch 100_000
 ;;
 
 (* ---------------------------------- SegmentedRandomAccessList (Exercise 9.13) *)
@@ -3851,7 +3620,7 @@ let test_seg_list_lookup name =
    the list. *)
 let lookup_budget i = 2.0 *. per_digit *. float_of_int (digits i + 3)
 
-(* Every index on the clock by itself, each against its own budget. True if all were in. *)
+(* Every index on the clock by itself, each against its own budget. *)
 let test_seg_list_lookup_costs name n =
   let worst = ref (0.0, "", 0, 0.0) in
   List.iter
@@ -3877,8 +3646,7 @@ let test_seg_list_lookup_costs name n =
        how
        c
        (lookup_budget i))
-    (ratio <= 1.0);
-  ratio <= 1.0
+    (ratio <= 1.0)
 ;;
 
 (* Processor time for a million calls, the best of three. *)
@@ -3939,46 +3707,32 @@ let test_seg_list_lookup_stopwatch name =
 (* The stack first, then lookup; each one's costs only once what it returns holds. *)
 let test_seg_list () =
   let name = "SegmentedRandomAccessList" in
-  section (name ^ " (Exercise 9.13)");
-  let before = !failures in
   Seg_list.run_contract name;
   test_seg_list_lookup name;
-  if !failures > before
-  then Printf.printf "  SKIP  %s: cost checks -- the contract above does not hold\n" name
-  else (
-    Seg_list.run_worst_costs name;
-    if test_seg_list_lookup_costs name (1 lsl 10)
-    then ignore (test_seg_list_lookup_costs name (1 lsl 17));
-    test_seg_list_lookup_stopwatch name)
+  Seg_list.run_worst_costs name;
+  test_seg_list_lookup_costs name (1 lsl 10);
+  test_seg_list_lookup_costs name (1 lsl 17);
+  test_seg_list_lookup_stopwatch name
 ;;
 
-(* ------------------------------------------------------------------- runner *)
+(* -------------------------------------------------------------------- cases *)
 
-(* A regression can make a function raise where the test did not expect it. Report that as
-   a failure and carry on rather than hiding it. *)
-let run name f =
-  match f () with
-  | () -> ()
-  | exception e ->
-    incr failures;
-    Printf.printf "  FAIL  %s: unexpected exception %s\n" name (Printexc.to_string e)
-;;
-
-let () =
-  run "BinaryRandomAccessList" test_binary;
-  run "drop" test_drop;
-  run "create" test_create;
-  run "SparseBinaryRandomAccessList" test_sparse;
-  run "sparse drop" test_sparse_drop;
-  run "sparse create" test_sparse_create;
-  run "Zeroless" test_zeroless;
-  run "ZerolessBinaryRandomAccessList" test_zeroless_list;
-  run "ZerolessRedundantBinaryRandomAccessList" test_redundant;
-  run "ScheduledZerolessRedundantBinaryRandomAccessList" test_scheduled;
-  run "Segmented binary numbers" test_segmented;
-  run "SegmentedBinomialHeap" test_segmented_heap;
-  run "Segmented numbers, digits 0 to 4" test_five;
-  run "SegmentedRandomAccessList" test_seg_list;
-  Printf.printf "\n%d checks, %d failures\n\n" !checks !failures;
-  if !failures > 0 then exit 1
+let tests =
+  [ case "[Figure 9.6] BinaryRandomAccessList" test_binary
+  ; case "[Exercise 9.1] drop" test_drop
+  ; case "[Exercise 9.2] create" test_create
+  ; case "[Exercise 9.3] SparseBinaryRandomAccessList" test_sparse
+  ; case "[Exercise 9.1, 9.3] SparseBinaryRandomAccessList.drop" test_sparse_drop
+  ; case "[Exercise 9.2, 9.3] SparseBinaryRandomAccessList.create" test_sparse_create
+  ; case "[Exercise 9.4] Zeroless: binary numbers without zeros" test_zeroless
+  ; case "[Exercise 9.5] ZerolessBinaryRandomAccessList" test_zeroless_list
+  ; case "[Exercise 9.9] ZerolessRedundantBinaryRandomAccessList" test_redundant
+  ; case "[Exercise 9.10] ScheduledZerolessRedundantBinaryRandomAccessList" test_scheduled
+  ; case "[Example 9.2.4] SegmentedRepresentationOne" test_seg1
+  ; case "[Example 9.2.4] SegmentedRepresentationTwo" test_seg2
+  ; case "[Exercise 9.11] SegmentedBinomialHeap" test_segmented_heap
+  ; case "[Exercise 9.12] DenseRepresentation, digits 0 to 4" test_five_dense
+  ; case "[Exercise 9.12] SegmentedRepresentation, digits 0 to 4" test_five_segmented
+  ; case "[Exercise 9.13] SegmentedRandomAccessList" test_seg_list
+  ]
 ;;

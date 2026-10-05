@@ -1,3 +1,5 @@
+(* Figure 4.1 *)
+
 module type STREAM = sig
   type 'a stream_cell =
     | Nil

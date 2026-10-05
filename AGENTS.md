@@ -8,4 +8,4 @@ This is a project to work through Chris Okasaki's PURELY FUNCTIONAL DATA STRUCTU
     1. Write them in a clean and maintainable manner.
     2. Turn the performance requirements/constraints stated in the book into tests.
 - Interactive HTML illustrations are a useful tool.
-- A copy of the book is at okasaki.pdf.
+- A copy of the book is at okasaki.pdf (not checked in).

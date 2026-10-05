@@ -1,6 +1,5 @@
 (* Tests for Chapter 3, section 3.1: leftist heaps, and the weight-biased variant of
-   Exercise 3.4. Plain OCaml, no test framework, matching test_ch2.ml: the switch has none
-   installed and the library is stdlib-only, so the tests stay that way too.
+   Exercise 3.4. Alcotest cases written in the checks of harness.ml, as in test_ch2.ml.
 
    Both heaps are sealed behind HEAP, so a test cannot look at a tree. It does not need
    to. Every cost the book states in this section is a statement about the length of a
@@ -19,56 +18,7 @@
    from_list -- which is the whole point of merging in log n passes instead of folding. *)
 
 open Okasaki.Ch3
-
-(* ------------------------------------------------------------------ harness *)
-
-let checks = ref 0
-let failures = ref 0
-
-let check name cond =
-  incr checks;
-  if not cond
-  then (
-    incr failures;
-    Printf.printf "  FAIL  %s\n" name)
-;;
-
-let check_eq name ~expect ~actual to_string =
-  incr checks;
-  if expect <> actual
-  then (
-    incr failures;
-    Printf.printf
-      "  FAIL  %s: expected %s, got %s\n"
-      name
-      (to_string expect)
-      (to_string actual))
-;;
-
-let check_int name ~expect ~actual = check_eq name ~expect ~actual string_of_int
-
-let check_raises name expected f =
-  incr checks;
-  match f () with
-  | _ ->
-    incr failures;
-    Printf.printf
-      "  FAIL  %s: expected %s, got no exception\n"
-      name
-      (Printexc.to_string expected)
-  | exception e ->
-    if e <> expected
-    then (
-      incr failures;
-      Printf.printf
-        "  FAIL  %s: expected %s, got %s\n"
-        name
-        (Printexc.to_string expected)
-        (Printexc.to_string e))
-;;
-
-let section name = Printf.printf "%s\n" name
-let string_of_int_list l = "[" ^ String.concat ";" (List.map string_of_int l) ^ "]"
+open Harness
 
 (* Words allocated by [f]. Sys.opaque_identity stops the optimiser discarding the result
    and with it the allocation we are trying to measure. *)
@@ -297,62 +247,56 @@ module Heap_tests (H : HEAP with type Element.t = int) = struct
            0
            [ 33; 300 ]);
     (* -------------------------------------- O(log n) for merge, insert, delete *)
-    (* Every cost below is logarithmic only because that bound holds, so guard them on it,
-       as test_ch2 guards its deep checks. Without the leftist property of_list builds a
-       linear spine, insert degrades to O(n), and a 100_000-element heap takes O(n^2) to
-       build -- an unguarded check answers a regression by hanging for minutes instead of
-       reporting it. *)
-    if !over <> []
-    then
-      Printf.printf
-        "  SKIP  %s: cost checks -- without the spine bound they are O(n^2)\n"
-        name
-    else (
-      (* merge walks the two right spines and merges them like sorted lists, so it cannot
-         cost more than their combined length -- which the bound above makes logarithmic. *)
-      let pairs = [ 1, 1; 1, 100; 100, 1; 63, 64; 64, 64; 1000, 7; 500, 500 ] in
-      let bad_sum = ref 0
-      and bad_log = ref 0 in
-      List.iter
-        (fun (n1, n2) ->
-          let h1 = of_list (List.init n1 Fun.id)
-          and h2 = of_list (List.init n2 Fun.id) in
-          let r1 = rank_of h1
-          and r2 = rank_of h2 in
-          let c = count_only (fun () -> H.merge h1 h2) in
-          if c > r1 + r2 then incr bad_sum;
-          if c > spine_bound n1 + spine_bound n2 then incr bad_log)
-        pairs;
-      check_int (t "merge costs at most rank h1 + rank h2") ~expect:0 ~actual:!bad_sum;
-      check_int (t "merge is O(log n)") ~expect:0 ~actual:!bad_log;
-      (* insert walks the right spine until the new element settles; the worst case is an
-         element larger than every other, which reaches the bottom. *)
-      let bad_insert_cost = ref 0 in
-      List.iter
-        (fun n ->
-          let h = of_list (List.init n Fun.id) in
-          let c = count_only (fun () -> H.insert max_int h) in
-          if c > spine_bound n then incr bad_insert_cost)
-        [ 1; 7; 8; 100; 1000; 10_000 ];
-      check_int (t "insert is O(log n), worst case") ~expect:0 ~actual:!bad_insert_cost;
-      (* delete_min merges the two children, each with a spine bounded by the parent's. *)
-      let bad_delete = ref 0 in
-      List.iter
-        (fun n ->
-          let h = of_list (List.init n Fun.id) in
-          let c = count_only (fun () -> H.delete_min h) in
-          if c > 2 * spine_bound n then incr bad_delete)
-        [ 1; 7; 8; 100; 1000; 10_000 ];
-      check_int (t "delete_min is O(log n)") ~expect:0 ~actual:!bad_delete;
-      (* find_min reads the root: no comparison and no allocation, at any size. *)
-      let bad_find = ref 0 in
-      List.iter
-        (fun n ->
-          let h = of_list (List.init n Fun.id) in
-          if count_only (fun () -> H.find_min h) <> 0 then incr bad_find;
-          if words (fun () -> H.find_min h) > 4.0 then incr bad_find)
-        [ 1; 100; 100_000 ];
-      check_int (t "find_min is O(1)") ~expect:0 ~actual:!bad_find)
+    (* Every cost below is logarithmic only because that bound holds, and the two checks
+       above are the guard on them: a case ends at its first failure. Without the leftist
+       property of_list builds a linear spine, insert degrades to O(n), and a
+       100_000-element heap takes O(n^2) to build -- a cost check that ran anyway would
+       answer a regression by hanging for minutes instead of reporting it. *)
+    (* merge walks the two right spines and merges them like sorted lists, so it cannot
+       cost more than their combined length -- which the bound above makes logarithmic. *)
+    let pairs = [ 1, 1; 1, 100; 100, 1; 63, 64; 64, 64; 1000, 7; 500, 500 ] in
+    let bad_sum = ref 0
+    and bad_log = ref 0 in
+    List.iter
+      (fun (n1, n2) ->
+        let h1 = of_list (List.init n1 Fun.id)
+        and h2 = of_list (List.init n2 Fun.id) in
+        let r1 = rank_of h1
+        and r2 = rank_of h2 in
+        let c = count_only (fun () -> H.merge h1 h2) in
+        if c > r1 + r2 then incr bad_sum;
+        if c > spine_bound n1 + spine_bound n2 then incr bad_log)
+      pairs;
+    check_int (t "merge costs at most rank h1 + rank h2") ~expect:0 ~actual:!bad_sum;
+    check_int (t "merge is O(log n)") ~expect:0 ~actual:!bad_log;
+    (* insert walks the right spine until the new element settles; the worst case is an
+       element larger than every other, which reaches the bottom. *)
+    let bad_insert_cost = ref 0 in
+    List.iter
+      (fun n ->
+        let h = of_list (List.init n Fun.id) in
+        let c = count_only (fun () -> H.insert max_int h) in
+        if c > spine_bound n then incr bad_insert_cost)
+      [ 1; 7; 8; 100; 1000; 10_000 ];
+    check_int (t "insert is O(log n), worst case") ~expect:0 ~actual:!bad_insert_cost;
+    (* delete_min merges the two children, each with a spine bounded by the parent's. *)
+    let bad_delete = ref 0 in
+    List.iter
+      (fun n ->
+        let h = of_list (List.init n Fun.id) in
+        let c = count_only (fun () -> H.delete_min h) in
+        if c > 2 * spine_bound n then incr bad_delete)
+      [ 1; 7; 8; 100; 1000; 10_000 ];
+    check_int (t "delete_min is O(log n)") ~expect:0 ~actual:!bad_delete;
+    (* find_min reads the root: no comparison and no allocation, at any size. *)
+    let bad_find = ref 0 in
+    List.iter
+      (fun n ->
+        let h = of_list (List.init n Fun.id) in
+        if count_only (fun () -> H.find_min h) <> 0 then incr bad_find;
+        if words (fun () -> H.find_min h) > 4.0 then incr bad_find)
+      [ 1; 100; 100_000 ];
+    check_int (t "find_min is O(1)") ~expect:0 ~actual:!bad_find
   ;;
 end
 
@@ -421,41 +365,38 @@ module From_list_tests (H : HEAP_WITH_FROM_LIST with type Element.t = int) = str
             small
             (per small c_small)))
       (c_small <= 4 * small);
-    (* Guard the large sizes on the small one, as test_ch2 does: if from_list is not
-       linear, report that rather than spending minutes proving it again. *)
-    if c_small > 4 * small
-    then Printf.printf "  SKIP  %s: large-n checks, from_list is not linear\n" name
-    else (
-      let large = 100_000 in
-      let c_large = from_list_cost large in
-      check
-        (t
-           (Printf.sprintf
-              "from_list stays O(n) at n=%d (%.2f per element)"
-              large
-              (per large c_large)))
-        (c_large <= 4 * large);
-      (* The cost per element must not grow with n. An O(n log n) from_list would rise by
-         a factor of log(100000)/log(1000) here, about 1.66. *)
-      check
-        (t
-           (Printf.sprintf
-              "cost per element is flat from n=%d to n=%d (%.2f -> %.2f)"
-              small
-              large
-              (per small c_small)
-              (per large c_large)))
-        (per large c_large <= per small c_small *. 1.3);
-      (* And it must actually beat the fold the exercise rules out. *)
-      let c_fold = fold_cost large in
-      check
-        (t
-           (Printf.sprintf
-              "from_list beats folding insert at n=%d (%d vs %d comparisons)"
-              large
-              c_large
-              c_fold))
-        (c_large * 3 <= c_fold))
+    (* The small size guards the large one, as in test_ch2: if from_list is not linear,
+       the check above has ended the case rather than spend minutes proving it again. *)
+    let large = 100_000 in
+    let c_large = from_list_cost large in
+    check
+      (t
+         (Printf.sprintf
+            "from_list stays O(n) at n=%d (%.2f per element)"
+            large
+            (per large c_large)))
+      (c_large <= 4 * large);
+    (* The cost per element must not grow with n. An O(n log n) from_list would rise by a
+       factor of log(100000)/log(1000) here, about 1.66. *)
+    check
+      (t
+         (Printf.sprintf
+            "cost per element is flat from n=%d to n=%d (%.2f -> %.2f)"
+            small
+            large
+            (per small c_small)
+            (per large c_large)))
+      (per large c_large <= per small c_small *. 1.3);
+    (* And it must actually beat the fold the exercise rules out. *)
+    let c_fold = fold_cost large in
+    check
+      (t
+         (Printf.sprintf
+            "from_list beats folding insert at n=%d (%d vs %d comparisons)"
+            large
+            c_large
+            c_fold))
+      (c_large * 3 <= c_fold)
   ;;
 end
 
@@ -558,19 +499,16 @@ module Rankless_struct = Binomial_tests (R)
 module Leftist_from_list = From_list_tests (L)
 
 let test_leftist () =
-  section "LeftistHeap (3.1-3.2)";
   Leftist.run_contract "LeftistHeap";
   Leftist.run_structure "LeftistHeap"
 ;;
 
 let test_weighted () =
-  section "WeightBiasedLeftistHeap (3.4)";
   Weighted.run_contract "WeightBiasedLeftistHeap";
   Weighted.run_structure "WeightBiasedLeftistHeap"
 ;;
 
 let test_binomial () =
-  section "BinomialHeap (3.2)";
   Binom.run_contract "BinomialHeap";
   Binom_struct.run "BinomialHeap"
 ;;
@@ -582,7 +520,6 @@ let test_binomial () =
    cost stays flat as the heap grows. Only BinomialHeap is held to this: Rankless keeps
    the remove_min_tree route on purpose, to exercise its new signature. *)
 let test_find_min_direct () =
-  section "BinomialHeap: find_min is allocation-free (3.5)";
   let heap_of n = Binom.of_list (List.init n (fun i -> i * 7919 mod 100_000)) in
   (* Guard against a vacuous check: if the probe cannot see allocation at all, everything
      below passes for the wrong reason. Building a heap certainly allocates. *)
@@ -617,7 +554,6 @@ let test_find_min_direct () =
 ;;
 
 let test_rankless () =
-  section "RanklessBinomialHeap (3.6)";
   Rankless.run_contract "RanklessBinomialHeap";
   Rankless_struct.run "RanklessBinomialHeap"
 ;;
@@ -626,7 +562,6 @@ let test_rankless () =
    first half is the claim worth asserting: zero comparisons at any size, against a base
    that pays one per tree. *)
 let test_explicit_min () =
-  section "ExplicitMin (3.7)";
   Explicit.run_contract "ExplicitMin";
   Random.init 20260918;
   let bad = ref 0
@@ -660,7 +595,6 @@ let test_explicit_min () =
 ;;
 
 let test_from_list () =
-  section "from_list (3.3)";
   Leftist_from_list.run "LeftistHeap";
   Leftist_from_list.run_cost "LeftistHeap"
 ;;
@@ -676,7 +610,6 @@ let drains : (string * (int list -> int list)) list =
 ;;
 
 let test_agreement () =
-  section "all five heaps agree";
   Random.init 20260918;
   let bad = ref [] in
   for _ = 0 to 299 do
@@ -754,7 +687,6 @@ let shuffle seed xs =
 let rb_sizes = [ 0; 1; 2; 3; 4; 7; 8; 15; 16; 31; 32; 100; 500; 1000 ]
 
 let test_redblack () =
-  section "RedBlackSet (3.3)";
   check "member on the empty set is false" (not (Rb.member 0 Rb.empty));
   let s = rb_of_list (evens 50) in
   check
@@ -845,7 +777,6 @@ let test_redblack () =
 ;;
 
 let test_from_ord_list () =
-  section "from_ord_list (3.9)";
   check "from_ord_list [] is empty" (not (Rb.member 0 (Rb.from_ord_list [])));
   check "from_ord_list [x] holds x" (Rb.member 0 (Rb.from_ord_list [ 0 ]));
   (* Correctness: everything given is present, everything else is not. *)
@@ -984,10 +915,9 @@ let test_from_ord_list () =
 
    Exercise 3.10 is not tested here and cannot be: insert_basic and insert_further_split
    are not in SET, so nothing outside the functor can reach them. The exported [insert] is
-   (a), and the sections above hold it to the same behaviour and the same bounds. *)
+   (a), and the cases above hold it to the same behaviour and the same bounds. *)
 
 let test_redblack_cost () =
-  section "RedBlackSet: persistence and cost (3.3)";
   (* The defining property of a persistent structure: an insert leaves the old set whole. *)
   let s = rb_of_list (evens 50) in
   let s' = Rb.insert 99 s in
@@ -1063,30 +993,19 @@ let test_redblack_cost () =
     (dup < fresh)
 ;;
 
-(* ------------------------------------------------------------------- runner *)
+(* -------------------------------------------------------------------- cases *)
 
-(* A regression can make a function raise where the test did not expect it. Report that as
-   a failure and carry on to the remaining sections rather than hiding them. *)
-let run name f =
-  match f () with
-  | () -> ()
-  | exception e ->
-    incr failures;
-    Printf.printf "  FAIL  %s: unexpected exception %s\n" name (Printexc.to_string e)
-;;
-
-let () =
-  run "LeftistHeap" test_leftist;
-  run "WeightBiasedLeftistHeap" test_weighted;
-  run "BinomialHeap" test_binomial;
-  run "find_min is direct (3.5)" test_find_min_direct;
-  run "RanklessBinomialHeap" test_rankless;
-  run "ExplicitMin" test_explicit_min;
-  run "from_list" test_from_list;
-  run "agreement" test_agreement;
-  run "RedBlackSet" test_redblack;
-  run "from_ord_list" test_from_ord_list;
-  run "RedBlackSet cost" test_redblack_cost;
-  Printf.printf "\n%d checks, %d failures\n\n" !checks !failures;
-  if !failures > 0 then exit 1
+let tests =
+  [ case "[Exercise 3.1, 3.2] LeftistHeap" test_leftist
+  ; case "[Exercise 3.4] WeightBiasedLeftistHeap" test_weighted
+  ; case "[Figure 3.4] BinomialHeap" test_binomial
+  ; case "[Exercise 3.5] BinomialHeap: find_min allocates nothing" test_find_min_direct
+  ; case "[Exercise 3.6] RanklessBinomialHeap" test_rankless
+  ; case "[Exercise 3.7] ExplicitMin" test_explicit_min
+  ; case "[Exercise 3.3] from_list" test_from_list
+  ; case "[Example 3.1-3.2] all five heaps agree" test_agreement
+  ; case "[Exercise 3.8] RedBlackSet" test_redblack
+  ; case "[Exercise 3.9] from_ord_list" test_from_ord_list
+  ; case "[Figure 3.6] RedBlackSet: persistence and cost" test_redblack_cost
+  ]
 ;;

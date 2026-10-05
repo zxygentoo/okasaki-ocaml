@@ -1,3 +1,5 @@
+(* Figure 5.1 *)
+
 module type QUEUE = sig
   type 'a queue
 
@@ -7,6 +9,8 @@ module type QUEUE = sig
   val head : 'a queue -> 'a
   val tail : 'a queue -> 'a queue
 end
+
+(* Figure 5.2 *)
 
 module BatchedQueue : QUEUE = struct
   type 'a queue = 'a list * 'a list
@@ -30,6 +34,8 @@ module BatchedQueue : QUEUE = struct
     | _ :: f, r -> checkf (f, r)
   ;;
 end
+
+(* Figure 5.3 *)
 
 (* Exercise 5.1 (Hoogerwoord [Hoo92]) This design can easily be extended to support the
    double-ended queue, or deque, abstraction, which allows reads and writes to both ends
@@ -135,6 +141,8 @@ module type HEAP_WITH_SORT = sig
   val sort : Element.t list -> Element.t list
 end
 
+(* Figure 5.5 *)
+
 module SplayHeap (E : ORDERED) : HEAP_WITH_SORT with module Element = E = struct
   module Element = E
 
@@ -221,6 +229,8 @@ module SplayHeap (E : ORDERED) : HEAP_WITH_SORT with module Element = E = struct
     List.fold_left (fun h x -> insert x h) E xs |> go [] |> List.rev
   ;;
 end
+
+(* Figure 5.6 *)
 
 module PairingHeap (E : ORDERED) : HEAP with module Element = E = struct
   module Element = E

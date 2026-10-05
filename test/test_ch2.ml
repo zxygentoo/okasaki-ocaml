@@ -1,5 +1,4 @@
-(* Tests for Chapter 2. Plain OCaml, no test framework: the switch has none installed and
-   the library itself is stdlib-only, so the tests stay that way too.
+(* Tests for Chapter 2, as Alcotest cases written in the checks of harness.ml.
 
    Alongside the behavioural tests there are performance tests, because several exercises
    specify a *cost*, not just a result: 2.1 wants O(n) space, 2.2 and 2.4 want d+1
@@ -9,55 +8,7 @@
    allocated rather than words retained. *)
 
 open Okasaki.Ch2
-
-(* ------------------------------------------------------------------ harness *)
-
-let checks = ref 0
-let failures = ref 0
-
-let check name cond =
-  incr checks;
-  if not cond
-  then (
-    incr failures;
-    Printf.printf "  FAIL  %s\n" name)
-;;
-
-let check_eq name ~expect ~actual to_string =
-  incr checks;
-  if expect <> actual
-  then (
-    incr failures;
-    Printf.printf
-      "  FAIL  %s: expected %s, got %s\n"
-      name
-      (to_string expect)
-      (to_string actual))
-;;
-
-let check_int name ~expect ~actual = check_eq name ~expect ~actual string_of_int
-
-let check_raises name expected f =
-  incr checks;
-  match f () with
-  | _ ->
-    incr failures;
-    Printf.printf
-      "  FAIL  %s: expected %s, got no exception\n"
-      name
-      (Printexc.to_string expected)
-  | exception e ->
-    if e <> expected
-    then (
-      incr failures;
-      Printf.printf
-        "  FAIL  %s: expected %s, got %s\n"
-        name
-        (Printexc.to_string expected)
-        (Printexc.to_string e))
-;;
-
-let section name = Printf.printf "%s\n" name
+open Harness
 
 (* Words allocated by [f]. Sys.opaque_identity stops the optimiser discarding the result
    and with it the allocation we are trying to measure. *)
@@ -66,8 +17,6 @@ let words f =
   ignore (Sys.opaque_identity (f ()));
   Gc.minor_words () -. before
 ;;
-
-let string_of_int_list l = "[" ^ String.concat ";" (List.map string_of_int l) ^ "]"
 
 let string_of_int_list_list l =
   "[" ^ String.concat "; " (List.map string_of_int_list l) ^ "]"
@@ -211,16 +160,9 @@ end
 module List_stack_tests = Stack_tests (ListStack)
 module Custom_stack_tests = Stack_tests (CustomStack)
 
-let test_stacks () =
-  section "stacks";
-  List_stack_tests.run "ListStack";
-  Custom_stack_tests.run "CustomStack"
-;;
-
 (* ----------------------------------------------------------- suffixes (2.1) *)
 
 let test_suffixes () =
-  section "suffixes (2.1)";
   check_eq
     "suffixes [1;2;3;4]"
     ~expect:[ [ 1; 2; 3; 4 ]; [ 2; 3; 4 ]; [ 3; 4 ]; [ 4 ]; [] ]
@@ -251,7 +193,6 @@ let test_suffixes () =
    rather than a copy. Physical equality checks that directly; structural equality would
    pass even for a copying implementation. *)
 let test_suffixes_share () =
-  section "suffixes: O(n) space via sharing";
   let xs = List.init 200 (fun i -> i) in
   let s = suffixes xs in
   check "first suffix is the original list" (List.hd s == xs);
@@ -335,7 +276,6 @@ let ceil_log2 n =
 (* ------------------------------------------------- UnbalancedSet (2.2 - 2.4) *)
 
 let test_set () =
-  section "UnbalancedSet (2.2-2.4)";
   let elems = [ 4; 2; 6; 1; 3; 5; 7 ] in
   let s = List.fold_left (fun s x -> S.insert x s) S.empty elems in
   List.iter (fun x -> check (Printf.sprintf "member %d (present)" x) (S.member x s)) elems;
@@ -369,7 +309,6 @@ let test_set () =
 (* PERFORMANCE (2.2, 2.4): no more than d+1 comparisons, for member and insert, present or
    absent. Trees of known depth are used so d is exact. *)
 let test_set_comparisons () =
-  section "UnbalancedSet: d+1 comparisons (2.2, 2.4)";
   let n = 60 in
   let deep = spine_set n in
   let d = n in
@@ -399,7 +338,6 @@ let test_set_comparisons () =
    Physical equality of the result with the input is the strongest statement of that: not
    one node of the search path was rebuilt. *)
 let test_set_no_copying () =
-  section "UnbalancedSet: no copying on duplicate insert (2.3)";
   let n = 60 in
   let deep = spine_set n in
   for x = 0 to n - 1 do
@@ -436,7 +374,6 @@ let rec tree_balanced = function
 ;;
 
 let test_complete () =
-  section "complete (2.5a)";
   (* Depth counts edges here: complete x 0 is a single node. *)
   List.iter
     (fun d ->
@@ -457,38 +394,31 @@ let test_complete () =
 (* PERFORMANCE (2.5a): O(d) time and space. That holds only because each level points at
    ONE subtree twice; two recursive calls would make it O(2^d). *)
 let test_complete_sharing () =
-  section "complete: O(d) via sharing (2.5a)";
   let rec all_levels_alias = function
     | Empty -> true
     | Tree (Empty, _, Empty) -> true
     | Tree (l, _, r) -> l == r && all_levels_alias l
   in
-  (* Probe sharing at a trivial depth FIRST, and guard everything expensive on it. Without
-     sharing, complete _ d allocates 2^d nodes: d=22 is 256 MiB and d=40 is 64 TiB, so an
-     unguarded deep check answers a regression by exhausting memory instead of reporting a
-     failure. *)
-  let shares = all_levels_alias (complete 0 8) in
-  check "every level aliases its two children" shares;
-  if not shares
-  then
-    Printf.printf "  SKIP  deep cost checks: without sharing they would exhaust memory\n"
-  else (
-    check "aliasing holds all the way down at depth 40" (all_levels_alias (complete 0 40));
-    List.iter
-      (fun d ->
-        let w = words (fun () -> complete 0 d) in
-        (* one node per level; a naive version would allocate 2^d of them *)
-        check
-          (Printf.sprintf "complete _ %d allocates O(d) words (got %.0f)" d w)
-          (w <= 20.0 *. float_of_int (d + 1)))
-      [ 4; 10; 22; 40 ];
-    (* Representing 2^61 logical nodes has to stay instant. *)
-    let w = words (fun () -> complete 0 60) in
-    check (Printf.sprintf "complete _ 60 stays small (%.0f words)" w) (w <= 2000.0))
+  (* Probe sharing at a trivial depth FIRST: a check that fails ends the case, and that is
+     the guard on everything expensive below. Without sharing, complete _ d allocates 2^d
+     nodes: d=22 is 256 MiB and d=40 is 64 TiB, so a deep check that ran anyway would
+     answer a regression by exhausting memory instead of reporting a failure. *)
+  check "every level aliases its two children" (all_levels_alias (complete 0 8));
+  check "aliasing holds all the way down at depth 40" (all_levels_alias (complete 0 40));
+  List.iter
+    (fun d ->
+      let w = words (fun () -> complete 0 d) in
+      (* one node per level; a naive version would allocate 2^d of them *)
+      check
+        (Printf.sprintf "complete _ %d allocates O(d) words (got %.0f)" d w)
+        (w <= 20.0 *. float_of_int (d + 1)))
+    [ 4; 10; 22; 40 ];
+  (* Representing 2^61 logical nodes has to stay instant. *)
+  let w = words (fun () -> complete 0 60) in
+  check (Printf.sprintf "complete _ 60 stays small (%.0f words)" w) (w <= 2000.0)
 ;;
 
 let test_create () =
-  section "create (2.5b)";
   let bad_size = ref 0
   and bad_bal = ref 0
   and bad_height = ref 0 in
@@ -513,7 +443,6 @@ let test_create () =
 (* PERFORMANCE (2.5b): O(log n). The tree has n logical nodes but only O(log n) distinct
    ones, so allocation grows logarithmically. *)
 let test_create_cost () =
-  section "create: O(log n) (2.5b)";
   let bound_for n = 40.0 *. float_of_int (ceil_log2 (n + 1) + 1) in
   let cost n =
     let w = words (fun () -> create 0 n) in
@@ -526,20 +455,17 @@ let test_create_cost () =
       (w <= bound_for n);
     w
   in
-  (* Same guard as complete: probe at a size that is cheap even for a linear
+  (* Same guard as complete: probe at sizes that are cheap even for a linear
      implementation, and only then reach for n = 10^8, where an O(n) create would allocate
-     gigabytes and recurse 10^8 deep. *)
+     gigabytes and recurse 10^8 deep. A probe over its bound ends the case. *)
   let small = cost 100 in
-  let probe = cost 10_000 in
-  if probe > bound_for 10_000
-  then Printf.printf "  SKIP  large-n checks: create is not logarithmic\n"
-  else (
-    ignore (cost 1_000_000);
-    let huge = cost 100_000_000 in
-    (* Growing n by six orders of magnitude must barely move allocation. *)
-    check
-      (Printf.sprintf "allocation grows logarithmically (%.0f -> %.0f)" small huge)
-      (huge <= small *. 6.0))
+  ignore (cost 10_000);
+  ignore (cost 1_000_000);
+  let huge = cost 100_000_000 in
+  (* Growing n by six orders of magnitude must barely move allocation. *)
+  check
+    (Printf.sprintf "allocation grows logarithmically (%.0f -> %.0f)" small huge)
+    (huge <= small *. 6.0)
 ;;
 
 (* ----------------------------------------------------- UnbalancedMap (2.6) *)
@@ -555,7 +481,6 @@ let lookup_opt k m =
 ;;
 
 let test_map () =
-  section "UnbalancedMap (2.6)";
   let m =
     List.fold_left
       (fun m (k, v) -> M.bind k v m)
@@ -632,7 +557,6 @@ let test_map () =
    the value, which is exactly what a single-comparison descent withholds. So bind costs
    2d, and that is expected, not a regression. *)
 let test_map_comparisons () =
-  section "UnbalancedMap: comparison bounds (2.6)";
   let n = 60 in
   let deep = spine_map n in
   let d = n in
@@ -657,32 +581,21 @@ let test_map_comparisons () =
     (w >= 4.0 *. float_of_int n)
 ;;
 
-(* ------------------------------------------------------------------- runner *)
+(* -------------------------------------------------------------------- cases *)
 
-(* A regression can make a function raise where the test did not expect it (a broken
-   lookup raising Not_found, say). Report that as a failure and carry on to the remaining
-   sections rather than killing the run and hiding them. *)
-let run name f =
-  match f () with
-  | () -> ()
-  | exception e ->
-    incr failures;
-    Printf.printf "  FAIL  %s: unexpected exception %s\n" name (Printexc.to_string e)
-;;
-
-let () =
-  run "stacks" test_stacks;
-  run "suffixes" test_suffixes;
-  run "suffixes sharing" test_suffixes_share;
-  run "UnbalancedSet" test_set;
-  run "UnbalancedSet comparisons" test_set_comparisons;
-  run "UnbalancedSet no copying" test_set_no_copying;
-  run "complete" test_complete;
-  run "complete sharing" test_complete_sharing;
-  run "create" test_create;
-  run "create cost" test_create_cost;
-  run "UnbalancedMap" test_map;
-  run "UnbalancedMap comparisons" test_map_comparisons;
-  Printf.printf "\n%d checks, %d failures\n\n" !checks !failures;
-  if !failures > 0 then exit 1
+let tests =
+  [ case "[Figure 2.2] ListStack" (fun () -> List_stack_tests.run "ListStack")
+  ; case "[Figure 2.3] CustomStack" (fun () -> Custom_stack_tests.run "CustomStack")
+  ; case "[Exercise 2.1] suffixes" test_suffixes
+  ; case "[Exercise 2.1] suffixes: O(n) space via sharing" test_suffixes_share
+  ; case "[Figure 2.9] UnbalancedSet" test_set
+  ; case "[Exercise 2.2, 2.4] UnbalancedSet: d+1 comparisons" test_set_comparisons
+  ; case "[Exercise 2.3] UnbalancedSet: no copying on re-insert" test_set_no_copying
+  ; case "[Exercise 2.5 (a)] complete" test_complete
+  ; case "[Exercise 2.5 (a)] complete: O(d) via sharing" test_complete_sharing
+  ; case "[Exercise 2.5 (b)] create" test_create
+  ; case "[Exercise 2.5 (b)] create: O(log n)" test_create_cost
+  ; case "[Exercise 2.6] UnbalancedMap" test_map
+  ; case "[Exercise 2.6] UnbalancedMap: comparison bounds" test_map_comparisons
+  ]
 ;;

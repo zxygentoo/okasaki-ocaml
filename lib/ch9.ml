@@ -71,6 +71,8 @@ module type RANDOM_ACCESS_LIST_LITE = sig
   val tail : 'a rlist -> 'a rlist
 end
 
+(* Figure 9.4 *)
+
 module type RANDOM_ACCESS_LIST = sig
   include RANDOM_ACCESS_LIST_LITE
 
@@ -1245,9 +1247,9 @@ module SegmentedRandomAccessList : RANDOM_ACCESS_LIST_LITE_WITH_LOOKUP = struct
   let lookup_trees i ts =
     List.fold_left
       (fun ((r, sz) as res) t ->
-        if Option.is_some r
-        then res
-        else (if i < sz + size t then lookup_tree (i - sz) t else r), sz + size t)
+         if Option.is_some r
+         then res
+         else (if i < sz + size t then lookup_tree (i - sz) t else r), sz + size t)
       (None, 0)
       ts
   ;;

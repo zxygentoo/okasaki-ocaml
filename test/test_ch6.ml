@@ -1,9 +1,9 @@
 (* Tests for Chapter 6: the banker's queue of Figure 6.1 (section 6.3.2), the lazy
    binomial heap of Figure 6.2 (section 6.4.1), the physicist's queue of Figure 6.3
    (section 6.4.2), the sortable collections of Figure 6.5 (section 6.4.3), the lazy
-   pairing heap of Figure 6.6 (section 6.5), the SizedHeap functor of Exercise 6.5 and
-   the sortable collections over streams of Exercise 6.7. Plain OCaml, no test
-   framework, matching the earlier chapters. The banker's queue first; the others have
+   pairing heap of Figure 6.6 (section 6.5), the SizedHeap functor of Exercise 6.5 and the
+   sortable collections over streams of Exercise 6.7. Alcotest cases written in the checks
+   of harness.ml, as in the earlier chapters. The banker's queue first; the others have
    their own preambles further down.
 
    Figure 6.1 promises what Figure 5.2 promised, every operation in O(1) amortised time,
@@ -33,68 +33,8 @@
    a suspension where a list allocated a cons. *)
 
 open Okasaki.Ch6
+open Harness
 
-(* ------------------------------------------------------------------ harness *)
-
-let checks = ref 0
-let failures = ref 0
-
-let check name cond =
-  incr checks;
-  if not cond
-  then (
-    incr failures;
-    Printf.printf "  FAIL  %s\n" name)
-;;
-
-let check_eq name ~expect ~actual to_string =
-  incr checks;
-  if expect <> actual
-  then (
-    incr failures;
-    Printf.printf
-      "  FAIL  %s: expected %s, got %s\n"
-      name
-      (to_string expect)
-      (to_string actual))
-;;
-
-let check_int name ~expect ~actual = check_eq name ~expect ~actual string_of_int
-
-let check_raises name expected f =
-  incr checks;
-  match f () with
-  | _ ->
-    incr failures;
-    Printf.printf
-      "  FAIL  %s: expected %s, got no exception\n"
-      name
-      (Printexc.to_string expected)
-  | exception e ->
-    if e <> expected
-    then (
-      incr failures;
-      Printf.printf
-        "  FAIL  %s: expected %s, got %s\n"
-        name
-        (Printexc.to_string expected)
-        (Printexc.to_string e))
-;;
-
-(* Run [f] and hand its result to [k], which does the checking. A structure that has lost
-   its invariant tends to raise where a working one returns; this makes that the named
-   check's failure and not the section's, so the checks after it still get to run. *)
-let surviving name f k =
-  match f () with
-  | v -> k v
-  | exception e ->
-    incr checks;
-    incr failures;
-    Printf.printf "  FAIL  %s: raised %s\n" name (Printexc.to_string e)
-;;
-
-let section name = Printf.printf "%s\n" name
-let string_of_int_list l = "[" ^ String.concat ";" (List.map string_of_int l) ^ "]"
 let upto n = List.init n Fun.id
 
 (* ---------------------------------------------------------- the two clocks *)
@@ -240,17 +180,9 @@ module Queue_tests (Q : QUEUE) = struct
   let run_contract name =
     let t label = Printf.sprintf "%s: %s" name label in
     let eq label expect q =
-      surviving
-        (t label)
-        (fun () -> drain q)
-        (fun actual -> check_eq (t label) ~expect ~actual string_of_int_list)
+      check_eq (t label) ~expect ~actual:(drain q) string_of_int_list
     in
-    let head_is label expect q =
-      surviving
-        (t label)
-        (fun () -> Q.head (q ()))
-        (fun actual -> check_int (t label) ~expect ~actual)
-    in
+    let head_is label expect q = check_int (t label) ~expect ~actual:(Q.head q) in
     check (t "empty is empty") (Q.is_empty Q.empty);
     check (t "a singleton is not empty") (not (Q.is_empty (Q.snoc Q.empty 1)));
     check_raises (t "head on empty raises") (Failure "head: empty queue") (fun () ->
@@ -260,23 +192,21 @@ module Queue_tests (Q : QUEUE) = struct
     (* The two places the invariant can be lost. is_empty and head look at the front
        alone, so a queue that lets its front run dry while elements wait in the rear
        reports empty, and raises on head, with elements still in it. *)
-    head_is "snoc onto the empty queue makes its element the head" 7 (fun () ->
-      Q.snoc Q.empty 7);
-    head_is "tail past the last front element moves on to the rear" 2 (fun () ->
-      Q.tail (of_list [ 1; 2; 3 ]));
+    head_is "snoc onto the empty queue makes its element the head" 7 (Q.snoc Q.empty 7);
+    head_is
+      "tail past the last front element moves on to the rear"
+      2
+      (Q.tail (of_list [ 1; 2; 3 ]));
     eq "first in, first out" [ 1; 2; 3; 4; 5; 6; 7 ] (of_list [ 1; 2; 3; 4; 5; 6; 7 ]);
     eq "equal elements are all kept, in order" [ 7; 7; 1; 7 ] (of_list [ 7; 7; 1; 7 ]);
     (* Emptiness reached by draining must be as good as the [empty] it started from. *)
-    surviving
-      (t "a queue can be drained to nothing")
-      (fun () -> Q.tail (Q.tail (of_list [ 1; 2 ])))
-      (fun drained ->
-        check (t "a queue drained to nothing is empty") (Q.is_empty drained);
-        check_raises
-          (t "head on a drained queue raises")
-          (Failure "head: empty queue")
-          (fun () -> Q.head drained);
-        eq "a drained queue can be refilled" [ 8; 9 ] (Q.snoc (Q.snoc drained 8) 9));
+    let drained = Q.tail (Q.tail (of_list [ 1; 2 ])) in
+    check (t "a queue drained to nothing is empty") (Q.is_empty drained);
+    check_raises
+      (t "head on a drained queue raises")
+      (Failure "head: empty queue")
+      (fun () -> Q.head drained);
+    eq "a drained queue can be refilled" [ 8; 9 ] (Q.snoc (Q.snoc drained 8) 9);
     (* Randomised, against the obvious model: a list, snoc at the back, tail at the front.
        Checked after every operation and not only at the end, because a lost invariant
        shows up as a wrong is_empty or head long before it shows up in a drain. *)
@@ -326,19 +256,17 @@ module Queue_tests (Q : QUEUE) = struct
       ~actual:!bad_drain;
     (* Persistence: no operation may disturb its operand, so every version ever built
        stays correct, and two futures of one queue do not see each other. *)
-    surviving
-      (t "every earlier version can still be used")
-      (fun () ->
-        let versions = List.init 20 (fun i -> of_list (upto i)) in
-        List.iter
-          (fun v ->
-            ignore (Q.snoc v 99);
-            if not (Q.is_empty v) then ignore (Q.tail v))
-          versions;
-        List.mapi (fun i v -> if drain v = upto i then 0 else 1) versions
-        |> List.fold_left ( + ) 0)
-      (fun stale ->
-        check_int (t "every earlier version stays correct") ~expect:0 ~actual:stale);
+    let versions = List.init 20 (fun i -> of_list (upto i)) in
+    List.iter
+      (fun v ->
+        ignore (Q.snoc v 99);
+        if not (Q.is_empty v) then ignore (Q.tail v))
+      versions;
+    let stale =
+      List.mapi (fun i v -> if drain v = upto i then 0 else 1) versions
+      |> List.fold_left ( + ) 0
+    in
+    check_int (t "every earlier version stays correct") ~expect:0 ~actual:stale;
     let q = of_list [ 1; 2; 3 ] in
     let a = Q.snoc q 4
     and b = Q.snoc q 5 in
@@ -429,35 +357,23 @@ module Queue_tests (Q : QUEUE) = struct
   ;;
 
   (* Amortised bounds, asserted the only way an amortised bound can be: over whole
-     sequences. True if every sequence stayed within the bound. The large size is guarded
-     on the small one, as the earlier chapters guard theirs: an operation that is secretly
-     linear makes a sequence quadratic, and at n = 100_000 that is not a failure but a
-     hang. *)
+     sequences. The small size comes first and guards the large one, as in the earlier
+     chapters: an operation that is secretly linear makes a sequence quadratic, and at n =
+     100_000 that is not a failure but a hang. The check at n = 1000 ends the case
+     instead. *)
   let run_sequences bound name =
     let t label = Printf.sprintf "%s: %s" name label in
-    let ok = ref true in
     List.iter
       (fun (sequence, driver) ->
         let within label n =
           let ops, c = cost bound.clock (driver n) in
-          let fine = c <= bound.budget ops in
           check
             (t (Printf.sprintf "%s, %s: %s at n=%d" sequence label (bound.show ops c) n))
-            fine;
-          fine
+            (c <= bound.budget ops)
         in
-        if not (within bound.claim 1_000)
-        then (
-          ok := false;
-          Printf.printf
-            "  SKIP  %s: %s at n=100000 -- it is not %s at n=1000\n"
-            name
-            sequence
-            bound.claim)
-        else if not (within (bound.claim ^ ", a hundred times longer") 100_000)
-        then ok := false)
-      sequences;
-    !ok
+        within bound.claim 1_000;
+        within (bound.claim ^ ", a hundred times longer") 100_000)
+      sequences
   ;;
 
   (* -------------------------------------- traces: several futures of one queue *)
@@ -695,39 +611,22 @@ let test_snoc_worst_case () =
     (s = 0.0)
 ;;
 
-(* What a queue costs means nothing until it behaves like one, and a queue that raises half
-   way through a sequence would take the rest of a section down with it. So both cost
-   sections wait on the contract. *)
-let contract_holds = ref false
-
+(* What a queue costs means nothing until it behaves like one, and a queue that raises
+   half way through a sequence proves nothing about its cost. So each of the two cases
+   starts with the contract of the queue it is about to measure, and ends there if it does
+   not hold; and the worst-case and persistence checks come after the sequences, which are
+   what show the queue to be O(1) in one thread. *)
 let test_bankers () =
-  section "BankersQueue (6.3.2)";
-  let before = !failures in
   Words_tests.run_contract "BankersQueue";
-  Steps_tests.run_contract "BankersQueue over the counting stream";
-  contract_holds := !failures = before;
-  if not !contract_holds
-  then
-    Printf.printf
-      "  SKIP  BankersQueue: cost checks -- the contract above does not hold\n"
-  else if Words_tests.run_sequences amortised_words "BankersQueue"
-  then (
-    test_snoc_worst_case ();
-    Words_tests.run_traces amortised_words "BankersQueue, persistently")
-  else
-    Printf.printf
-      "  SKIP  BankersQueue: worst-case and persistence checks -- not O(1) in one thread\n"
+  Words_tests.run_sequences amortised_words "BankersQueue";
+  test_snoc_worst_case ();
+  Words_tests.run_traces amortised_words "BankersQueue, persistently"
 ;;
 
 let test_theorem () =
-  section "Theorem 6.1";
-  if not !contract_holds
-  then Printf.printf "  SKIP  Theorem 6.1 -- the contract does not hold\n"
-  else if Steps_tests.run_sequences theorem_6_1 "Theorem 6.1"
-  then Steps_tests.run_traces theorem_6_1 "Theorem 6.1, persistently"
-  else
-    Printf.printf
-      "  SKIP  Theorem 6.1: persistence checks -- the budget does not hold in one thread\n"
+  Steps_tests.run_contract "BankersQueue over the counting stream";
+  Steps_tests.run_sequences theorem_6_1 "Theorem 6.1";
+  Steps_tests.run_traces theorem_6_1 "Theorem 6.1, persistently"
 ;;
 
 (* ---------------------------------------------------- LazyBinomialHeap (6.4.1) *)
@@ -839,7 +738,6 @@ let over_budget (ops, (c, w)) =
 let within_budget name ((ops, (c, w)) as trace) =
   let cb, wb = budgets ops in
   let per x = x /. float_of_int (heap_total ops) in
-  let fine = over_budget trace <= 1.0 in
   check
     (Printf.sprintf
        "%s: %.2f comparisons and %.1f words per operation, budget %.2f and %.1f"
@@ -848,8 +746,7 @@ let within_budget name ((ops, (c, w)) as trace) =
        (per w)
        (per cb)
        (per wb))
-    fine;
-  fine
+    (over_budget trace <= 1.0)
 ;;
 
 module Heap_tests (H : HEAP with type Element.t = int) = struct
@@ -871,10 +768,7 @@ module Heap_tests (H : HEAP with type Element.t = int) = struct
   let run_contract name =
     let t label = Printf.sprintf "%s: %s" name label in
     let eq label expect h =
-      surviving
-        (t label)
-        (fun () -> drain h)
-        (fun actual -> check_eq (t label) ~expect ~actual string_of_int_list)
+      check_eq (t label) ~expect ~actual:(drain h) string_of_int_list
     in
     check (t "empty is empty") (H.is_empty H.empty);
     check (t "a singleton is not empty") (not (H.is_empty (H.insert 1 H.empty)));
@@ -903,16 +797,14 @@ module Heap_tests (H : HEAP with type Element.t = int) = struct
       [ 1; 1; 2; 3; 4; 5 ]
       (of_list [ 1; 2; 3; 4; 5; 1 ]);
     eq "duplicates are all kept" [ 1; 1; 1; 2; 2; 3 ] (of_list [ 2; 1; 3; 1; 2; 1 ]);
-    surviving
+    check_int
       (t "the minimum is found after ascending inserts")
-      (fun () -> H.find_min (of_list [ 1; 2; 3 ]))
-      (fun m ->
-        check_int (t "the minimum is found after ascending inserts") ~expect:1 ~actual:m);
-    surviving
+      ~expect:1
+      ~actual:(H.find_min (of_list [ 1; 2; 3 ]));
+    check_int
       (t "the minimum is found after descending inserts")
-      (fun () -> H.find_min (of_list [ 3; 2; 1 ]))
-      (fun m ->
-        check_int (t "the minimum is found after descending inserts") ~expect:1 ~actual:m);
+      ~expect:1
+      ~actual:(H.find_min (of_list [ 3; 2; 1 ]));
     eq
       "merge is multiset union"
       [ 1; 2; 3; 4; 5; 6 ]
@@ -1143,11 +1035,9 @@ module Heap_tests (H : HEAP with type Element.t = int) = struct
     ]
   ;;
 
-  (* True if every sequence stayed within budget. The large size is guarded on the small
-     one, as before. *)
+  (* The small size first, guarding the large one, as before. *)
   let run_sequences name =
     let t label = Printf.sprintf "%s: %s" name label in
-    let ok = ref true in
     List.iter
       (fun (sequence, driver) ->
         let within label n =
@@ -1155,17 +1045,9 @@ module Heap_tests (H : HEAP with type Element.t = int) = struct
             (t (Printf.sprintf "%s, %s at n=%d" sequence label n))
             (counted (driver n))
         in
-        if not (within "amortised, within budget" 1_000)
-        then (
-          ok := false;
-          Printf.printf
-            "  SKIP  %s: %s at n=100000 -- it is over budget at n=1000\n"
-            name
-            sequence)
-        else if not (within "still within budget a hundred times longer" 100_000)
-        then ok := false)
-      sequences;
-    !ok
+        within "amortised, within budget" 1_000;
+        within "still within budget a hundred times longer" 100_000)
+      sequences
   ;;
 
   (* -------------------------------------- traces: several futures of one heap *)
@@ -1178,14 +1060,13 @@ module Heap_tests (H : HEAP with type Element.t = int) = struct
     force h;
     let d = 10_000 in
     let trace label ~inserts ~queries f =
-      ignore
-        (within_budget
-           (t label)
-           (counted (fun () ->
-              for _ = 1 to d do
-                ignore (Sys.opaque_identity (f ()))
-              done;
-              { inserts = d * inserts; queries = d * queries; largest = n + 2 })))
+      within_budget
+        (t label)
+        (counted (fun () ->
+           for _ = 1 to d do
+             ignore (Sys.opaque_identity (f ()))
+           done;
+           { inserts = d * inserts; queries = d * queries; largest = n + 2 }))
     in
     (* p.70: the O(1) amortised insert of Section 5.3 "degrades to O(log n) worst-case
        time if the heaps are used persistently". This is that use: the all-ones heap,
@@ -1241,15 +1122,14 @@ module Heap_tests (H : HEAP with type Element.t = int) = struct
           if over_budget (ops, cw) > over_budget (ops, snd !worst) then worst := k, cw
         done;
         let k, cw = !worst in
-        ignore
-          (within_budget
-             (t
-                (Printf.sprintf
-                   "%s, %d times over from each version of a drain, dearest from #%d"
-                   run
-                   d
-                   k))
-             (ops, cw)))
+        within_budget
+          (t
+             (Printf.sprintf
+                "%s, %d times over from each version of a drain, dearest from #%d"
+                run
+                d
+                k))
+          (ops, cw))
       [ "insert", (fun q -> opaque (H.insert 0 q)), (1, 0), n
       ; "find_min of an insert", (fun q -> opaque (H.find_min (H.insert 0 q))), (1, 1), n
       ; ( "find_min of a delete_min"
@@ -1275,59 +1155,49 @@ module Heap_tests (H : HEAP with type Element.t = int) = struct
     let v = Array.make (n + 1) H.empty in
     let inserts = ref 0
     and queries = ref 0 in
-    ignore
-      (within_budget
-         (t
-            (Printf.sprintf
-               "a random trace of %d operations, each on a random earlier version, all \
-                forced"
-               n))
-         (counted (fun () ->
-            for i = 1 to n do
-              let q = v.(from.(i - 1)) in
-              v.(i)
-              <- (match kind.(i - 1) with
-                  | 0 | 1 ->
-                    incr inserts;
-                    H.insert i q
-                  | 2 ->
-                    incr queries;
-                    H.merge q v.(other.(i - 1))
-                  | _ ->
-                    incr queries;
-                    if H.is_empty q
-                    then (
-                      incr inserts;
-                      H.insert i q)
-                    else (
-                      incr queries;
-                      H.delete_min q))
-            done;
-            Array.iter force v;
-            { inserts = !inserts; queries = !queries + n + 1; largest = n })))
+    within_budget
+      (t
+         (Printf.sprintf
+            "a random trace of %d operations, each on a random earlier version, all \
+             forced"
+            n))
+      (counted (fun () ->
+         for i = 1 to n do
+           let q = v.(from.(i - 1)) in
+           v.(i)
+           <- (match kind.(i - 1) with
+               | 0 | 1 ->
+                 incr inserts;
+                 H.insert i q
+               | 2 ->
+                 incr queries;
+                 H.merge q v.(other.(i - 1))
+               | _ ->
+                 incr queries;
+                 if H.is_empty q
+                 then (
+                   incr inserts;
+                   H.insert i q)
+                 else (
+                   incr queries;
+                   H.delete_min q))
+         done;
+         Array.iter force v;
+         { inserts = !inserts; queries = !queries + n + 1; largest = n }))
   ;;
 end
 
 module Lazy_binomial = LazyBinomialHeap (Counting_int)
 module Heap_checks = Heap_tests (Lazy_binomial)
 
+(* Costs only once the contract and the structure hold, and persistence only once the
+   budgets hold in one thread. *)
 let test_lazy_binomial () =
-  section "LazyBinomialHeap (6.4.1)";
-  let before = !failures in
   Heap_checks.run_contract "LazyBinomialHeap";
   Heap_checks.run_structure "LazyBinomialHeap";
-  if !failures > before
-  then
-    Printf.printf
-      "  SKIP  LazyBinomialHeap: cost checks -- the contract or the structure above does \
-       not hold\n"
-  else (
-    Heap_checks.run_unshared "LazyBinomialHeap";
-    if Heap_checks.run_sequences "LazyBinomialHeap"
-    then Heap_checks.run_traces "LazyBinomialHeap, persistently"
-    else
-      Printf.printf
-        "  SKIP  LazyBinomialHeap: persistence checks -- over budget in one thread\n")
+  Heap_checks.run_unshared "LazyBinomialHeap";
+  Heap_checks.run_sequences "LazyBinomialHeap";
+  Heap_checks.run_traces "LazyBinomialHeap, persistently"
 ;;
 
 (* ------------------------------------------------------ PhysicistsQueue (6.4.2) *)
@@ -1393,21 +1263,12 @@ let test_physicists_worst_case () =
     (!dearest_snoc >= float_of_int n /. 2.)
 ;;
 
+(* In the order of test_bankers, and for its reasons. *)
 let test_physicists () =
-  section "PhysicistsQueue (6.4.2)";
-  let before = !failures in
   Physicists_tests.run_contract "PhysicistsQueue";
-  if !failures > before
-  then
-    Printf.printf
-      "  SKIP  PhysicistsQueue: cost checks -- the contract above does not hold\n"
-  else if Physicists_tests.run_sequences amortised_words "PhysicistsQueue"
-  then (
-    test_physicists_worst_case ();
-    Physicists_tests.run_traces amortised_words "PhysicistsQueue, persistently")
-  else
-    Printf.printf
-      "  SKIP  PhysicistsQueue: worst-case and persistence checks -- not O(1) in one thread\n"
+  Physicists_tests.run_sequences amortised_words "PhysicistsQueue";
+  test_physicists_worst_case ();
+  Physicists_tests.run_traces amortised_words "PhysicistsQueue, persistently"
 ;;
 
 (* ---------------------------------------------------- BottomUpMergeSort (6.4.3) *)
@@ -1463,7 +1324,6 @@ let sortable_over_budget costs (ops, (c, w)) =
 
 let sortable_within costs name ((ops, (c, w)) as trace) =
   let cb, wb = sortable_budgets costs ops in
-  let fine = sortable_over_budget costs trace <= 1.0 in
   check
     (Printf.sprintf
        "%s: %.0f comparisons and %.0f words, budget %.0f and %.0f"
@@ -1472,8 +1332,7 @@ let sortable_within costs name ((ops, (c, w)) as trace) =
        w
        cb
        wb)
-    fine;
-  fine
+    (sortable_over_budget costs trace <= 1.0)
 ;;
 
 module Sortable_tests
@@ -1490,10 +1349,7 @@ struct
   let run_contract name =
     let t label = Printf.sprintf "%s: %s" name label in
     let eq label expect s =
-      surviving
-        (t label)
-        (fun () -> S.sort s)
-        (fun actual -> check_eq (t label) ~expect ~actual string_of_int_list)
+      check_eq (t label) ~expect ~actual:(S.sort s) string_of_int_list
     in
     eq "sort of empty is empty" [] S.empty;
     eq "sort of a singleton" [ 5 ] (of_list [ 5 ]);
@@ -1630,11 +1486,9 @@ struct
     ]
   ;;
 
-  (* True if every sequence stayed within budget; the large size guarded on the small
-     one, as before. *)
+  (* The small size first, guarding the large one, as before. *)
   let run_sequences name =
     let t label = Printf.sprintf "%s: %s" name label in
-    let ok = ref true in
     List.iter
       (fun (sequence, driver) ->
         let within label n =
@@ -1642,17 +1496,9 @@ struct
             (t (Printf.sprintf "%s, %s at n=%d" sequence label n))
             (counted (driver n))
         in
-        if not (within "amortised, within budget" 1_000)
-        then (
-          ok := false;
-          Printf.printf
-            "  SKIP  %s: %s at n=100000 -- it is over budget at n=1000\n"
-            name
-            sequence)
-        else if not (within "still within budget a hundred times longer" 100_000)
-        then ok := false)
-      sequences;
-    !ok
+        within "amortised, within budget" 1_000;
+        within "still within budget a hundred times longer" 100_000)
+      sequences
   ;;
 
   (* ------------------------------- traces: several futures of one collection *)
@@ -1665,14 +1511,14 @@ struct
     force c;
     let d = 100 in
     let trace label ~adds ~sorts f =
-      ignore
-        (sortable_within C.costs
-           (t label)
-           (counted (fun () ->
-              for _ = 1 to d do
-                ignore (Sys.opaque_identity (f ()))
-              done;
-              { adds = d * adds; sorts = d * sorts; elements = n + 2 })))
+      sortable_within
+        C.costs
+        (t label)
+        (counted (fun () ->
+           for _ = 1 to d do
+             ignore (Sys.opaque_identity (f ()))
+           done;
+           { adds = d * adds; sorts = d * sorts; elements = n + 2 }))
     in
     (* The section's point. xs' is sorted; every x :: xs' from it costs a cleanup and one
        add, and each of those adds merges every segment there is once it is looked at. *)
@@ -1723,15 +1569,15 @@ struct
             then worst := k, cw)
           v;
         let k, cw = !worst in
-        ignore
-          (sortable_within C.costs
-             (t
-                (Printf.sprintf
-                   "%s, %d times over from each version of a build, dearest from #%d"
-                   run
-                   d
-                   k))
-             (ops, cw)))
+        sortable_within
+          C.costs
+          (t
+             (Printf.sprintf
+                "%s, %d times over from each version of a build, dearest from #%d"
+                run
+                d
+                k))
+          (ops, cw))
       [ "sort", (fun q -> opaque (S.sort q)), { adds = 0; sorts = 1; elements = 0 }
       ; ( "sort of an add"
         , (fun q -> opaque (S.sort (S.add 0 q)))
@@ -1749,30 +1595,30 @@ struct
     let adds = ref 0
     and sorts = ref 0
     and largest = ref 0 in
-    ignore
-      (sortable_within C.costs
-         (t
-            (Printf.sprintf
-               "a random trace of %d operations, each on a random earlier version, all \
-                sorted"
-               n))
-         (counted (fun () ->
-            for i = 1 to n do
-              let j = from.(i - 1) in
-              if kind.(i - 1) = 3
-              then (
-                incr sorts;
-                force v.(j);
-                v.(i) <- v.(j);
-                size.(i) <- size.(j))
-              else (
-                incr adds;
-                v.(i) <- S.add i v.(j);
-                size.(i) <- size.(j) + 1;
-                if size.(i) > !largest then largest := size.(i))
-            done;
-            Array.iter force v;
-            { adds = !adds; sorts = !sorts + n + 1; elements = !largest })))
+    sortable_within
+      C.costs
+      (t
+         (Printf.sprintf
+            "a random trace of %d operations, each on a random earlier version, all \
+             sorted"
+            n))
+      (counted (fun () ->
+         for i = 1 to n do
+           let j = from.(i - 1) in
+           if kind.(i - 1) = 3
+           then (
+             incr sorts;
+             force v.(j);
+             v.(i) <- v.(j);
+             size.(i) <- size.(j))
+           else (
+             incr adds;
+             v.(i) <- S.add i v.(j);
+             size.(i) <- size.(j) + 1;
+             if size.(i) > !largest then largest := size.(i))
+         done;
+         Array.iter force v;
+         { adds = !adds; sorts = !sorts + n + 1; elements = !largest }))
   ;;
 end
 
@@ -1785,21 +1631,13 @@ module Sortable_checks =
       let costs = figure_6_5_costs
     end)
 
+(* Costs only once the contract holds, and persistence only once the budgets hold in one
+   thread. *)
 let test_mergesort () =
-  section "BottomUpMergeSort (6.4.3)";
-  let before = !failures in
   Sortable_checks.run_contract "BottomUpMergeSort";
-  if !failures > before
-  then
-    Printf.printf
-      "  SKIP  BottomUpMergeSort: cost checks -- the contract above does not hold\n"
-  else (
-    Sortable_checks.run_unshared "BottomUpMergeSort";
-    if Sortable_checks.run_sequences "BottomUpMergeSort"
-    then Sortable_checks.run_traces "BottomUpMergeSort, persistently"
-    else
-      Printf.printf
-        "  SKIP  BottomUpMergeSort: persistence checks -- over budget in one thread\n")
+  Sortable_checks.run_unshared "BottomUpMergeSort";
+  Sortable_checks.run_sequences "BottomUpMergeSort";
+  Sortable_checks.run_traces "BottomUpMergeSort, persistently"
 ;;
 
 (* ------------------------------------------------------- LazyPairingHeap (6.5) *)
@@ -1993,12 +1831,11 @@ module Pairing_tests (H : HEAP with type Element.t = int) = struct
     ]
   ;;
 
-  (* Per operation, against the bounds above, at n = 1000 and n = 100_000, the second
-     guarded on the first; then the shape of the claim whatever the constant: per
+  (* Per operation, against the bounds above, at n = 1000 and then, the first having
+     passed, at n = 100_000; then the shape of the claim whatever the constant: per
      operation per log2 n, a hundred times longer costs the same or less, within noise. *)
   let run_sequences name =
     let t label = Printf.sprintf "%s: %s" name label in
-    let ok = ref true in
     List.iter
       (fun (sequence, per_n, driver) ->
         let measure n =
@@ -2007,7 +1844,6 @@ module Pairing_tests (H : HEAP with type Element.t = int) = struct
           let c, w = spent f in
           let c = c /. ops
           and w = w /. ops in
-          let fits = c <= pairing_comparisons n && w <= pairing_words n in
           check
             (t
                (Printf.sprintf
@@ -2019,37 +1855,25 @@ module Pairing_tests (H : HEAP with type Element.t = int) = struct
                   n
                   (pairing_comparisons n)
                   (pairing_words n)))
-            fits;
-          c, w, fits
+            (c <= pairing_comparisons n && w <= pairing_words n);
+          c, w
         in
-        let c0, w0, fits0 = measure 1_000 in
-        if not fits0
-        then (
-          ok := false;
-          Printf.printf
-            "  SKIP  %s: %s at n=100000 -- it is over budget at n=1000\n"
-            name
-            sequence)
-        else (
-          let c, w, fits = measure 100_000 in
-          if not fits
-          then ok := false
-          else (
-            let per_log v n = v /. log2 (n + 1) in
-            let flat v0 v = per_log v 100_000 <= (1.5 *. per_log v0 1_000) +. 0.5 in
-            check
-              (t
-                 (Printf.sprintf
-                    "%s, the cost per operation grows no faster than log n (%.2f -> %.2f \
-                     comparisons, %.1f -> %.1f words, per log2 n)"
-                    sequence
-                    (per_log c0 1_000)
-                    (per_log c 100_000)
-                    (per_log w0 1_000)
-                    (per_log w 100_000)))
-              (flat c0 c && flat w0 w))))
-      sequences;
-    !ok
+        let c0, w0 = measure 1_000 in
+        let c, w = measure 100_000 in
+        let per_log v n = v /. log2 (n + 1) in
+        let flat v0 v = per_log v 100_000 <= (1.5 *. per_log v0 1_000) +. 0.5 in
+        check
+          (t
+             (Printf.sprintf
+                "%s, the cost per operation grows no faster than log n (%.2f -> %.2f \
+                 comparisons, %.1f -> %.1f words, per log2 n)"
+                sequence
+                (per_log c0 1_000)
+                (per_log c 100_000)
+                (per_log w0 1_000)
+                (per_log w 100_000)))
+          (flat c0 c && flat w0 w))
+      sequences
   ;;
 
   (* ------------------------------------------ traces: several futures of one heap *)
@@ -2234,22 +2058,13 @@ module Lazy_pairing = LazyPairingHeap (Counting_int)
 module Lazy_pairing_contract = Heap_tests (Lazy_pairing)
 module Lazy_pairing_checks = Pairing_tests (Lazy_pairing)
 
+(* Costs only once the contract holds, and the worst case and persistence only once the
+   budgets hold in one thread. *)
 let test_lazy_pairing () =
-  section "LazyPairingHeap (6.5)";
-  let before = !failures in
   Lazy_pairing_contract.run_contract "LazyPairingHeap";
-  if !failures > before
-  then
-    Printf.printf
-      "  SKIP  LazyPairingHeap: cost checks -- the contract above does not hold\n"
-  else if Lazy_pairing_checks.run_sequences "LazyPairingHeap"
-  then (
-    Lazy_pairing_checks.run_worst_case "LazyPairingHeap";
-    Lazy_pairing_checks.run_traces "LazyPairingHeap, persistently")
-  else
-    Printf.printf
-      "  SKIP  LazyPairingHeap: worst-case and persistence checks -- over budget in one \
-       thread\n"
+  Lazy_pairing_checks.run_sequences "LazyPairingHeap";
+  Lazy_pairing_checks.run_worst_case "LazyPairingHeap";
+  Lazy_pairing_checks.run_traces "LazyPairingHeap, persistently"
 ;;
 
 (* ------------------------------------------------------- SizedHeap (Exercise 6.5) *)
@@ -2360,36 +2175,27 @@ module Sized_pairing_checks = Sized_tests (Lazy_pairing) (Sized_pairing)
 module Sized_pairing_costs = Pairing_tests (Sized_pairing)
 
 let test_sized_heap () =
-  section "SizedHeap (Exercise 6.5)";
-  let before = !failures in
   Sized_binomial_contract.run_contract "SizedHeap over LazyBinomialHeap";
   Sized_pairing_contract.run_contract "SizedHeap over LazyPairingHeap";
   Sized_deferred_contract.run_contract "SizedHeap over a heap whose delete_min is put off";
-  if !failures > before
-  then
-    Printf.printf "  SKIP  SizedHeap: cost checks -- the contract above does not hold\n"
-  else (
-    (* The loss the exercise starts from, on the unwrapped binomial heap. *)
-    let n = 65_535 in
-    let h = Heap_checks.of_list (upto n) in
-    let c, _ = spent (fun () -> Lazy_binomial.is_empty h) in
-    check
-      (Printf.sprintf
-         "LazyBinomialHeap.is_empty after %d inserts runs the merges they put off, %.0f \
-          comparisons"
-         n
-         c)
-      (c >= float_of_int n /. 2.);
-    Sized_binomial_checks.run "SizedHeap over LazyBinomialHeap";
-    Sized_pairing_checks.run "SizedHeap over LazyPairingHeap";
-    (* And the budgets of both heaps, through the wrapper. *)
-    ignore (Sized_binomial_contract.run_sequences "SizedHeap over LazyBinomialHeap");
-    if Sized_pairing_costs.run_sequences "SizedHeap over LazyPairingHeap"
-    then Sized_pairing_costs.run_worst_case "SizedHeap over LazyPairingHeap"
-    else
-      Printf.printf
-        "  SKIP  SizedHeap over LazyPairingHeap: worst-case checks -- over budget in one \
-         thread\n")
+  (* Costs, now that the three contracts hold. First the loss the exercise starts from, on
+     the unwrapped binomial heap. *)
+  let n = 65_535 in
+  let h = Heap_checks.of_list (upto n) in
+  let c, _ = spent (fun () -> Lazy_binomial.is_empty h) in
+  check
+    (Printf.sprintf
+       "LazyBinomialHeap.is_empty after %d inserts runs the merges they put off, %.0f \
+        comparisons"
+       n
+       c)
+    (c >= float_of_int n /. 2.);
+  Sized_binomial_checks.run "SizedHeap over LazyBinomialHeap";
+  Sized_pairing_checks.run "SizedHeap over LazyPairingHeap";
+  (* And the budgets of both heaps, through the wrapper, the worst case last. *)
+  Sized_binomial_contract.run_sequences "SizedHeap over LazyBinomialHeap";
+  Sized_pairing_costs.run_sequences "SizedHeap over LazyPairingHeap";
+  Sized_pairing_costs.run_worst_case "SizedHeap over LazyPairingHeap"
 ;;
 
 (* ------------------------------------- StreamBottomUpMergeSort (Exercise 6.7) *)
@@ -2428,14 +2234,13 @@ module Extract_tests (S : SORTABLE_WITH_EXTRACT with type Element.t = int) = str
 
   let run_contract name =
     let t label = Printf.sprintf "%s: %s" name label in
-    let eq label expect actual =
-      surviving (t label) actual (fun actual ->
-        check_eq (t label) ~expect ~actual string_of_int_list)
-    in
-    eq "extract 0 is empty" [] (fun () -> S.extract 0 (of_list [ 3; 1; 2 ]));
-    eq "extract past the end is the whole sort" [ 1; 2; 3 ] (fun () ->
-      S.extract 10 (of_list [ 3; 1; 2 ]));
-    eq "extract from empty is empty" [] (fun () -> S.extract 3 S.empty);
+    let eq label expect actual = check_eq (t label) ~expect ~actual string_of_int_list in
+    eq "extract 0 is empty" [] (S.extract 0 (of_list [ 3; 1; 2 ]));
+    eq
+      "extract past the end is the whole sort"
+      [ 1; 2; 3 ]
+      (S.extract 10 (of_list [ 3; 1; 2 ]));
+    eq "extract from empty is empty" [] (S.extract 3 S.empty);
     Random.init 20260924;
     let bad = ref 0
     and raised = ref 0 in
@@ -2454,9 +2259,9 @@ module Extract_tests (S : SORTABLE_WITH_EXTRACT with type Element.t = int) = str
       ~actual:!bad;
     (* The collection is not consumed: extract, then sort, then extract again. *)
     let c = of_list [ 5; 3; 8; 1; 9; 2 ] in
-    eq "extract 2" [ 1; 2 ] (fun () -> S.extract 2 c);
-    eq "then sort" [ 1; 2; 3; 5; 8; 9 ] (fun () -> S.sort c);
-    eq "then extract 4" [ 1; 2; 3; 5 ] (fun () -> S.extract 4 c)
+    eq "extract 2" [ 1; 2 ] (S.extract 2 c);
+    eq "then sort" [ 1; 2; 3; 5; 8; 9 ] (S.sort c);
+    eq "then extract 4" [ 1; 2; 3; 5 ] (S.extract 4 c)
   ;;
 
   let run_costs name =
@@ -2551,46 +2356,27 @@ module Stream_sortable_checks =
 
 module Stream_extract_checks = Extract_tests (Stream_mergesort)
 
+(* In the order of test_mergesort, with extract's contract beside sort's and its costs
+   last. *)
 let test_stream_mergesort () =
-  section "StreamBottomUpMergeSort (Exercise 6.7)";
-  let before = !failures in
   Stream_sortable_checks.run_contract "StreamBottomUpMergeSort";
   Stream_extract_checks.run_contract "StreamBottomUpMergeSort";
-  if !failures > before
-  then
-    Printf.printf
-      "  SKIP  StreamBottomUpMergeSort: cost checks -- the contract above does not hold\n"
-  else (
-    Stream_sortable_checks.run_unshared "StreamBottomUpMergeSort";
-    if Stream_sortable_checks.run_sequences "StreamBottomUpMergeSort"
-    then Stream_sortable_checks.run_traces "StreamBottomUpMergeSort, persistently"
-    else
-      Printf.printf
-        "  SKIP  StreamBottomUpMergeSort: persistence checks -- over budget in one thread\n";
-    Stream_extract_checks.run_costs "StreamBottomUpMergeSort")
+  Stream_sortable_checks.run_unshared "StreamBottomUpMergeSort";
+  Stream_sortable_checks.run_sequences "StreamBottomUpMergeSort";
+  Stream_sortable_checks.run_traces "StreamBottomUpMergeSort, persistently";
+  Stream_extract_checks.run_costs "StreamBottomUpMergeSort"
 ;;
 
-(* ------------------------------------------------------------------- runner *)
+(* -------------------------------------------------------------------- cases *)
 
-(* A regression can make a function raise where the test did not expect it. Report that as
-   a failure and carry on to the remaining sections rather than hiding them. *)
-let run name f =
-  match f () with
-  | () -> ()
-  | exception e ->
-    incr failures;
-    Printf.printf "  FAIL  %s: unexpected exception %s\n" name (Printexc.to_string e)
-;;
-
-let () =
-  run "BankersQueue" test_bankers;
-  run "Theorem 6.1" test_theorem;
-  run "LazyBinomialHeap" test_lazy_binomial;
-  run "PhysicistsQueue" test_physicists;
-  run "BottomUpMergeSort" test_mergesort;
-  run "LazyPairingHeap" test_lazy_pairing;
-  run "SizedHeap" test_sized_heap;
-  run "StreamBottomUpMergeSort" test_stream_mergesort;
-  Printf.printf "\n%d checks, %d failures\n\n" !checks !failures;
-  if !failures > 0 then exit 1
+let tests =
+  [ case "[Figure 6.1] BankersQueue" test_bankers
+  ; case "[Theorem 6.1] BankersQueue, counted in steps" test_theorem
+  ; case "[Exercise 6.3] LazyBinomialHeap" test_lazy_binomial
+  ; case "[Figure 6.3] PhysicistsQueue" test_physicists
+  ; case "[Figure 6.5] BottomUpMergeSort" test_mergesort
+  ; case "[Figure 6.6] LazyPairingHeap" test_lazy_pairing
+  ; case "[Exercise 6.5] SizedHeap" test_sized_heap
+  ; case "[Exercise 6.7] StreamBottomUpMergeSort" test_stream_mergesort
+  ]
 ;;

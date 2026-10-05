@@ -1,9 +1,9 @@
 (* Tests for Chapter 8: the Hood-Melville real-time queue of Figure 8.1 (section 8.2.1),
-   on the schedule of Exercise 8.2 and with the single diff field of Exercise 8.3. Plain
-   OCaml, no test framework, matching the earlier chapters. The cons functor of Exercise
-   8.4, the banker's deque of Figure 8.3 (section 8.4.2), the real-time deque of Figure
-   8.4 (section 8.4.3) and the red-black set carried into section 8.1 for Exercise 8.1
-   each have their own preamble further down.
+   on the schedule of Exercise 8.2 and with the single diff field of Exercise 8.3.
+   Alcotest cases written in the checks of harness.ml, as in the earlier chapters. The
+   cons functor of Exercise 8.4, the banker's deque of Figure 8.3 (section 8.4.2), the
+   real-time deque of Figure 8.4 (section 8.4.3) and the red-black set carried into
+   section 8.1 for Exercise 8.1 each have their own preamble further down.
 
    Figure 8.1 makes the promise of Figure 7.1, every operation in O(1) WORST-CASE time and
    still when used persistently, without laziness. Section 8.2 calls the technique global
@@ -48,70 +48,27 @@
    version of this very design. *)
 
 open Okasaki.Ch8
-
-(* ------------------------------------------------------------------ harness *)
-
-let checks = ref 0
-let failures = ref 0
-
-let check name cond =
-  incr checks;
-  if not cond
-  then (
-    incr failures;
-    Printf.printf "  FAIL  %s\n" name)
-;;
-
-let check_eq name ~expect ~actual to_string =
-  incr checks;
-  if expect <> actual
-  then (
-    incr failures;
-    Printf.printf
-      "  FAIL  %s: expected %s, got %s\n"
-      name
-      (to_string expect)
-      (to_string actual))
-;;
-
-let check_int name ~expect ~actual = check_eq name ~expect ~actual string_of_int
+open Harness
 
 (* A refusal on the empty structure: Failure "<op>: empty queue", or "<op>: empty deque"
    from the deques of section 8.4, whose messages say what they are. *)
 let check_refuses name op f =
-  incr checks;
   let wanted =
     Printf.sprintf "Failure \"%s: empty queue\" or \"%s: empty deque\"" op op
   in
   match f () with
-  | _ ->
-    incr failures;
-    Printf.printf "  FAIL  %s: expected %s, got no exception\n" name wanted
+  | _ -> Alcotest.failf "%s: expected %s, got no exception" name wanted
   | exception Failure msg when msg = op ^ ": empty queue" || msg = op ^ ": empty deque" ->
-    ()
+    pass name
   | exception e ->
-    incr failures;
-    Printf.printf "  FAIL  %s: expected %s, got %s\n" name wanted (Printexc.to_string e)
+    Alcotest.failf "%s: expected %s, got %s" name wanted (Printexc.to_string e)
 ;;
 
-(* Run [f], and hand its result to [k] if it returned one. An exception is that one
-   check's failure and not the section's, so the checks after it still get to run. *)
-let surviving name f k =
-  match f () with
-  | v -> k v
-  | exception e ->
-    incr checks;
-    incr failures;
-    Printf.printf "  FAIL  %s: raised %s\n" name (Printexc.to_string e)
-;;
-
-let section name = Printf.printf "%s\n" name
-let string_of_int_list l = "[" ^ String.concat ";" (List.map string_of_int l) ^ "]"
 let upto n = List.init n Fun.id
 
 (* head/tail to exhaustion. A queue whose tail does not advance would never come to an
    end, and neither would the list this builds, so a drain past any size used here gives
-   up and raises: the checks around it report that as the failure it is. *)
+   up and raises, and the case it is in ends there as the failure it is. *)
 let drain_limit = 100_000
 
 let drain_with ~is_empty ~head ~tail q =
@@ -167,17 +124,9 @@ module Queue_tests (Q : QUEUE) = struct
   let run_contract name =
     let t label = Printf.sprintf "%s: %s" name label in
     let eq label expect q =
-      surviving
-        (t label)
-        (fun () -> drain q)
-        (fun actual -> check_eq (t label) ~expect ~actual string_of_int_list)
+      check_eq (t label) ~expect ~actual:(drain q) string_of_int_list
     in
-    let head_is label expect q =
-      surviving
-        (t label)
-        (fun () -> Q.head (q ()))
-        (fun actual -> check_int (t label) ~expect ~actual)
-    in
+    let head_is label expect q = check_int (t label) ~expect ~actual:(Q.head q) in
     check (t "empty is empty") (Q.is_empty Q.empty);
     check (t "a singleton is not empty") (not (Q.is_empty (Q.snoc Q.empty 1)));
     check_refuses (t "head on empty raises") "head" (fun () -> Q.head Q.empty);
@@ -189,23 +138,19 @@ module Queue_tests (Q : QUEUE) = struct
        reporting non-empty with elements it cannot produce: head raises on a queue that
        has elements in it. The smallest rotations, of zero and one element, are the ones
        in which an off-by-one in the trigger shows first. *)
-    head_is "snoc onto the empty queue makes its element the head" 7 (fun () ->
-      Q.snoc Q.empty 7);
-    head_is "tail past the last front element moves on to the rear" 2 (fun () ->
-      Q.tail (of_list [ 1; 2; 3 ]));
-    head_is "the second rotation delivers its rear" 2 (fun () ->
-      Q.tail (of_list [ 1; 2 ]));
+    head_is "snoc onto the empty queue makes its element the head" 7 (Q.snoc Q.empty 7);
+    head_is
+      "tail past the last front element moves on to the rear"
+      2
+      (Q.tail (of_list [ 1; 2; 3 ]));
+    head_is "the second rotation delivers its rear" 2 (Q.tail (of_list [ 1; 2 ]));
     eq "first in, first out" [ 1; 2; 3; 4; 5; 6; 7 ] (of_list [ 1; 2; 3; 4; 5; 6; 7 ]);
     eq "equal elements are all kept, in order" [ 7; 7; 1; 7 ] (of_list [ 7; 7; 1; 7 ]);
     (* Emptiness reached by draining must be as good as the [empty] it started from. *)
-    surviving
-      (t "a queue can be drained to nothing")
-      (fun () -> Q.tail (Q.tail (of_list [ 1; 2 ])))
-      (fun drained ->
-        check (t "a queue drained to nothing is empty") (Q.is_empty drained);
-        check_refuses (t "head on a drained queue raises") "head" (fun () ->
-          Q.head drained);
-        eq "a drained queue can be refilled" [ 8; 9 ] (Q.snoc (Q.snoc drained 8) 9));
+    let drained = Q.tail (Q.tail (of_list [ 1; 2 ])) in
+    check (t "a queue drained to nothing is empty") (Q.is_empty drained);
+    check_refuses (t "head on a drained queue raises") "head" (fun () -> Q.head drained);
+    eq "a drained queue can be refilled" [ 8; 9 ] (Q.snoc (Q.snoc drained 8) 9);
     (* The sizing argument of p.104, from outside. A rotation begins when |r| = |f| + 1,
        with |f| = m, and "the working copy of the front list will be exhausted after just
        m deletions", so the new front must be complete by then. From the empty queue,
@@ -291,19 +236,17 @@ module Queue_tests (Q : QUEUE) = struct
        stays correct, and two futures of one queue do not see each other. A rotation in
        progress is the case that matters: two futures of a queue caught mid-rotation each
        carry the state on by their own steps, and neither may see the other's. *)
-    surviving
-      (t "every earlier version can still be used")
-      (fun () ->
-        let versions = List.init 20 (fun i -> of_list (upto i)) in
-        List.iter
-          (fun v ->
-            ignore (Q.snoc v 99);
-            if not (Q.is_empty v) then ignore (Q.tail v))
-          versions;
-        List.mapi (fun i v -> if drain v = upto i then 0 else 1) versions
-        |> List.fold_left ( + ) 0)
-      (fun stale ->
-        check_int (t "every earlier version stays correct") ~expect:0 ~actual:stale);
+    let versions = List.init 20 (fun i -> of_list (upto i)) in
+    List.iter
+      (fun v ->
+        ignore (Q.snoc v 99);
+        if not (Q.is_empty v) then ignore (Q.tail v))
+      versions;
+    let stale =
+      List.mapi (fun i v -> if drain v = upto i then 0 else 1) versions
+      |> List.fold_left ( + ) 0
+    in
+    check_int (t "every earlier version stays correct") ~expect:0 ~actual:stale;
     let q = of_list [ 1; 2; 3 ] in
     let a = Q.snoc q 4
     and b = Q.snoc q 5 in
@@ -422,18 +365,16 @@ module Worst_case (Q : QUEUE) = struct
   ;;
 
   (* O(1) worst-case, asserted the only way a worst-case bound can be: on the dearest
-     single operation. True if every sequence stayed within the bound. The large size is
-     guarded on the small one, as the earlier chapters guard theirs: an operation that is
-     secretly linear makes a sequence quadratic, and at n = 100_000 that is not a failure
-     but a hang. *)
+     single operation. The small size comes first and guards the large one, as in the
+     earlier chapters: an operation that is secretly linear makes a sequence quadratic,
+     and at n = 100_000 that is not a failure but a hang. The check at n = 1000 ends the
+     case instead. *)
   let run_sequences name =
     let t label = Printf.sprintf "%s: %s" name label in
-    let ok = ref true in
     List.iter
       (fun (sequence, ops) ->
         let within label n =
           let i, op, c = dearest (ops n) in
-          let fine = c <= constant in
           check
             (t
                (Printf.sprintf
@@ -444,20 +385,11 @@ module Worst_case (Q : QUEUE) = struct
                   (describe op)
                   c
                   n))
-            fine;
-          fine
+            (c <= constant)
         in
-        if not (within "O(1) worst-case" 1_000)
-        then (
-          ok := false;
-          Printf.printf
-            "  SKIP  %s: %s at n=100000 -- it is not O(1) worst-case at n=1000\n"
-            name
-            sequence)
-        else if not (within "still O(1) worst-case, a hundred times longer" 100_000)
-        then ok := false)
-      sequences;
-    !ok
+        within "O(1) worst-case" 1_000;
+        within "still O(1) worst-case, a hundred times longer" 100_000)
+      sequences
   ;;
 
   (* -------------------------------------- versions: several futures of one queue *)
@@ -630,22 +562,14 @@ module Contract = Queue_tests (HoodMelvilleQueue)
 module Costs = Worst_case (HoodMelvilleQueue)
 
 (* What a queue costs means nothing until it behaves like one, and a queue that raises
-   half way through a sequence would take the rest of the section down with it. *)
+   half way through a sequence proves nothing about its cost. So the contract comes first
+   and the case ends there if it does not hold; and persistence comes after the sequences,
+   which are what show the queue to be real-time in one thread. *)
 let test_hood_melville () =
-  section "HoodMelvilleQueue (8.2.1)";
-  let before = !failures in
   Contract.run_contract "HoodMelvilleQueue";
-  if !failures > before
-  then
-    Printf.printf
-      "  SKIP  HoodMelvilleQueue: cost checks -- the contract above does not hold\n"
-  else (
-    test_guard ();
-    if Costs.run_sequences "HoodMelvilleQueue"
-    then Costs.run_versions "HoodMelvilleQueue, persistently"
-    else
-      Printf.printf
-        "  SKIP  HoodMelvilleQueue: persistence checks -- not real-time in one thread\n")
+  test_guard ();
+  Costs.run_sequences "HoodMelvilleQueue";
+  Costs.run_versions "HoodMelvilleQueue, persistently"
 ;;
 
 (* ------------------------------------- ConstantTimeConsQueue (Exercise 8.4) *)
@@ -769,22 +693,13 @@ module Cons_tests (Q : QUEUE_WITH_CONS) = struct
   let run_contract name =
     let t label = Printf.sprintf "%s: %s" name label in
     let eq label expect q =
-      surviving
-        (t label)
-        (fun () -> drain q)
-        (fun actual -> check_eq (t label) ~expect ~actual string_of_int_list)
+      check_eq (t label) ~expect ~actual:(drain q) string_of_int_list
     in
-    let head_is label expect q =
-      surviving
-        (t label)
-        (fun () -> Q.head (q ()))
-        (fun actual -> check_int (t label) ~expect ~actual)
-    in
+    let head_is label expect q = check_int (t label) ~expect ~actual:(Q.head q) in
     check
       (t "cons onto the empty queue is not empty")
       (not (Q.is_empty (Q.cons 1 Q.empty)));
-    head_is "cons onto the empty queue makes its element the head" 7 (fun () ->
-      Q.cons 7 Q.empty);
+    head_is "cons onto the empty queue makes its element the head" 7 (Q.cons 7 Q.empty);
     eq
       "cons puts its element in front of everything snoc'ed"
       [ 0; 1; 2; 3 ]
@@ -800,25 +715,21 @@ module Cons_tests (Q : QUEUE_WITH_CONS) = struct
       (Q.snoc (Q.cons 4 (Q.snoc (Q.cons 2 (of_list [ 1 ])) 3)) 5);
     (* The seam between the two halves, crossed both ways. A queue that is empty in one
        half and not the other is where a wrapper is most easily wrong about itself. *)
-    head_is "tail past the cons'ed elements moves on to the snoc'ed" 1 (fun () ->
-      Q.tail (Q.cons 0 (of_list [ 1; 2 ])));
-    surviving
-      (t "tail of the one cons'ed element")
-      (fun () -> Q.tail (Q.cons 0 (Q.snoc Q.empty 1)))
-      (fun q ->
-        check
-          (t "leaves the snoc'ed element behind, so the queue is not empty")
-          (not (Q.is_empty q));
-        eq "and that element is the head" [ 1 ] q);
-    surviving
-      (t "a queue drained to nothing")
-      (fun () -> Q.tail (Q.tail (of_list [ 1; 2 ])))
-      (fun drained ->
-        eq "takes a cons" [ 5 ] (Q.cons 5 drained);
-        eq "takes a cons and then a snoc" [ 5; 6 ] (Q.snoc (Q.cons 5 drained) 6);
-        check
-          (t "and is empty again after a cons and a tail")
-          (Q.is_empty (Q.tail (Q.cons 5 drained))));
+    head_is
+      "tail past the cons'ed elements moves on to the snoc'ed"
+      1
+      (Q.tail (Q.cons 0 (of_list [ 1; 2 ])));
+    let behind = Q.tail (Q.cons 0 (Q.snoc Q.empty 1)) in
+    check
+      (t "leaves the snoc'ed element behind, so the queue is not empty")
+      (not (Q.is_empty behind));
+    eq "and that element is the head" [ 1 ] behind;
+    let drained = Q.tail (Q.tail (of_list [ 1; 2 ])) in
+    eq "takes a cons" [ 5 ] (Q.cons 5 drained);
+    eq "takes a cons and then a snoc" [ 5; 6 ] (Q.snoc (Q.cons 5 drained) 6);
+    check
+      (t "and is empty again after a cons and a tail")
+      (Q.is_empty (Q.tail (Q.cons 5 drained)));
     check_refuses
       (t "head after the tail of the only cons'ed element raises")
       "head"
@@ -883,23 +794,21 @@ module Cons_tests (Q : QUEUE_WITH_CONS) = struct
     let c = Q.cons 0 q in
     eq "a tail taken in one future of a cons'ed queue" [ 1; 2; 3 ] (Q.tail c);
     eq "leaves the cons'ed element in the other" [ 0; 1; 2; 3 ] c;
-    surviving
-      (t "every earlier version of a cons-build can still be used")
-      (fun () ->
-        let versions = List.init 20 (fun i -> cons_list (upto i)) in
-        List.iter
-          (fun v ->
-            ignore (Q.cons 99 v);
-            ignore (Q.snoc v 99);
-            if not (Q.is_empty v) then ignore (Q.tail v))
-          versions;
-        List.mapi (fun i v -> if drain v = List.rev (upto i) then 0 else 1) versions
-        |> List.fold_left ( + ) 0)
-      (fun stale ->
-        check_int
-          (t "every earlier version of a cons-build stays correct")
-          ~expect:0
-          ~actual:stale)
+    let versions = List.init 20 (fun i -> cons_list (upto i)) in
+    List.iter
+      (fun v ->
+        ignore (Q.cons 99 v);
+        ignore (Q.snoc v 99);
+        if not (Q.is_empty v) then ignore (Q.tail v))
+      versions;
+    let stale =
+      List.mapi (fun i v -> if drain v = List.rev (upto i) then 0 else 1) versions
+      |> List.fold_left ( + ) 0
+    in
+    check_int
+      (t "every earlier version of a cons-build stays correct")
+      ~expect:0
+      ~actual:stale
   ;;
 
   (* ------------------------------------------------------------- on the clock *)
@@ -1031,13 +940,11 @@ module Cons_tests (Q : QUEUE_WITH_CONS) = struct
   (* As Worst_case.run_sequences, with cons in the sequences. *)
   let run_sequences name =
     let t label = Printf.sprintf "%s: %s" name label in
-    let ok = ref true in
     List.iter
       (fun (sequence, ops) ->
         let within label n =
           let ops = ops n in
           let i, op, c = dearest any ops (costs ops) in
-          let fine = c <= constant in
           check
             (t
                (Printf.sprintf
@@ -1048,20 +955,11 @@ module Cons_tests (Q : QUEUE_WITH_CONS) = struct
                   (describe op)
                   c
                   n))
-            fine;
-          fine
+            (c <= constant)
         in
-        if not (within "O(1) worst-case" 1_000)
-        then (
-          ok := false;
-          Printf.printf
-            "  SKIP  %s: %s at n=100000 -- it is not O(1) worst-case at n=1000\n"
-            name
-            sequence)
-        else if not (within "still O(1) worst-case, a hundred times longer" 100_000)
-        then ok := false)
-      sequences;
-    !ok
+        within "O(1) worst-case" 1_000;
+        within "still O(1) worst-case, a hundred times longer" 100_000)
+      sequences
   ;;
 
   module W = Worst_case (Q)
@@ -1148,27 +1046,17 @@ module Wrapped_contract = Queue_tests (Wrapped)
 module Wrapped_costs = Worst_case (Wrapped)
 module Wrapped_cons = Cons_tests (Wrapped)
 
+(* In the order of test_hood_melville, and for its reasons: both contracts and the
+   delegation, then the sequences, then persistence. *)
 let test_cons_queue () =
-  section "ConstantTimeConsQueue (Exercise 8.4): cons over HoodMelvilleQueue";
-  let before = !failures in
   Wrapped_contract.run_contract "ConstantTimeConsQueue";
   Wrapped_cons.run_contract "ConstantTimeConsQueue";
   test_delegation ();
-  if !failures > before
-  then
-    Printf.printf
-      "  SKIP  ConstantTimeConsQueue: cost checks -- the contract above does not hold\n"
-  else (
-    test_cons_guard ();
-    let queue_ops = Wrapped_costs.run_sequences "ConstantTimeConsQueue" in
-    let with_cons = Wrapped_cons.run_sequences "ConstantTimeConsQueue" in
-    if queue_ops && with_cons
-    then (
-      Wrapped_costs.run_versions "ConstantTimeConsQueue, persistently";
-      Wrapped_cons.run_versions "ConstantTimeConsQueue, persistently")
-    else
-      Printf.printf
-        "  SKIP  ConstantTimeConsQueue: persistence checks -- not real-time in one thread\n")
+  test_cons_guard ();
+  Wrapped_costs.run_sequences "ConstantTimeConsQueue";
+  Wrapped_cons.run_sequences "ConstantTimeConsQueue";
+  Wrapped_costs.run_versions "ConstantTimeConsQueue, persistently";
+  Wrapped_cons.run_versions "ConstantTimeConsQueue, persistently"
 ;;
 
 (* ------------------------------------------------------ BankersDeque (8.4.2) *)
@@ -1510,23 +1398,21 @@ module Deque_tests (D : DEQUE) = struct
     check_int (t "last agrees with a list model") ~expect:0 ~actual:!bad_last;
     check_int (t "every drain agrees with a list model") ~expect:0 ~actual:!bad_drain;
     (* Persistence, with all four writers let loose on every version. *)
-    surviving
-      (t "every earlier version can still be used")
-      (fun () ->
-        let versions = List.init 20 (fun i -> snocs (upto i)) in
-        List.iter
-          (fun v ->
-            ignore (D.snoc v 99);
-            ignore (D.cons 99 v);
-            if not (D.is_empty v)
-            then (
-              ignore (D.tail v);
-              ignore (D.init v)))
-          versions;
-        List.mapi (fun i v -> if drain_both_ends v = upto i then 0 else 1) versions
-        |> List.fold_left ( + ) 0)
-      (fun stale ->
-        check_int (t "every earlier version stays correct") ~expect:0 ~actual:stale)
+    let versions = List.init 20 (fun i -> snocs (upto i)) in
+    List.iter
+      (fun v ->
+        ignore (D.snoc v 99);
+        ignore (D.cons 99 v);
+        if not (D.is_empty v)
+        then (
+          ignore (D.tail v);
+          ignore (D.init v)))
+      versions;
+    let stale =
+      List.mapi (fun i v -> if drain_both_ends v = upto i then 0 else 1) versions
+      |> List.fold_left ( + ) 0
+    in
+    check_int (t "every earlier version stays correct") ~expect:0 ~actual:stale
   ;;
 
   (* ---------------------------------------- sequences: one thread, from empty *)
@@ -1688,16 +1574,14 @@ module Deque_tests (D : DEQUE) = struct
   ;;
 
   (* Amortised bounds, asserted the only way an amortised bound can be: over whole
-     sequences. True if every sequence stayed within the budget. The large size is guarded
-     on the small one, as everywhere in these files. *)
+     sequences. The small size first, guarding the large one, as everywhere in these
+     files. *)
   let run_sequences name =
     let t label = Printf.sprintf "%s: %s" name label in
-    let ok = ref true in
     List.iter
       (fun (sequence, driver) ->
         let within label n =
           let ops, c = cost (driver n) in
-          let fine = c <= deque_budget ops in
           check
             (t
                (Printf.sprintf
@@ -1706,20 +1590,11 @@ module Deque_tests (D : DEQUE) = struct
                   label
                   (per_operation ops c)
                   n))
-            fine;
-          fine
+            (c <= deque_budget ops)
         in
-        if not (within "amortised O(1)" 1_000)
-        then (
-          ok := false;
-          Printf.printf
-            "  SKIP  %s: %s at n=100000 -- it is not amortised O(1) at n=1000\n"
-            name
-            sequence)
-        else if not (within "still amortised O(1), a hundred times longer" 100_000)
-        then ok := false)
-      sequences;
-    !ok
+        within "amortised O(1)" 1_000;
+        within "still amortised O(1), a hundred times longer" 100_000)
+      sequences
   ;;
 
   (* -------------------------------------- traces: several futures of one deque *)
@@ -2151,41 +2026,27 @@ let test_deque_control () =
 ;;
 
 (* What a deque costs means nothing until it behaves like one, and one that raises half
-   way through a sequence would take the rest of the section down with it. *)
+   way through a sequence proves nothing about its cost. So the contracts come first and
+   the case ends there if one does not hold; and the worst-case and persistence checks
+   come after the sequences, which are what show the deque to be amortised O(1) in one
+   thread. *)
 let test_bankers_deque () =
-  section "BankersDeque (8.4.2), c = 2";
-  let before = !failures in
   Deque2_tests.As_queue.run_contract "BankersDeque";
   Deque2_tests.run_contract "BankersDeque";
   Deque2_counting_tests.As_queue.run_contract "BankersDeque over the counting stream";
   Deque2_counting_tests.run_contract "BankersDeque over the counting stream";
-  if !failures > before
-  then
-    Printf.printf
-      "  SKIP  BankersDeque: cost checks -- the contract above does not hold\n"
-  else if Deque2_tests.run_sequences "BankersDeque"
-  then (
-    test_deque_unshared ();
-    test_deque_control ();
-    Deque2_tests.run_traces "BankersDeque, persistently";
-    test_deque_steps ())
-  else
-    Printf.printf
-      "  SKIP  BankersDeque: worst-case and persistence checks -- not amortised O(1) in \
-       one thread\n";
-  section "BankersDeque (8.4.2), c = 3";
-  let before = !failures in
+  Deque2_tests.run_sequences "BankersDeque";
+  test_deque_unshared ();
+  test_deque_control ();
+  Deque2_tests.run_traces "BankersDeque, persistently";
+  test_deque_steps ()
+;;
+
+let test_bankers_deque_3 () =
   Deque3_tests.As_queue.run_contract "BankersDeque, c = 3";
   Deque3_tests.run_contract "BankersDeque, c = 3";
-  if !failures > before
-  then
-    Printf.printf
-      "  SKIP  BankersDeque, c = 3: cost checks -- the contract above does not hold\n"
-  else if Deque3_tests.run_sequences "BankersDeque, c = 3"
-  then Deque3_tests.run_traces "BankersDeque, c = 3, persistently"
-  else
-    Printf.printf
-      "  SKIP  BankersDeque, c = 3: persistence checks -- not amortised O(1) in one thread\n"
+  Deque3_tests.run_sequences "BankersDeque, c = 3";
+  Deque3_tests.run_traces "BankersDeque, c = 3, persistently"
 ;;
 
 (* ----------------------------------------------------- RealTimeDeque (8.4.3) *)
@@ -2343,7 +2204,7 @@ module Real_time_tests (D : DEQUE) = struct
   ;;
 
   (* Worst-case O(1), asserted the only way a worst-case bound can be: on the dearest
-     operation. At n, and at a hundred times n if the small size held. *)
+     operation. At n, and then, the small size having held, at a hundred times n. *)
   let run_plans name clock ~budget ~unit =
     let t label = Printf.sprintf "%s: %s" name label in
     List.iter
@@ -2351,7 +2212,6 @@ module Real_time_tests (D : DEQUE) = struct
         let within label n =
           let ops = make n in
           let k, c = dearest clock ops in
-          let fine = c <= budget in
           check
             (t
                (Printf.sprintf
@@ -2363,16 +2223,10 @@ module Real_time_tests (D : DEQUE) = struct
                   c
                   unit
                   n))
-            fine;
-          fine
+            (c <= budget)
         in
-        if not (within "O(1) worst-case" 1_000)
-        then
-          Printf.printf
-            "  SKIP  %s: %s at n=100000 -- not O(1) worst-case at n=1000\n"
-            name
-            plan
-        else ignore (within "still, a hundred times longer" 100_000))
+        within "O(1) worst-case" 1_000;
+        within "still, a hundred times longer" 100_000)
       plans
   ;;
 
@@ -2487,21 +2341,15 @@ struct
   module S = Real_time_tests (Counting)
 
   let run name =
-    section (Printf.sprintf "RealTimeDeque (8.4.3), c = %d" C.c);
-    let before = !failures in
     W.T.As_queue.run_contract name;
     W.T.run_contract name;
     S.T.As_queue.run_contract (name ^ " over the counting stream");
     S.T.run_contract (name ^ " over the counting stream");
-    if !failures > before
-    then
-      Printf.printf "  SKIP  %s: cost checks -- the contract above does not hold\n" name
-    else (
-      let budget = real_time_steps C.c in
-      W.run_plans name words ~budget:real_time_words ~unit:"words";
-      S.run_plans (name ^ ", in steps") steps ~budget ~unit:"steps";
-      W.run_versions (name ^ ", persistently") words ~budget:real_time_words ~unit:"words";
-      S.run_versions (name ^ ", persistently, in steps") steps ~budget ~unit:"steps")
+    let budget = real_time_steps C.c in
+    W.run_plans name words ~budget:real_time_words ~unit:"words";
+    S.run_plans (name ^ ", in steps") steps ~budget ~unit:"steps";
+    W.run_versions (name ^ ", persistently") words ~budget:real_time_words ~unit:"words";
+    S.run_versions (name ^ ", persistently, in steps") steps ~budget ~unit:"steps"
   ;;
 end
 
@@ -2539,12 +2387,6 @@ let test_real_time_guards () =
        k
        c)
     (c >= reverse_floor n)
-;;
-
-let test_real_time_deque () =
-  Rt2_section.run "RealTimeDeque";
-  test_real_time_guards ();
-  Rt3_section.run "RealTimeDeque, c = 3"
 ;;
 
 (* ------------------------------------------- red-black trees (8.1, Exercise 8.1) *)
@@ -2867,66 +2709,55 @@ module Delete_tests (S : SET_WITH_DELETE with type elem = int) = struct
 
   let run_contract name =
     let t label = Printf.sprintf "%s: %s" name label in
-    let holds label f = surviving (t label) f (fun ok -> check (t label) ok) in
+    let holds label f = check (t label) (f ()) in
     let same a b = List.for_all (fun x -> S.member x a = S.member x b) (range (-1) 101) in
     let s = Base.of_list (evens 50) in
-    surviving
-      (t "deleting one element")
-      (fun () -> S.delete 20 s)
-      (fun s' ->
-        check (t "a deleted element is not a member") (not (S.member 20 s'));
-        check
-          (t "deleting one element leaves every other")
-          (List.for_all (fun x -> x = 20 || S.member x s') (evens 50));
-        check (t "the version before the delete still has it") (S.member 20 s);
-        holds "inserting a deleted element brings it back" (fun () ->
-          S.member 20 (S.insert 20 s'));
-        holds "deleting an element twice is a no-op" (fun () -> same s' (S.delete 20 s')));
+    let s' = S.delete 20 s in
+    check (t "a deleted element is not a member") (not (S.member 20 s'));
+    check
+      (t "deleting one element leaves every other")
+      (List.for_all (fun x -> x = 20 || S.member x s') (evens 50));
+    check (t "the version before the delete still has it") (S.member 20 s);
+    holds "inserting a deleted element brings it back" (fun () ->
+      S.member 20 (S.insert 20 s'));
+    holds "deleting an element twice is a no-op" (fun () -> same s' (S.delete 20 s'));
     (* The root is on every search path, so a dead root is the first place a search that
        cannot pass a dead node shows. *)
     holds "deleting the root leaves both neighbours reachable" (fun () ->
       let s3 = S.delete 2 (Base.of_list [ 0; 2; 4 ]) in
       S.member 0 s3 && S.member 4 s3 && not (S.member 2 s3));
     holds "deleting an absent element is a no-op" (fun () -> same s (S.delete 21 s));
-    surviving
-      (t "deleting everything")
-      (fun () -> delete_all (evens 50) s)
-      (fun gone ->
-        check
-          (t "a set with everything deleted holds nothing")
-          (List.for_all (fun x -> not (S.member x gone)) (range (-1) 101));
-        holds "and can be refilled" (fun () -> S.member 8 (S.insert 8 gone)));
+    let gone = delete_all (evens 50) s in
+    check
+      (t "a set with everything deleted holds nothing")
+      (List.for_all (fun x -> not (S.member x gone)) (range (-1) 101));
+    holds "and can be refilled" (fun () -> S.member 8 (S.insert 8 gone));
     (* Every version of a drain stays correct, on both sides of the rebuild that a drain
        of a hundred passes through. *)
-    surviving
+    let xs = evens 100 in
+    let order = shuffle 20260928 xs in
+    let versions =
+      List.fold_left
+        (fun (acc, s) x ->
+          let s = S.delete x s in
+          s :: acc, s)
+        ([], Base.of_list xs)
+        order
+      |> fst
+      |> List.rev
+    in
+    let stale = ref 0 in
+    List.iteri
+      (fun i v ->
+        (* version i is after i + 1 deletions: the first i + 1 of [order] are gone *)
+        let gone = first_of (i + 1) order in
+        if not (List.for_all (fun x -> S.member x v = not (List.mem x gone)) xs)
+        then incr stale)
+      versions;
+    check_int
       (t "every version of a drain stays correct, across rebuilds")
-      (fun () ->
-        let xs = evens 100 in
-        let order = shuffle 20260928 xs in
-        let versions =
-          List.fold_left
-            (fun (acc, s) x ->
-              let s = S.delete x s in
-              s :: acc, s)
-            ([], Base.of_list xs)
-            order
-          |> fst
-          |> List.rev
-        in
-        let stale = ref 0 in
-        List.iteri
-          (fun i v ->
-            (* version i is after i + 1 deletions: the first i + 1 of [order] are gone *)
-            let gone = first_of (i + 1) order in
-            if not (List.for_all (fun x -> S.member x v = not (List.mem x gone)) xs)
-            then incr stale)
-          versions;
-        !stale)
-      (fun stale ->
-        check_int
-          (t "every version of a drain stays correct, across rebuilds")
-          ~expect:0
-          ~actual:stale);
+      ~expect:0
+      ~actual:!stale;
     (* Against a list model, checked after every operation, with runs long enough to cross
        the rebuild threshold many times over. *)
     Random.init 20260929;
@@ -3090,10 +2921,13 @@ end
 
 module Deletion = Delete_tests (Rb)
 
-let test_redblack () =
-  section "RedBlackSet (8.1): the Section 3.3 set, and the delete of Exercise 8.1";
-  Rb_tests.run_contract "RedBlackSet";
-  Rb_tests.run_costs "RedBlackSet";
+(* The Section 3.3 set, its costs, its shape and the delete of Exercise 8.1 are a case
+   each: none of the four waits on another, so a failure in one leaves the other three to
+   report. *)
+let test_redblack () = Rb_tests.run_contract "RedBlackSet"
+let test_redblack_costs () = Rb_tests.run_costs "RedBlackSet"
+
+let test_redblack_shape () =
   let differs = ref [] in
   List.iter
     (fun n ->
@@ -3110,35 +2944,29 @@ let test_redblack () =
        (match !differs with
         | [] -> ""
         | (order, n) :: _ -> Printf.sprintf " -- differs for %s n=%d" order n))
-    (!differs = []);
-  (* What a delete costs means nothing until it behaves like one. *)
-  let before = !failures in
+    (!differs = [])
+;;
+
+(* What a delete costs means nothing until it behaves like one. *)
+let test_redblack_delete () =
   Deletion.run_contract "RedBlackSet delete";
-  if !failures > before
-  then
-    Printf.printf
-      "  SKIP  RedBlackSet delete: cost checks -- the contract above does not hold\n"
-  else Deletion.run_costs "RedBlackSet delete"
+  Deletion.run_costs "RedBlackSet delete"
 ;;
 
-(* ------------------------------------------------------------------- runner *)
+(* -------------------------------------------------------------------- cases *)
 
-(* A regression can make a function raise where the test did not expect it. Report that as
-   a failure and carry on rather than hiding it. *)
-let run name f =
-  match f () with
-  | () -> ()
-  | exception e ->
-    incr failures;
-    Printf.printf "  FAIL  %s: unexpected exception %s\n" name (Printexc.to_string e)
-;;
-
-let () =
-  run "RedBlackSet" test_redblack;
-  run "HoodMelvilleQueue" test_hood_melville;
-  run "ConstantTimeConsQueue" test_cons_queue;
-  run "BankersDeque" test_bankers_deque;
-  run "RealTimeDeque" test_real_time_deque;
-  Printf.printf "\n%d checks, %d failures\n\n" !checks !failures;
-  if !failures > 0 then exit 1
+let tests =
+  [ case "[Exercise 8.1] RedBlackSet: the Chapter 3 set" test_redblack
+  ; case "[Exercise 8.1] RedBlackSet: persistence and cost" test_redblack_costs
+  ; case "[Exercise 8.1] RedBlackSet: Chapter 3's shape, gap for gap" test_redblack_shape
+  ; case "[Exercise 8.1] RedBlackSet delete" test_redblack_delete
+  ; case "[Exercise 8.2, 8.3] HoodMelvilleQueue" test_hood_melville
+  ; case "[Exercise 8.4] ConstantTimeConsQueue" test_cons_queue
+  ; case "[Figure 8.3] BankersDeque, c = 2" test_bankers_deque
+  ; case "[Figure 8.3] BankersDeque, c = 3" test_bankers_deque_3
+  ; case "[Exercise 8.7] RealTimeDeque, c = 2" (fun () -> Rt2_section.run "RealTimeDeque")
+  ; case "[Exercise 8.7] RealTimeDeque: the guards" test_real_time_guards
+  ; case "[Exercise 8.7] RealTimeDeque, c = 3" (fun () ->
+      Rt3_section.run "RealTimeDeque, c = 3")
+  ]
 ;;

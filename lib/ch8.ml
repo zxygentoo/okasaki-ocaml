@@ -44,16 +44,13 @@ struct
 
   let empty = 0, 0, E
 
-  let rec member x (m, n, t) =
-    match t with
+  let rec mem x = function
     | E -> false
     | T (_, a, (y, deleted), b) ->
-      if Element.lt x y
-      then member x (m, n, a)
-      else if Element.lt y x
-      then member x (m, n, b)
-      else not deleted
+      if Element.lt x y then mem x a else if Element.lt y x then mem x b else not deleted
   ;;
+
+  let member x (_, _, t) = mem x t
 
   let balance = function
     | B, T (R, T (R, a, x, b), y, c), z, d
@@ -136,6 +133,8 @@ module type QUEUE = sig
   val head : 'a queue -> 'a
   val tail : 'a queue -> 'a queue
 end
+
+(* Figure 8.1 *)
 
 module HoodMelvilleQueue = struct
   type 'a rotation_state =
@@ -221,6 +220,8 @@ module HoodMelvilleQueue = struct
   ;;
 end
 
+(* Figure 8.2 *)
+
 module type DEQUE = sig
   include QUEUE
 
@@ -290,6 +291,8 @@ module type CONSTANT_FACTOR = sig
   val c : int
 end
 
+(* Figure 8.3 *)
+
 module BankersDeque (C : CONSTANT_FACTOR) (S : STREAM) : DEQUE = struct
   type 'a queue = int * 'a S.stream * int * 'a S.stream
 
@@ -344,6 +347,8 @@ module BankersDeque (C : CONSTANT_FACTOR) (S : STREAM) : DEQUE = struct
     | _, (lazy (S.Cons (_, xs))) -> check (lenf, f, lenr - 1, xs)
   ;;
 end
+
+(* Figure 8.4 *)
 
 module RealTimeDeque (C : CONSTANT_FACTOR) (S : STREAM) : DEQUE = struct
   type 'a half = int * 'a S.stream * 'a S.stream

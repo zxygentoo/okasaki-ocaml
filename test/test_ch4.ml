@@ -1,6 +1,6 @@
 (* Tests for Chapter 4, section 4.2: the streams package of Figure 4.1, and the insertion
-   sort of Exercise 4.2. Plain OCaml, no test framework, matching test_ch2.ml and
-   test_ch3.ml.
+   sort of Exercise 4.2. Alcotest cases written in the checks of harness.ml, as in
+   test_ch2.ml and test_ch3.ml.
 
    A stream function can return every element correctly and still be wrong, because what
    section 4.2 specifies is not only WHAT each function computes but WHEN. All four are
@@ -37,56 +37,7 @@
 
 open Okasaki.Ch4
 open Stream
-
-(* ------------------------------------------------------------------ harness *)
-
-let checks = ref 0
-let failures = ref 0
-
-let check name cond =
-  incr checks;
-  if not cond
-  then (
-    incr failures;
-    Printf.printf "  FAIL  %s\n" name)
-;;
-
-let check_eq name ~expect ~actual to_string =
-  incr checks;
-  if expect <> actual
-  then (
-    incr failures;
-    Printf.printf
-      "  FAIL  %s: expected %s, got %s\n"
-      name
-      (to_string expect)
-      (to_string actual))
-;;
-
-let check_int name ~expect ~actual = check_eq name ~expect ~actual string_of_int
-
-let check_raises name expected f =
-  incr checks;
-  match f () with
-  | _ ->
-    incr failures;
-    Printf.printf
-      "  FAIL  %s: expected %s, got no exception\n"
-      name
-      (Printexc.to_string expected)
-  | exception e ->
-    if e <> expected
-    then (
-      incr failures;
-      Printf.printf
-        "  FAIL  %s: expected %s, got %s\n"
-        name
-        (Printexc.to_string expected)
-        (Printexc.to_string e))
-;;
-
-let section name = Printf.printf "%s\n" name
-let string_of_int_list l = "[" ^ String.concat ";" (List.map string_of_int l) ^ "]"
+open Harness
 
 (* Words allocated by [f]. Sys.opaque_identity stops the optimiser discarding the result
    and with it the allocation we are trying to measure. *)
@@ -130,15 +81,11 @@ let poisoned_after xs = stream_ending (lazy (raise Opened)) xs
 let poison () = poisoned_after []
 
 (* [check_eq] on a list that can only be computed while the poison stays untouched. Opened
-   is then this check's failure and not the section's, so the checks after it still get to
-   run. *)
+   is then this check's failure, by name, and not an exception from somewhere in the case. *)
 let check_unopened name ~expect actual =
   match actual () with
   | got -> check_eq name ~expect ~actual:got string_of_int_list
-  | exception Opened ->
-    incr checks;
-    incr failures;
-    Printf.printf "  FAIL  %s: the poisoned cell was opened\n" name
+  | exception Opened -> Alcotest.failf "%s: the poisoned cell was opened" name
 ;;
 
 (* The first [k] elements of [s], forcing exactly [k] cells. This is the consumer's own
@@ -193,7 +140,6 @@ let first_of describe = function
 (* ------------------------------------------------------------------- values *)
 
 let test_values () =
-  section "values";
   let l = [ 1; 2; 3; 4; 5 ] in
   let s = of_list l
   and nil = of_list [] in
@@ -279,7 +225,6 @@ let calls : (string * (int stream -> int stream -> int stream)) list =
 ;;
 
 let test_call_is_free () =
-  section "fun lazy: applying a function does no work";
   List.iter
     (fun (name, call) ->
       let s, opened_s = source (upto 5)
@@ -307,7 +252,6 @@ let test_call_is_free () =
    input, for every k, and not one more. *)
 
 let test_incremental () =
-  section "++ and take are incremental";
   let n = 20 in
   (* s ++ t walks s one cell per cell demanded, and has no business in t until s is
      exhausted. *)
@@ -385,7 +329,6 @@ let test_incremental () =
    here "to delay the initial call to drop' rather than to delay pattern matching". *)
 
 let test_monolithic () =
-  section "drop and reverse are monolithic";
   (* The first cell of drop n s pays for the whole skip: min n |s| cells to walk past,
      plus the one it hands back. *)
   let bad = ref [] in
@@ -470,7 +413,6 @@ let rec walk s =
 ;;
 
 let test_cost () =
-  section "cost";
   (* Guard against a vacuous check: if the probe cannot see allocation at all, everything
      below passes for the wrong reason. Building a stream certainly allocates. *)
   let probe = words (fun () -> of_list (upto 64)) in
@@ -548,7 +490,6 @@ let string_of_pairs l =
 ;;
 
 let test_sort () =
-  section "sort (Exercise 4.2)";
   let eq name expect actual =
     check_eq name ~expect ~actual:(to_list actual) string_of_int_list
   in
@@ -641,25 +582,14 @@ let test_sort () =
     (!dearest >= n * n / 4)
 ;;
 
-(* ------------------------------------------------------------------- runner *)
+(* -------------------------------------------------------------------- cases *)
 
-(* A regression can make a function raise where the test did not expect it. Report that as
-   a failure and carry on to the remaining sections rather than hiding them. *)
-let run name f =
-  match f () with
-  | () -> ()
-  | exception e ->
-    incr failures;
-    Printf.printf "  FAIL  %s: unexpected exception %s\n" name (Printexc.to_string e)
-;;
-
-let () =
-  run "values" test_values;
-  run "a call does no work" test_call_is_free;
-  run "incremental" test_incremental;
-  run "monolithic" test_monolithic;
-  run "cost" test_cost;
-  run "sort" test_sort;
-  Printf.printf "\n%d checks, %d failures\n\n" !checks !failures;
-  if !failures > 0 then exit 1
+let tests =
+  [ case "[Figure 4.1] Stream: values" test_values
+  ; case "[Figure 4.1] fun lazy: applying a function does no work" test_call_is_free
+  ; case "[Figure 4.1] ++ and take are incremental" test_incremental
+  ; case "[Figure 4.1] drop and reverse are monolithic" test_monolithic
+  ; case "[Figure 4.1] cost of drop and reverse" test_cost
+  ; case "[Exercise 4.2] sort" test_sort
+  ]
 ;;

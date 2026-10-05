@@ -6,6 +6,8 @@ module type ORDERED = sig
   val leq : t -> t -> bool
 end
 
+(* Figure 3.1 *)
+
 module type HEAP = sig
   module Element : ORDERED
 
@@ -24,6 +26,8 @@ module type HEAP_WITH_FROM_LIST = sig
 
   val from_list : Element.t list -> heap
 end
+
+(* Figure 3.2 *)
 
 (* Leftist heaps [Cra72, Knu73a] are heap-ordered binary trees that satisfy the leftist
    property: the rank of any left child is at least as large as the rank of its right
@@ -189,6 +193,8 @@ module WeightBiasedLeftistHeap (E : ORDERED) : HEAP with module Element = E = st
     | Heap { left; right } -> merge left right
   ;;
 end
+
+(* Figure 3.4 *)
 
 module BinomialHeap (E : ORDERED) : HEAP with module Element = E = struct
   module Element = E
@@ -393,6 +399,8 @@ module type SET_WITH_FROM_ORD_LIST = sig
 
   val from_ord_list : elem list -> set
 end
+
+(* Figure 3.6 *)
 
 module RedBlackSet (Element : ORDERED) :
   SET_WITH_FROM_ORD_LIST with type elem = Element.t = struct

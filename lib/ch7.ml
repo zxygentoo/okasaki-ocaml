@@ -28,6 +28,8 @@ module type QUEUE_WITH_SIZES = sig
   val size_fr : 'a queue -> int
 end
 
+(* Figure 7.1 *)
+
 module RealTimeQueue (Strem : STREAM) : QUEUE_WITH_SIZES = struct
   module S = Strem
 
@@ -99,6 +101,8 @@ module type HEAP = sig
   val find_min : heap -> Element.t (* raises Failure if heap is empty *)
   val delete_min : heap -> heap (* raises Failure if heap is empty *)
 end
+
+(* Figure 7.2 *)
 
 module ScheduledBinomialHeap (Elem : ORDERED) (Stream : STREAM) :
   HEAP with module Element = Elem = struct
@@ -225,6 +229,8 @@ module type SORTABLE = sig
   val add : Element.t -> sortable -> sortable
   val sort : sortable -> Element.t list
 end
+
+(* Figure 7.3 *)
 
 module ScheduledBottomUpMergeSort (Elem : ORDERED) (Stream : STREAM) :
   SORTABLE with module Element = Elem = struct

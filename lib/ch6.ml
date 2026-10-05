@@ -1,3 +1,5 @@
+(* Figure 6.1 *)
+
 module type QUEUE = sig
   type 'a queue
 
@@ -66,6 +68,8 @@ module type HEAP = sig
   val find_min : heap -> Element.t (* raises Failure if heap is empty *)
   val delete_min : heap -> heap (* raises Failure if heap is empty *)
 end
+
+(* Figure 6.2 *)
 
 module LazyBinomialHeap (E : ORDERED) : HEAP with module Element = E = struct
   module Element = E
@@ -178,6 +182,8 @@ module SizedHeap (H : HEAP) : HEAP with module Element = H.Element = struct
   ;;
 end
 
+(* Figure 6.3 *)
+
 module PhysicistsQueue : QUEUE = struct
   type 'a queue =
     { w : 'a list
@@ -223,6 +229,8 @@ module PhysicistsQueue : QUEUE = struct
   ;;
 end
 
+(* Figure 6.4 *)
+
 module type SORTABLE = sig
   module Element : ORDERED
 
@@ -232,6 +240,8 @@ module type SORTABLE = sig
   val add : Element.t -> sortable -> sortable
   val sort : sortable -> Element.t list
 end
+
+(* Figure 6.5 *)
 
 module BottomUpMergeSort (E : ORDERED) : SORTABLE with module Element = E = struct
   module Element = E
@@ -319,6 +329,8 @@ module StreamBottomUpMergeSort (E : ORDERED) (Stream : STREAM) :
 
   let extract k (_, s) = mrg_all (lazy S.Nil) s |> S.take k |> to_list
 end
+
+(* Figure 6.6 *)
 
 module LazyPairingHeap (E : ORDERED) : HEAP with module Element = E = struct
   module Element = E

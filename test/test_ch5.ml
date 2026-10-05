@@ -1,7 +1,7 @@
 (* Tests for Chapter 5: the batched queue of Figure 5.2, the deque of Exercise 5.1, the
    splay heap of Figure 5.5 with Exercises 5.4 and 5.7, and the pairing heap of Figure 5.6
-   in both its representations (Exercise 5.8). Plain OCaml, no test framework, matching
-   the earlier chapters.
+   in both its representations (Exercise 5.8). Alcotest cases written in the checks of
+   harness.ml, as in the earlier chapters.
 
    This is the first structure in the book whose costs are AMORTISED, and that changes
    what a cost test has to look like. "tail is O(1) amortised" is not a statement about
@@ -24,68 +24,7 @@
    signature is about to be implemented many more times. *)
 
 open Okasaki.Ch5
-
-(* ------------------------------------------------------------------ harness *)
-
-let checks = ref 0
-let failures = ref 0
-
-let check name cond =
-  incr checks;
-  if not cond
-  then (
-    incr failures;
-    Printf.printf "  FAIL  %s\n" name)
-;;
-
-let check_eq name ~expect ~actual to_string =
-  incr checks;
-  if expect <> actual
-  then (
-    incr failures;
-    Printf.printf
-      "  FAIL  %s: expected %s, got %s\n"
-      name
-      (to_string expect)
-      (to_string actual))
-;;
-
-let check_int name ~expect ~actual = check_eq name ~expect ~actual string_of_int
-
-let check_raises name expected f =
-  incr checks;
-  match f () with
-  | _ ->
-    incr failures;
-    Printf.printf
-      "  FAIL  %s: expected %s, got no exception\n"
-      name
-      (Printexc.to_string expected)
-  | exception e ->
-    if e <> expected
-    then (
-      incr failures;
-      Printf.printf
-        "  FAIL  %s: expected %s, got %s\n"
-        name
-        (Printexc.to_string expected)
-        (Printexc.to_string e))
-;;
-
-(* Run [f] and hand its result to [k], which does the checking. A structure that has lost
-   its invariant tends to raise where a working one returns; this makes that the named
-   check's failure and not the section's, so the checks after it still get to run. *)
-let surviving name f k =
-  match f () with
-  | v -> k v
-  | exception e ->
-    incr checks;
-    incr failures;
-    Printf.printf "  FAIL  %s: raised %s\n" name (Printexc.to_string e)
-;;
-
-let section name = Printf.printf "%s\n" name
-let string_of_int_list l = "[" ^ String.concat ";" (List.map string_of_int l) ^ "]"
+open Harness
 
 (* Words allocated by [f]. Sys.opaque_identity stops the optimiser discarding the result
    and with it the allocation we are trying to measure. *)
@@ -118,17 +57,15 @@ let first_of describe = function
    scratch, single-threadedly -- the amortised bounds of this chapter promise nothing else
    -- allocating nothing of its own.
 
-   True if every sequence stayed within the bound. The large size is guarded on the small
-   one, as the earlier chapters guard theirs: an operation that is secretly linear makes a
-   sequence quadratic, and at n = 100_000 that is not a failure but a hang. *)
+   The small size comes first and guards the large one, as in the earlier chapters: an
+   operation that is secretly linear makes a sequence quadratic, and at n = 100_000 that
+   is not a failure but a hang. The check at n = 1000 ends the case instead. *)
 let run_sequences name sequences =
   let t label = Printf.sprintf "%s: %s" name label in
-  let ok = ref true in
   List.iter
     (fun (sequence, per_n, driver) ->
-      let per_operation n = words (driver n) /. float_of_int (per_n * n) in
       let within label n =
-        let w = per_operation n in
+        let w = words (driver n) /. float_of_int (per_n * n) in
         check
           (t
              (Printf.sprintf
@@ -137,20 +74,11 @@ let run_sequences name sequences =
                 label
                 w
                 n))
-          (w <= constant);
-        w <= constant
+          (w <= constant)
       in
-      if not (within "amortised O(1)" 1_000)
-      then (
-        ok := false;
-        Printf.printf
-          "  SKIP  %s: %s at n=100000 -- it is not O(1) at n=1000\n"
-          name
-          sequence)
-      else if not (within "still O(1) a hundred times longer" 100_000)
-      then ok := false)
-    sequences;
-  !ok
+      within "amortised O(1)" 1_000;
+      within "still O(1) a hundred times longer" 100_000)
+    sequences
 ;;
 
 (* ---------------------------------------------------- shared queue contract *)
@@ -170,17 +98,9 @@ module Queue_tests (Q : QUEUE) = struct
   let run_contract name =
     let t label = Printf.sprintf "%s: %s" name label in
     let eq label expect q =
-      surviving
-        (t label)
-        (fun () -> drain q)
-        (fun actual -> check_eq (t label) ~expect ~actual string_of_int_list)
+      check_eq (t label) ~expect ~actual:(drain q) string_of_int_list
     in
-    let head_is label expect q =
-      surviving
-        (t label)
-        (fun () -> Q.head (q ()))
-        (fun actual -> check_int (t label) ~expect ~actual)
-    in
+    let head_is label expect q = check_int (t label) ~expect ~actual:(Q.head q) in
     check (t "empty is empty") (Q.is_empty Q.empty);
     check (t "a singleton is not empty") (not (Q.is_empty (Q.snoc Q.empty 1)));
     check_raises (t "head on empty raises") (Failure "head: empty queue") (fun () ->
@@ -190,23 +110,21 @@ module Queue_tests (Q : QUEUE) = struct
     (* The two places the invariant can be lost. is_empty and head look at the front list
        alone, so a queue that lets its front run dry while elements wait in the rear
        reports empty, and raises on head, with elements still in it. *)
-    head_is "snoc onto the empty queue makes its element the head" 7 (fun () ->
-      Q.snoc Q.empty 7);
-    head_is "tail past the last front element moves on to the rear" 2 (fun () ->
-      Q.tail (of_list [ 1; 2; 3 ]));
+    head_is "snoc onto the empty queue makes its element the head" 7 (Q.snoc Q.empty 7);
+    head_is
+      "tail past the last front element moves on to the rear"
+      2
+      (Q.tail (of_list [ 1; 2; 3 ]));
     eq "first in, first out" [ 1; 2; 3; 4; 5; 6; 7 ] (of_list [ 1; 2; 3; 4; 5; 6; 7 ]);
     eq "equal elements are all kept, in order" [ 7; 7; 1; 7 ] (of_list [ 7; 7; 1; 7 ]);
     (* Emptiness reached by draining must be as good as the [empty] it started from. *)
-    surviving
-      (t "a queue can be drained to nothing")
-      (fun () -> Q.tail (Q.tail (of_list [ 1; 2 ])))
-      (fun drained ->
-        check (t "a queue drained to nothing is empty") (Q.is_empty drained);
-        check_raises
-          (t "head on a drained queue raises")
-          (Failure "head: empty queue")
-          (fun () -> Q.head drained);
-        eq "a drained queue can be refilled" [ 8; 9 ] (Q.snoc (Q.snoc drained 8) 9));
+    let drained = Q.tail (Q.tail (of_list [ 1; 2 ])) in
+    check (t "a queue drained to nothing is empty") (Q.is_empty drained);
+    check_raises
+      (t "head on a drained queue raises")
+      (Failure "head: empty queue")
+      (fun () -> Q.head drained);
+    eq "a drained queue can be refilled" [ 8; 9 ] (Q.snoc (Q.snoc drained 8) 9);
     (* Randomised, against the obvious model: a list, snoc at the back, tail at the front.
        Checked after every operation and not only at the end, because a lost invariant
        shows up as a wrong is_empty or head long before it shows up in a drain. *)
@@ -256,19 +174,17 @@ module Queue_tests (Q : QUEUE) = struct
       ~actual:!bad_drain;
     (* Persistence: no operation may disturb its operand, so every version ever built
        stays correct, and two futures of one queue do not see each other. *)
-    surviving
-      (t "every earlier version can still be used")
-      (fun () ->
-        let versions = List.init 20 (fun i -> of_list (upto i)) in
-        List.iter
-          (fun v ->
-            ignore (Q.snoc v 99);
-            if not (Q.is_empty v) then ignore (Q.tail v))
-          versions;
-        List.mapi (fun i v -> if drain v = upto i then 0 else 1) versions
-        |> List.fold_left ( + ) 0)
-      (fun stale ->
-        check_int (t "every earlier version stays correct") ~expect:0 ~actual:stale);
+    let versions = List.init 20 (fun i -> of_list (upto i)) in
+    List.iter
+      (fun v ->
+        ignore (Q.snoc v 99);
+        if not (Q.is_empty v) then ignore (Q.tail v))
+      versions;
+    let stale =
+      List.mapi (fun i v -> if drain v = upto i then 0 else 1) versions
+      |> List.fold_left ( + ) 0
+    in
+    check_int (t "every earlier version stays correct") ~expect:0 ~actual:stale;
     let q = of_list [ 1; 2; 3 ] in
     let a = Q.snoc q 4
     and b = Q.snoc q 5 in
@@ -401,21 +317,14 @@ let test_batched_worst_case () =
     (cheap <= constant)
 ;;
 
+(* What a queue costs means nothing until it behaves like one, so the contract comes first
+   and the case ends there if it does not hold. The worst-case checks build a queue of
+   100000 elements, so they come after the sequences have shown that no operation is
+   secretly linear. *)
 let test_batched () =
-  section "BatchedQueue (5.2)";
-  let before = !failures in
   Batched.run_contract "BatchedQueue";
-  (* What a queue costs means nothing until it behaves like one, and a queue that raises
-     half way through a sequence would take the rest of this section down with it. *)
-  if !failures > before
-  then
-    Printf.printf
-      "  SKIP  BatchedQueue: cost checks -- the contract above does not hold\n"
-  else if Batched.run_amortised "BatchedQueue"
-  then test_batched_worst_case ()
-  else
-    Printf.printf
-      "  SKIP  BatchedQueue: worst-case checks -- they build a queue of 100000 elements\n"
+  Batched.run_amortised "BatchedQueue";
+  test_batched_worst_case ()
 ;;
 
 (* ------------------------------------------------------ Exercise 5.1: deques *)
@@ -625,23 +534,21 @@ module Deque_tests (D : DEQUE) = struct
     check_int (t "last agrees with a list model") ~expect:0 ~actual:!bad_last;
     check_int (t "every drain agrees with a list model") ~expect:0 ~actual:!bad_drain;
     (* Persistence, with all four writers let loose on every version. *)
-    surviving
-      (t "every earlier version can still be used")
-      (fun () ->
-        let versions = List.init 20 (fun i -> snocs (upto i)) in
-        List.iter
-          (fun v ->
-            ignore (D.snoc v 99);
-            ignore (D.cons 99 v);
-            if not (D.is_empty v)
-            then (
-              ignore (D.tail v);
-              ignore (D.init v)))
-          versions;
-        List.mapi (fun i v -> if drain_both_ends v = upto i then 0 else 1) versions
-        |> List.fold_left ( + ) 0)
-      (fun stale ->
-        check_int (t "every earlier version stays correct") ~expect:0 ~actual:stale)
+    let versions = List.init 20 (fun i -> snocs (upto i)) in
+    List.iter
+      (fun v ->
+        ignore (D.snoc v 99);
+        ignore (D.cons 99 v);
+        if not (D.is_empty v)
+        then (
+          ignore (D.tail v);
+          ignore (D.init v)))
+      versions;
+    let stale =
+      List.mapi (fun i v -> if drain_both_ends v = upto i then 0 else 1) versions
+      |> List.fold_left ( + ) 0
+    in
+    check_int (t "every earlier version stays correct") ~expect:0 ~actual:stale
   ;;
 
   (* --------------------------------------------- amortised O(1), switching ends *)
@@ -765,19 +672,14 @@ end
 
 module Deque_checks = Deque_tests (Deque)
 
+(* In the order of test_batched, and for its reasons: the contract, then the sequences,
+   and only then the rebalance checks, which build a deque of 100000 elements. *)
 let test_deque () =
-  section "Deque (Exercise 5.1)";
-  let before = !failures in
   Deque_checks.As_queue.run_contract "Deque";
   Deque_checks.run_contract "Deque";
-  if !failures > before
-  then Printf.printf "  SKIP  Deque: cost checks -- the contract above does not hold\n"
-  else if Deque_checks.As_queue.run_amortised "Deque"
-          && Deque_checks.run_amortised "Deque"
-  then Deque_checks.run_rebalance "Deque"
-  else
-    Printf.printf
-      "  SKIP  Deque: rebalance checks -- they build a deque of 100000 elements\n"
+  Deque_checks.As_queue.run_amortised "Deque";
+  Deque_checks.run_amortised "Deque";
+  Deque_checks.run_rebalance "Deque"
 ;;
 
 (* ------------------------------------------------------- splay heaps (5.4) *)
@@ -854,13 +756,12 @@ let word_bound n = 24. +. (32. *. log2 (n + 1))
 
 (* Amortised O(log n), asserted as [run_sequences] asserts O(1): over whole sequences from
    the empty structure, cost per operation, here measured in comparisons and words both
-   and compared to the bounds above. True if every sequence stayed within them. Sizes
-   climb by tens, each guarded on the one before: a quadratic that still fits under the
-   bound at n = 1000 is caught at n = 10_000, where it costs a fraction of a second,
-   instead of at n = 100_000, where it would take the better part of a minute to fail. *)
+   and compared to the bounds above. Sizes climb by tens, and a size over its bound ends
+   the case before the next is tried: a quadratic that still fits under the bound at n =
+   1000 is caught at n = 10_000, where it costs a fraction of a second, instead of at n =
+   100_000, where it would take the better part of a minute to fail. *)
 let run_log_sequences name sequences =
   let t label = Printf.sprintf "%s: %s" name label in
-  let ok = ref true in
   List.iter
     (fun (sequence, per_n, driver) ->
       let within n =
@@ -868,7 +769,6 @@ let run_log_sequences name sequences =
         let ops = float_of_int (per_n * n) in
         let c = float_of_int (count_only f) /. ops in
         let w = words f /. ops in
-        let fits = c <= comparison_bound n && w <= word_bound n in
         check
           (t
              (Printf.sprintf
@@ -878,49 +778,35 @@ let run_log_sequences name sequences =
                 c
                 w
                 n))
-          fits;
-        c, w, fits
+          (c <= comparison_bound n && w <= word_bound n);
+        c, w
       in
       let rec climb first = function
         | [] -> ()
         | n :: larger ->
-          let c, w, fits = within n in
-          if not fits
-          then (
-            ok := false;
-            List.iter
-              (fun m ->
-                Printf.printf
-                  "  SKIP  %s: %s at n=%d -- it is not O(log n) at n=%d\n"
-                  name
-                  sequence
-                  m
-                  n)
-              larger)
-          else (
-            match first with
-            | None -> climb (Some (n, c, w)) larger
-            | Some (n0, c0, w0) when larger = [] ->
-              (* Per operation per log2 n, a hundred times longer: the same or less,
-                 within noise. That is the shape of the claim whatever the constant. *)
-              let per_log v n = v /. log2 (n + 1) in
-              let flat v0 v = per_log v n <= (1.5 *. per_log v0 n0) +. 0.5 in
-              check
-                (t
-                   (Printf.sprintf
-                      "%s, the cost per operation grows no faster than log n (%.2f -> \
-                       %.2f comparisons, %.1f -> %.1f words, per log2 n)"
-                      sequence
-                      (per_log c0 n0)
-                      (per_log c n)
-                      (per_log w0 n0)
-                      (per_log w n)))
-                (flat c0 c && flat w0 w)
-            | first -> climb first larger)
+          let c, w = within n in
+          (match first with
+           | None -> climb (Some (n, c, w)) larger
+           | Some (n0, c0, w0) when larger = [] ->
+             (* Per operation per log2 n, a hundred times longer: the same or less, within
+                noise. That is the shape of the claim whatever the constant. *)
+             let per_log v n = v /. log2 (n + 1) in
+             let flat v0 v = per_log v n <= (1.5 *. per_log v0 n0) +. 0.5 in
+             check
+               (t
+                  (Printf.sprintf
+                     "%s, the cost per operation grows no faster than log n (%.2f -> \
+                      %.2f comparisons, %.1f -> %.1f words, per log2 n)"
+                     sequence
+                     (per_log c0 n0)
+                     (per_log c n)
+                     (per_log w0 n0)
+                     (per_log w n)))
+               (flat c0 c && flat w0 w)
+           | first -> climb first larger)
       in
       climb None [ 1_000; 10_000; 100_000 ])
-    sequences;
-  !ok
+    sequences
 ;;
 
 module Heap_tests (H : HEAP with type Element.t = int) = struct
@@ -938,10 +824,7 @@ module Heap_tests (H : HEAP with type Element.t = int) = struct
   let run_contract name =
     let t label = Printf.sprintf "%s: %s" name label in
     let eq label expect h =
-      surviving
-        (t label)
-        (fun () -> drain h)
-        (fun actual -> check_eq (t label) ~expect ~actual string_of_int_list)
+      check_eq (t label) ~expect ~actual:(drain h) string_of_int_list
     in
     check (t "empty is empty") (H.is_empty H.empty);
     check (t "a singleton is not empty") (not (H.is_empty (H.insert 1 H.empty)));
@@ -977,16 +860,14 @@ module Heap_tests (H : HEAP with type Element.t = int) = struct
        every element, so only the order notices, and it notices first at the minimum:
        find_min follows left branches, and a minimum that has been put on the right is not
        where it looks. *)
-    surviving
+    check_int
       (t "the minimum is found after ascending inserts")
-      (fun () -> H.find_min (of_list [ 1; 2; 3 ]))
-      (fun m ->
-        check_int (t "the minimum is found after ascending inserts") ~expect:1 ~actual:m);
-    surviving
+      ~expect:1
+      ~actual:(H.find_min (of_list [ 1; 2; 3 ]));
+    check_int
       (t "the minimum is found after descending inserts")
-      (fun () -> H.find_min (of_list [ 3; 2; 1 ]))
-      (fun m ->
-        check_int (t "the minimum is found after descending inserts") ~expect:1 ~actual:m);
+      ~expect:1
+      ~actual:(H.find_min (of_list [ 3; 2; 1 ]));
     eq
       "merge is multiset union"
       [ 1; 2; 3; 4; 5; 6 ]
@@ -1205,18 +1086,13 @@ end
 module Splay = SplayHeap (Counting_int)
 module Splay_checks = Heap_tests (Splay)
 
+(* The contract, then the sequences, then the worst-case checks, which build a heap of
+   100000 elements and so wait until the sequences have shown the costs to be what they
+   should. *)
 let test_splay () =
-  section "SplayHeap (5.4)";
-  let before = !failures in
   Splay_checks.run_contract "SplayHeap";
-  if !failures > before
-  then
-    Printf.printf "  SKIP  SplayHeap: cost checks -- the contract above does not hold\n"
-  else if Splay_checks.run_amortised "SplayHeap"
-  then Splay_checks.run_worst_case "SplayHeap"
-  else
-    Printf.printf
-      "  SKIP  SplayHeap: worst-case checks -- they build a heap of 100000 elements\n"
+  Splay_checks.run_amortised "SplayHeap";
+  Splay_checks.run_worst_case "SplayHeap"
 ;;
 
 (* ----------------------------------------------- Exercise 5.7: sorting with a splay tree *)
@@ -1236,14 +1112,8 @@ let test_splay () =
    element, which is the bound the splay-heap sequences above use. *)
 
 let test_splay_sort () =
-  section "SplayHeap.sort (Exercise 5.7)";
   let sort xs = Splay.sort xs in
-  let eq name expect xs =
-    surviving
-      name
-      (fun () -> sort xs)
-      (fun actual -> check_eq name ~expect ~actual string_of_int_list)
-  in
+  let eq name expect xs = check_eq name ~expect ~actual:(sort xs) string_of_int_list in
   eq "sort of the empty list" [] [];
   eq "sort of a singleton" [ 7 ] [ 7 ];
   eq "sort" [ 1; 2; 3; 5; 8; 9 ] [ 5; 3; 8; 1; 9; 2 ];
@@ -1271,7 +1141,6 @@ let test_splay_sort () =
     (* Inserting a new maximum, or a new minimum, looks at the root and stops: one
        comparison. Sixty-four words is several nodes' worth per element, far more than a
        linear sort needs and far less than a quadratic one spends at either size. *)
-    let fits = c1 <= 4.0 && w1 <= 64.0 in
     check
       (Printf.sprintf
          "an already %s list costs O(1) per element (%.1f comparisons, %.0f words at \
@@ -1280,29 +1149,21 @@ let test_splay_sort () =
          c1
          w1
          small)
-      fits;
-    (* Guarded, as every large size here is: a quadratic sort takes minutes at n=100000. *)
-    if not fits
-    then (
-      Printf.printf
-        "  SKIP  an already %s list at n=%d -- it is not O(1) per element at n=%d\n"
-        name
-        large
-        small;
-      None)
-    else (
-      let c2, w2 = per_element (make large) in
-      check
-        (Printf.sprintf
-           "and stays O(1) per element a hundred times longer (%.1f comparisons, %.0f \
-            words at n=%d)"
-           c2
-           w2
-           large)
-        (c2 <= 4.0 && w2 <= 64.0 && c2 <= (1.5 *. c1) +. 0.5 && w2 <= (1.5 *. w1) +. 4.0);
-      Some c2)
+      (c1 <= 4.0 && w1 <= 64.0);
+    (* Only after the small size has passed, as with every large size here: a quadratic
+       sort takes minutes at n=100000. *)
+    let c2, w2 = per_element (make large) in
+    check
+      (Printf.sprintf
+         "and stays O(1) per element a hundred times longer (%.1f comparisons, %.0f \
+          words at n=%d)"
+         c2
+         w2
+         large)
+      (c2 <= 4.0 && w2 <= 64.0 && c2 <= (1.5 *. c1) +. 0.5 && w2 <= (1.5 *. w1) +. 4.0);
+    c2
   in
-  let sorted_large = linear "sorted" upto in
+  let c_sorted = linear "sorted" upto in
   ignore (linear "reverse-sorted" (fun n -> List.init n (fun i -> n - i)));
   (* Random input: O(log n) per element, no better, and it must really cost more than the
      sorted case does, or the checks above have measured nothing. *)
@@ -1315,16 +1176,13 @@ let test_splay_sort () =
        w
        large)
     (c <= comparison_bound large && w <= word_bound large);
-  match sorted_large with
-  | None -> ()
-  | Some c_sorted ->
-    check
-      (Printf.sprintf
-         "the sorted list really is the cheap case (%.1f comparisons per element against \
-          %.1f)"
-         c_sorted
-         c)
-      (c >= 2.0 *. c_sorted)
+  check
+    (Printf.sprintf
+       "the sorted list really is the cheap case (%.1f comparisons per element against \
+        %.1f)"
+       c_sorted
+       c)
+    (c >= 2.0 *. c_sorted)
 ;;
 
 (* ------------------------------------------------------- pairing heaps (5.5) *)
@@ -1520,8 +1378,6 @@ module Pairing_contract = Heap_tests (Pairing)
 module Pairing_checks = Pairing_tests (Pairing)
 
 let test_pairing () =
-  section "PairingHeap (5.5)";
-  let before = !failures in
   Pairing_contract.run_contract "PairingHeap";
   (* Two heaps of this chapter, two shapes in memory, one behaviour. *)
   Random.init 20260930;
@@ -1536,14 +1392,10 @@ let test_pairing () =
     "PairingHeap and SplayHeap drain identically, 300 random lists"
     ~expect:0
     ~actual:!disagree;
-  if !failures > before
-  then
-    Printf.printf "  SKIP  PairingHeap: cost checks -- the contract above does not hold\n"
-  else if Pairing_checks.run_amortised "PairingHeap"
-  then Pairing_checks.run_worst_case "PairingHeap"
-  else
-    Printf.printf
-      "  SKIP  PairingHeap: worst-case checks -- they build a heap of 100000 elements\n"
+  (* Costs only once the contract holds, and the worst case, on a heap of 100000 elements,
+     only once the sequences do. *)
+  Pairing_checks.run_amortised "PairingHeap";
+  Pairing_checks.run_worst_case "PairingHeap"
 ;;
 
 (* ------------------------------------------ Exercise 5.8(a): to_binary, the encoding *)
@@ -1569,7 +1421,6 @@ let test_pairing () =
 module Conv = Convert (Counting_int)
 
 let test_to_binary () =
-  section "to_binary (Exercise 5.8a)";
   let open Conv in
   let rec show = function
     | E2 -> "E"
@@ -1702,8 +1553,6 @@ module Binary_pairing_contract = Heap_tests (Binary_pairing)
 module Binary_pairing_checks = Pairing_tests (Binary_pairing)
 
 let test_binary_pairing () =
-  section "BinaryPairingHeap (Exercise 5.8b)";
-  let before = !failures in
   Binary_pairing_contract.run_contract "BinaryPairingHeap";
   (* The same heap in two shapes. *)
   Random.init 20261001;
@@ -1719,11 +1568,18 @@ let test_binary_pairing () =
     "BinaryPairingHeap and PairingHeap drain identically, 300 random lists"
     ~expect:0
     ~actual:!disagree;
-  let contract_holds = !failures = before in
-  (* And the same merges: the two functors build their sequences from the same seeds, so
-     pairing them up compares like with like. This pins the transcription to the multiway
-     version's merge order and tie-breaking; a heap that is correct but merges in another
-     order is reported here, with the two counts. *)
+  (* Costs only once the contract holds, and the worst case, on a heap of 100000 elements,
+     only once the sequences do. *)
+  Binary_pairing_checks.run_amortised "BinaryPairingHeap";
+  Binary_pairing_checks.run_worst_case "BinaryPairingHeap"
+;;
+
+(* And the same merges: the two functors build their sequences from the same seeds, so
+   pairing them up compares like with like. This pins the transcription to the multiway
+   version's merge order and tie-breaking; a heap that is correct but merges in another
+   order is reported here, with the two counts. It is a case of its own because the costs
+   above do not depend on it: a heap that merges in another order still owes them. *)
+let test_binary_pairing_merges () =
   let bad =
     List.filter_map
       (fun ((name, _, multiway), (_, _, binary)) ->
@@ -1743,39 +1599,21 @@ let test_binary_pairing () =
             then Printf.sprintf "%s: raised" name
             else Printf.sprintf "%s: %d against %d" name b m)
           bad))
-    (bad = []);
-  if not contract_holds
-  then
-    Printf.printf
-      "  SKIP  BinaryPairingHeap: cost checks -- the contract above does not hold\n"
-  else if Binary_pairing_checks.run_amortised "BinaryPairingHeap"
-  then Binary_pairing_checks.run_worst_case "BinaryPairingHeap"
-  else
-    Printf.printf
-      "  SKIP  BinaryPairingHeap: worst-case checks -- they build a heap of 100000 \
-       elements\n"
+    (bad = [])
 ;;
 
-(* ------------------------------------------------------------------- runner *)
+(* -------------------------------------------------------------------- cases *)
 
-(* A regression can make a function raise where the test did not expect it. Report that as
-   a failure and carry on to the remaining sections rather than hiding them. *)
-let run name f =
-  match f () with
-  | () -> ()
-  | exception e ->
-    incr failures;
-    Printf.printf "  FAIL  %s: unexpected exception %s\n" name (Printexc.to_string e)
-;;
-
-let () =
-  run "BatchedQueue" test_batched;
-  run "Deque" test_deque;
-  run "SplayHeap" test_splay;
-  run "SplayHeap.sort" test_splay_sort;
-  run "PairingHeap" test_pairing;
-  run "to_binary" test_to_binary;
-  run "BinaryPairingHeap" test_binary_pairing;
-  Printf.printf "\n%d checks, %d failures\n\n" !checks !failures;
-  if !failures > 0 then exit 1
+let tests =
+  [ case "[Figure 5.2] BatchedQueue" test_batched
+  ; case "[Exercise 5.1] Deque" test_deque
+  ; case "[Exercise 5.4, 5.6] SplayHeap" test_splay
+  ; case "[Exercise 5.7] SplayHeap.sort" test_splay_sort
+  ; case "[Figure 5.6] PairingHeap" test_pairing
+  ; case "[Exercise 5.8 (a)] to_binary" test_to_binary
+  ; case "[Exercise 5.8 (b)] BinaryPairingHeap" test_binary_pairing
+  ; case
+      "[Exercise 5.8 (b)] BinaryPairingHeap: the multiway merges"
+      test_binary_pairing_merges
+  ]
 ;;

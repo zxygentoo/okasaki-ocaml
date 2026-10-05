@@ -1,8 +1,8 @@
 (* Tests for Chapter 7: the real-time queue of Figure 7.1 (section 7.2), the size
    functions of Exercise 7.2 on top of it, the scheduled binomial heap of Figure 7.2
-   (section 7.3) and the scheduled bottom-up mergesort of Figure 7.3 (section 7.4). Plain
-   OCaml, no test framework, matching the earlier chapters. The queue first; the heap and
-   the mergesort have their own preambles further down.
+   (section 7.3) and the scheduled bottom-up mergesort of Figure 7.3 (section 7.4).
+   Alcotest cases written in the checks of harness.ml, as in the earlier chapters. The
+   queue first; the heap and the mergesort have their own preambles further down.
 
    Figure 7.1 promises what no queue before it could: every operation in O(1) WORST-CASE
    time, and still when used persistently. Chapter 5 asserted amortised bounds over whole
@@ -31,67 +31,8 @@
    signature. *)
 
 open Okasaki.Ch7
+open Harness
 
-(* ------------------------------------------------------------------ harness *)
-
-let checks = ref 0
-let failures = ref 0
-
-let check name cond =
-  incr checks;
-  if not cond
-  then (
-    incr failures;
-    Printf.printf "  FAIL  %s\n" name)
-;;
-
-let check_eq name ~expect ~actual to_string =
-  incr checks;
-  if expect <> actual
-  then (
-    incr failures;
-    Printf.printf
-      "  FAIL  %s: expected %s, got %s\n"
-      name
-      (to_string expect)
-      (to_string actual))
-;;
-
-let check_int name ~expect ~actual = check_eq name ~expect ~actual string_of_int
-
-let check_raises name expected f =
-  incr checks;
-  match f () with
-  | _ ->
-    incr failures;
-    Printf.printf
-      "  FAIL  %s: expected %s, got no exception\n"
-      name
-      (Printexc.to_string expected)
-  | exception e ->
-    if e <> expected
-    then (
-      incr failures;
-      Printf.printf
-        "  FAIL  %s: expected %s, got %s\n"
-        name
-        (Printexc.to_string expected)
-        (Printexc.to_string e))
-;;
-
-(* Run [f], and hand its result to [k] if it returned one. An exception is that one
-   check's failure and not the section's, so the checks after it still get to run. *)
-let surviving name f k =
-  match f () with
-  | v -> k v
-  | exception e ->
-    incr checks;
-    incr failures;
-    Printf.printf "  FAIL  %s: raised %s\n" name (Printexc.to_string e)
-;;
-
-let section name = Printf.printf "%s\n" name
-let string_of_int_list l = "[" ^ String.concat ";" (List.map string_of_int l) ^ "]"
 let upto n = List.init n Fun.id
 
 (* ---------------------------------------------------------------- the clock *)
@@ -136,17 +77,9 @@ module Queue_tests (Q : QUEUE) = struct
   let run_contract name =
     let t label = Printf.sprintf "%s: %s" name label in
     let eq label expect q =
-      surviving
-        (t label)
-        (fun () -> drain q)
-        (fun actual -> check_eq (t label) ~expect ~actual string_of_int_list)
+      check_eq (t label) ~expect ~actual:(drain q) string_of_int_list
     in
-    let head_is label expect q =
-      surviving
-        (t label)
-        (fun () -> Q.head (q ()))
-        (fun actual -> check_int (t label) ~expect ~actual)
-    in
+    let head_is label expect q = check_int (t label) ~expect ~actual:(Q.head q) in
     check (t "empty is empty") (Q.is_empty Q.empty);
     check (t "a singleton is not empty") (not (Q.is_empty (Q.snoc Q.empty 1)));
     check_raises (t "head on empty raises") (Failure "head: empty queue") (fun () ->
@@ -158,23 +91,21 @@ module Queue_tests (Q : QUEUE) = struct
        reports empty, and raises on head, with elements still in it. In this queue that is
        what a snoc or a tail that skips the schedule does: the rotation is triggered by
        the schedule running out, and nothing else moves the rear to the front. *)
-    head_is "snoc onto the empty queue makes its element the head" 7 (fun () ->
-      Q.snoc Q.empty 7);
-    head_is "tail past the last front element moves on to the rear" 2 (fun () ->
-      Q.tail (of_list [ 1; 2; 3 ]));
+    head_is "snoc onto the empty queue makes its element the head" 7 (Q.snoc Q.empty 7);
+    head_is
+      "tail past the last front element moves on to the rear"
+      2
+      (Q.tail (of_list [ 1; 2; 3 ]));
     eq "first in, first out" [ 1; 2; 3; 4; 5; 6; 7 ] (of_list [ 1; 2; 3; 4; 5; 6; 7 ]);
     eq "equal elements are all kept, in order" [ 7; 7; 1; 7 ] (of_list [ 7; 7; 1; 7 ]);
     (* Emptiness reached by draining must be as good as the [empty] it started from. *)
-    surviving
-      (t "a queue can be drained to nothing")
-      (fun () -> Q.tail (Q.tail (of_list [ 1; 2 ])))
-      (fun drained ->
-        check (t "a queue drained to nothing is empty") (Q.is_empty drained);
-        check_raises
-          (t "head on a drained queue raises")
-          (Failure "head: empty queue")
-          (fun () -> Q.head drained);
-        eq "a drained queue can be refilled" [ 8; 9 ] (Q.snoc (Q.snoc drained 8) 9));
+    let drained = Q.tail (Q.tail (of_list [ 1; 2 ])) in
+    check (t "a queue drained to nothing is empty") (Q.is_empty drained);
+    check_raises
+      (t "head on a drained queue raises")
+      (Failure "head: empty queue")
+      (fun () -> Q.head drained);
+    eq "a drained queue can be refilled" [ 8; 9 ] (Q.snoc (Q.snoc drained 8) 9);
     (* Randomised, against the obvious model: a list, snoc at the back, tail at the front.
        Checked after every operation and not only at the end, because a lost invariant
        shows up as a wrong is_empty or head long before it shows up in a drain. *)
@@ -224,19 +155,17 @@ module Queue_tests (Q : QUEUE) = struct
       ~actual:!bad_drain;
     (* Persistence: no operation may disturb its operand, so every version ever built
        stays correct, and two futures of one queue do not see each other. *)
-    surviving
-      (t "every earlier version can still be used")
-      (fun () ->
-        let versions = List.init 20 (fun i -> of_list (upto i)) in
-        List.iter
-          (fun v ->
-            ignore (Q.snoc v 99);
-            if not (Q.is_empty v) then ignore (Q.tail v))
-          versions;
-        List.mapi (fun i v -> if drain v = upto i then 0 else 1) versions
-        |> List.fold_left ( + ) 0)
-      (fun stale ->
-        check_int (t "every earlier version stays correct") ~expect:0 ~actual:stale);
+    let versions = List.init 20 (fun i -> of_list (upto i)) in
+    List.iter
+      (fun v ->
+        ignore (Q.snoc v 99);
+        if not (Q.is_empty v) then ignore (Q.tail v))
+      versions;
+    let stale =
+      List.mapi (fun i v -> if drain v = upto i then 0 else 1) versions
+      |> List.fold_left ( + ) 0
+    in
+    check_int (t "every earlier version stays correct") ~expect:0 ~actual:stale;
     let q = of_list [ 1; 2; 3 ] in
     let a = Q.snoc q 4
     and b = Q.snoc q 5 in
@@ -342,18 +271,16 @@ module Worst_case (Q : QUEUE) = struct
   ;;
 
   (* O(1) worst-case, asserted the only way a worst-case bound can be: on the dearest
-     single operation. True if every sequence stayed within the bound. The large size is
-     guarded on the small one, as the earlier chapters guard theirs: an operation that is
-     secretly linear makes a sequence quadratic, and at n = 100_000 that is not a failure
-     but a hang. *)
+     single operation. The small size comes first and guards the large one, as in the
+     earlier chapters: an operation that is secretly linear makes a sequence quadratic,
+     and at n = 100_000 that is not a failure but a hang. The check at n = 1000 ends the
+     case instead. *)
   let run_sequences name =
     let t label = Printf.sprintf "%s: %s" name label in
-    let ok = ref true in
     List.iter
       (fun (sequence, ops) ->
         let within label n =
           let i, op, c = dearest (ops n) in
-          let fine = c <= constant in
           check
             (t
                (Printf.sprintf
@@ -364,20 +291,11 @@ module Worst_case (Q : QUEUE) = struct
                   (describe op)
                   c
                   n))
-            fine;
-          fine
+            (c <= constant)
         in
-        if not (within "O(1) worst-case" 1_000)
-        then (
-          ok := false;
-          Printf.printf
-            "  SKIP  %s: %s at n=100000 -- it is not O(1) worst-case at n=1000\n"
-            name
-            sequence)
-        else if not (within "still O(1) worst-case, a hundred times longer" 100_000)
-        then ok := false)
-      sequences;
-    !ok
+        within "O(1) worst-case" 1_000;
+        within "still O(1) worst-case, a hundred times longer" 100_000)
+      sequences
   ;;
 
   (* -------------------------------------- versions: several futures of one queue *)
@@ -550,26 +468,25 @@ module Contract = Queue_tests (Q)
 module Costs = Worst_case (Q)
 
 (* What a queue costs means nothing until it behaves like one, and a queue that raises
-   half way through a sequence would take the rest of the section down with it. The sizes
-   of Exercise 7.2 wait on the contract too. *)
-let contract_holds = ref false
+   half way through a sequence proves nothing about its cost. The sizes of Exercise 7.2
+   wait on the contract too, in a case of their own. So the contract is run by whichever
+   of the two cases gets to it first, and a case in which it does not hold ends there. *)
+let contract_held = ref false
 
+let contract () =
+  if not !contract_held
+  then (
+    Contract.run_contract "RealTimeQueue";
+    contract_held := true)
+;;
+
+(* Persistence comes after the sequences, which are what show the queue to be real-time in
+   one thread. *)
 let test_real_time () =
-  section "RealTimeQueue (7.2)";
-  let before = !failures in
-  Contract.run_contract "RealTimeQueue";
-  contract_holds := !failures = before;
-  if not !contract_holds
-  then
-    Printf.printf
-      "  SKIP  RealTimeQueue: cost checks -- the contract above does not hold\n"
-  else (
-    test_guard ();
-    if Costs.run_sequences "RealTimeQueue"
-    then Costs.run_versions "RealTimeQueue, persistently"
-    else
-      Printf.printf
-        "  SKIP  RealTimeQueue: persistence checks -- not real-time in one thread\n")
+  contract ();
+  test_guard ();
+  Costs.run_sequences "RealTimeQueue";
+  Costs.run_versions "RealTimeQueue, persistently"
 ;;
 
 (* ------------------------------------------------------ sizes (Exercise 7.2) *)
@@ -607,12 +524,8 @@ module Size_tests (Q : QUEUE_WITH_SIZES) = struct
   let run_sizes name =
     let t label = Printf.sprintf "%s: %s" name label in
     let both label expect q =
-      surviving
-        (t label)
-        (fun () -> Q.size_sr q, Q.size_fr q)
-        (fun (sr, fr) ->
-          check_int (t (label ^ ", from s and r")) ~expect ~actual:sr;
-          check_int (t (label ^ ", from f and r")) ~expect ~actual:fr)
+      check_int (t (label ^ ", from s and r")) ~expect ~actual:(Q.size_sr q);
+      check_int (t (label ^ ", from f and r")) ~expect ~actual:(Q.size_fr q)
     in
     both "empty has size 0" 0 Q.empty;
     both "a singleton has size 1" 1 (Q.snoc Q.empty 1);
@@ -628,34 +541,30 @@ module Size_tests (Q : QUEUE_WITH_SIZES) = struct
       and fr = Q.size_fr q in
       if sr <> expect || fr <> expect then wrong := (step, expect, sr, fr) :: !wrong
     in
-    surviving
-      (t "sizes along a build and a drain")
-      (fun () ->
-        let q = ref Q.empty in
-        for i = 1 to n do
-          q := Q.snoc !q i;
-          at ("snoc " ^ string_of_int i) i !q
-        done;
-        for i = 1 to n do
-          q := Q.tail !q;
-          at ("tail " ^ string_of_int i) (n - i) !q
-        done)
-      (fun () ->
-        check
-          (t
-             (Printf.sprintf
-                "both sizes are right after every step of a build and a drain of %d%s"
-                n
-                (match List.rev !wrong with
-                 | [] -> ""
-                 | (step, e, sr, fr) :: _ ->
-                   Printf.sprintf
-                     " -- after %s expected %d, got %d from s and r, %d from f and r"
-                     step
-                     e
-                     sr
-                     fr)))
-          (!wrong = []));
+    let q = ref Q.empty in
+    for i = 1 to n do
+      q := Q.snoc !q i;
+      at ("snoc " ^ string_of_int i) i !q
+    done;
+    for i = 1 to n do
+      q := Q.tail !q;
+      at ("tail " ^ string_of_int i) (n - i) !q
+    done;
+    check
+      (t
+         (Printf.sprintf
+            "both sizes are right after every step of a build and a drain of %d%s"
+            n
+            (match List.rev !wrong with
+             | [] -> ""
+             | (step, e, sr, fr) :: _ ->
+               Printf.sprintf
+                 " -- after %s expected %d, got %d from s and r, %d from f and r"
+                 step
+                 e
+                 sr
+                 fr)))
+      (!wrong = []);
     (* Random runs against the list model, as in the contract, both sizes checked after
        every operation. *)
     Random.init 20260924;
@@ -765,27 +674,20 @@ module Size_tests (Q : QUEUE_WITH_SIZES) = struct
             w_total))
       (u_total > w_total);
     (* And no harm done: the queue that was counted still behaves. *)
-    surviving
+    check_eq
       (t "the counted queue still drains in order")
-      (fun () -> drain walked')
-      (fun actual ->
-        check_eq
-          (t "the counted queue still drains in order")
-          ~expect:(upto n @ List.init n (fun i -> i + 1))
-          ~actual
-          string_of_int_list)
+      ~expect:(upto n @ List.init n (fun i -> i + 1))
+      ~actual:(drain walked')
+      string_of_int_list
   ;;
 end
 
 module Sizes = Size_tests (Q)
 
 let test_sizes () =
-  section "Exercise 7.2";
-  if not !contract_holds
-  then Printf.printf "  SKIP  Exercise 7.2 -- the contract does not hold\n"
-  else (
-    Sizes.run_sizes "Exercise 7.2";
-    Sizes.run_forcing "Exercise 7.2")
+  contract ();
+  Sizes.run_sizes "Exercise 7.2";
+  Sizes.run_forcing "Exercise 7.2"
 ;;
 
 (* ------------------------------------------------ ScheduledBinomialHeap (7.3) *)
@@ -931,10 +833,7 @@ module Heap_tests (H : HEAP with type Element.t = int) = struct
   let run_contract name =
     let t label = Printf.sprintf "%s: %s" name label in
     let eq label expect h =
-      surviving
-        (t label)
-        (fun () -> drain h)
-        (fun actual -> check_eq (t label) ~expect ~actual string_of_int_list)
+      check_eq (t label) ~expect ~actual:(drain h) string_of_int_list
     in
     check (t "empty is empty") (H.is_empty H.empty);
     check (t "a singleton is not empty") (not (H.is_empty (H.insert 1 H.empty)));
@@ -961,16 +860,14 @@ module Heap_tests (H : HEAP with type Element.t = int) = struct
       [ 1; 1; 2; 3; 4; 5 ]
       (of_list [ 1; 2; 3; 4; 5; 1 ]);
     eq "duplicates are all kept" [ 1; 1; 1; 2; 2; 3 ] (of_list [ 2; 1; 3; 1; 2; 1 ]);
-    surviving
+    check_int
       (t "the minimum is found after ascending inserts")
-      (fun () -> H.find_min (of_list [ 1; 2; 3 ]))
-      (fun m ->
-        check_int (t "the minimum is found after ascending inserts") ~expect:1 ~actual:m);
-    surviving
+      ~expect:1
+      ~actual:(H.find_min (of_list [ 1; 2; 3 ]));
+    check_int
       (t "the minimum is found after descending inserts")
-      (fun () -> H.find_min (of_list [ 3; 2; 1 ]))
-      (fun m ->
-        check_int (t "the minimum is found after descending inserts") ~expect:1 ~actual:m);
+      ~expect:1
+      ~actual:(H.find_min (of_list [ 3; 2; 1 ]));
     eq
       "merge is multiset union"
       [ 1; 2; 3; 4; 5; 6 ]
@@ -1139,11 +1036,9 @@ module Heap_tests (H : HEAP with type Element.t = int) = struct
   ;;
 
   (* Worst case, asserted the only way a worst-case bound can be: on the dearest single
-     operation. True if every sequence stayed within both budgets. The large size is
-     guarded on the small one, as before. *)
+     operation. The small size first, guarding the large one, as before. *)
   let run_sequences name =
     let t label = Printf.sprintf "%s: %s" name label in
-    let ok = ref true in
     List.iter
       (fun (sequence, ops) ->
         let within label n =
@@ -1154,20 +1049,11 @@ module Heap_tests (H : HEAP with type Element.t = int) = struct
             (fine insert);
           check
             (t (Printf.sprintf "%s, %s at n=%d: %s" sequence label n (show_dear query)))
-            (fine query);
-          fine insert && fine query
+            (fine query)
         in
-        if not (within "O(1) and O(log n) worst-case" 1_000)
-        then (
-          ok := false;
-          Printf.printf
-            "  SKIP  %s: %s at n=100000 -- over budget at n=1000\n"
-            name
-            sequence)
-        else if not (within "still so, a hundred times longer" 100_000)
-        then ok := false)
-      sequences;
-    !ok
+        within "O(1) and O(log n) worst-case" 1_000;
+        within "still so, a hundred times longer" 100_000)
+      sequences
   ;;
 
   (* Merges: n singletons merged pairwise into one heap, every merge on the clocks, and
@@ -1317,27 +1203,16 @@ let test_heap_guard () =
 module Scheduled = ScheduledBinomialHeap (Counting_int) (Okasaki.Ch4.Stream)
 module Heap_checks = Heap_tests (Scheduled)
 
+(* Costs only once the contract and the structure hold, and merges and persistence only
+   once the budgets hold in one thread. *)
 let test_scheduled_binomial () =
-  section "ScheduledBinomialHeap (7.3)";
-  let before = !failures in
   Heap_checks.run_contract "ScheduledBinomialHeap";
   Heap_checks.run_structure "ScheduledBinomialHeap";
-  if !failures > before
-  then
-    Printf.printf
-      "  SKIP  ScheduledBinomialHeap: cost checks -- the contract or the structure above \
-       does not hold\n"
-  else (
-    test_heap_guard ();
-    if Heap_checks.run_sequences "ScheduledBinomialHeap"
-    then (
-      Heap_checks.run_merges "ScheduledBinomialHeap" 1_000;
-      Heap_checks.run_merges "ScheduledBinomialHeap" 100_000;
-      Heap_checks.run_versions "ScheduledBinomialHeap, persistently")
-    else
-      Printf.printf
-        "  SKIP  ScheduledBinomialHeap: merge and persistence checks -- over budget in \
-         one thread\n")
+  test_heap_guard ();
+  Heap_checks.run_sequences "ScheduledBinomialHeap";
+  Heap_checks.run_merges "ScheduledBinomialHeap" 1_000;
+  Heap_checks.run_merges "ScheduledBinomialHeap" 100_000;
+  Heap_checks.run_versions "ScheduledBinomialHeap, persistently"
 ;;
 
 (* --------------------------------------------- ScheduledBottomUpMergeSort (7.4) *)
@@ -1408,10 +1283,7 @@ module Sortable_tests (S : SORTABLE with type Element.t = int) = struct
   let run_contract name =
     let t label = Printf.sprintf "%s: %s" name label in
     let eq label expect s =
-      surviving
-        (t label)
-        (fun () -> S.sort s)
-        (fun actual -> check_eq (t label) ~expect ~actual string_of_int_list)
+      check_eq (t label) ~expect ~actual:(S.sort s) string_of_int_list
     in
     eq "sort of empty is empty" [] S.empty;
     eq "sort of a singleton" [ 5 ] (of_list [ 5 ]);
@@ -1509,11 +1381,10 @@ module Sortable_tests (S : SORTABLE with type Element.t = int) = struct
     ]
   ;;
 
-  (* Worst case, asserted on the dearest single operation. True if every sequence stayed
-     within both budgets. The large size is guarded on the small one, as before. *)
+  (* Worst case, asserted on the dearest single operation. The small size first, guarding
+     the large one, as before. *)
   let run_sequences name =
     let t label = Printf.sprintf "%s: %s" name label in
-    let ok = ref true in
     List.iter
       (fun (sequence, (small, large), ops) ->
         let within label n =
@@ -1536,22 +1407,11 @@ module Sortable_tests (S : SORTABLE with type Element.t = int) = struct
                   label
                   n
                   (show_sortable_dear sort)))
-            (fine sort);
-          fine add && fine sort
+            (fine sort)
         in
-        if not (within "O(log n) adds and O(n) sorts, worst-case" small)
-        then (
-          ok := false;
-          Printf.printf
-            "  SKIP  %s: %s at n=%d -- over budget at n=%d\n"
-            name
-            sequence
-            large
-            small)
-        else if not (within "still so, longer" large)
-        then ok := false)
-      sequences;
-    !ok
+        within "O(log n) adds and O(n) sorts, worst-case" small;
+        within "still so, longer" large)
+      sequences
   ;;
 
   (* ---------------------------------- versions: several futures of one collection *)
@@ -1682,41 +1542,21 @@ let test_sortable_guard () =
 module Scheduled_sortable = ScheduledBottomUpMergeSort (Counting_int) (Okasaki.Ch4.Stream)
 module Sortable_checks = Sortable_tests (Scheduled_sortable)
 
+(* Costs only once the contract holds, and persistence only once the budgets hold in one
+   thread. *)
 let test_scheduled_mergesort () =
-  section "ScheduledBottomUpMergeSort (7.4)";
-  let before = !failures in
   Sortable_checks.run_contract "ScheduledBottomUpMergeSort";
-  if !failures > before
-  then
-    Printf.printf
-      "  SKIP  ScheduledBottomUpMergeSort: cost checks -- the contract above does not hold\n"
-  else (
-    test_sortable_guard ();
-    if Sortable_checks.run_sequences "ScheduledBottomUpMergeSort"
-    then Sortable_checks.run_versions "ScheduledBottomUpMergeSort, persistently"
-    else
-      Printf.printf
-        "  SKIP  ScheduledBottomUpMergeSort: persistence checks -- over budget in one \
-         thread\n")
+  test_sortable_guard ();
+  Sortable_checks.run_sequences "ScheduledBottomUpMergeSort";
+  Sortable_checks.run_versions "ScheduledBottomUpMergeSort, persistently"
 ;;
 
-(* ------------------------------------------------------------------- runner *)
+(* -------------------------------------------------------------------- cases *)
 
-(* A regression can make a function raise where the test did not expect it. Report that as
-   a failure and carry on rather than hiding it. *)
-let run name f =
-  match f () with
-  | () -> ()
-  | exception e ->
-    incr failures;
-    Printf.printf "  FAIL  %s: unexpected exception %s\n" name (Printexc.to_string e)
-;;
-
-let () =
-  run "RealTimeQueue" test_real_time;
-  run "Exercise 7.2" test_sizes;
-  run "ScheduledBinomialHeap" test_scheduled_binomial;
-  run "ScheduledBottomUpMergeSort" test_scheduled_mergesort;
-  Printf.printf "\n%d checks, %d failures\n\n" !checks !failures;
-  if !failures > 0 then exit 1
+let tests =
+  [ case "[Figure 7.1] RealTimeQueue" test_real_time
+  ; case "[Exercise 7.2] size from s and r" test_sizes
+  ; case "[Figure 7.2] ScheduledBinomialHeap" test_scheduled_binomial
+  ; case "[Figure 7.3] ScheduledBottomUpMergeSort" test_scheduled_mergesort
+  ]
 ;;
