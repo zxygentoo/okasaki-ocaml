@@ -35,75 +35,11 @@
 open Okasaki.Ch6
 open Harness
 
-let upto n = List.init n Fun.id
-
 (* ---------------------------------------------------------- the two clocks *)
 
-(* Figure 4.1's streams, with ++ and reverse counting their steps: one per cell of the
-   first stream that ++ copies, one per cell that reverse moves. (take and drop are here
-   only to satisfy STREAM; the queue never calls them.) This instruments the queue's
-   rotation policy and nothing else: the streams themselves are test_ch4's business. *)
-module Counting_stream = struct
-  type 'a stream_cell =
-    | Nil
-    | Cons of 'a * 'a stream
-
-  and 'a stream = 'a stream_cell lazy_t
-
-  let steps = ref 0
-
-  let rec ( ++ ) s1 s2 =
-    lazy
-      (match s1 with
-       | (lazy Nil) -> Lazy.force s2
-       | (lazy (Cons (x, s))) ->
-         incr steps;
-         Cons (x, s ++ s2))
-  ;;
-
-  let rec take n s =
-    lazy
-      (match n, s with
-       | 0, _ -> Nil
-       | _, (lazy Nil) -> Nil
-       | _, (lazy (Cons (x, s'))) -> Cons (x, take (n - 1) s'))
-  ;;
-
-  let drop n s =
-    let rec aux n (lazy c) =
-      match n, c with
-      | 0, _ -> c
-      | _, Nil -> Nil
-      | _, Cons (_, s') -> aux (n - 1) s'
-    in
-    lazy (aux n s)
-  ;;
-
-  let reverse s =
-    let rec aux lhs rhs =
-      match lhs with
-      | (lazy Nil) -> rhs
-      | (lazy (Cons (x, s))) ->
-        incr steps;
-        aux s (Cons (x, lazy rhs))
-    in
-    lazy (aux s Nil)
-  ;;
-end
-
-(* A clock is read before and after a run, and the difference is what the run cost. Words
-   are allocation, as in test_ch5; steps are the counting stream's. Sys.opaque_identity
-   stops the optimiser discarding a result and with it the allocation being measured.
-   Both clocks count in integers: a clock returning a float would box its reading, and
-   the two words of that box would land inside the measurement. *)
-let words () = int_of_float (Gc.minor_words ())
-let steps () = !Counting_stream.steps
-
-let cost clock f =
-  let before = clock () in
-  let r = Sys.opaque_identity (f ()) in
-  r, float_of_int (clock () - before)
-;;
+(* Words, and the steps of harness.ml's Counting_stream, Figure 4.1's streams with every
+   step counted. It instruments the queue's rotation policy and nothing else: the streams
+   themselves are test_ch4's business. *)
 
 (* What a run did, for its budget. *)
 type ops =
@@ -155,7 +91,7 @@ let amortised_words =
 let theorem_6_1 =
   { units = "steps"
   ; claim = "within Theorem 6.1's budget"
-  ; clock = steps
+  ; clock = stream_steps
   ; budget = (fun ops -> float_of_int (ops.snocs + (2 * ops.tails)))
   ; show =
       (fun ops c -> Printf.sprintf "%.0f steps, budget %d" c (ops.snocs + (2 * ops.tails)))
@@ -166,113 +102,7 @@ let theorem_6_1 =
 (* ---------------------------------------------------- shared queue contract *)
 
 module Queue_tests (Q : QUEUE) = struct
-  let of_list xs = List.fold_left Q.snoc Q.empty xs
-
-  (* head/tail to exhaustion. That this returns the elements in the order they were
-     snoc'ed is the whole behavioural specification of a queue. *)
-  let drain q =
-    let rec go acc q =
-      if Q.is_empty q then List.rev acc else go (Q.head q :: acc) (Q.tail q)
-    in
-    go [] q
-  ;;
-
-  let run_contract name =
-    let t label = Printf.sprintf "%s: %s" name label in
-    let eq label expect q =
-      check_eq (t label) ~expect ~actual:(drain q) string_of_int_list
-    in
-    let head_is label expect q = check_int (t label) ~expect ~actual:(Q.head q) in
-    check (t "empty is empty") (Q.is_empty Q.empty);
-    check (t "a singleton is not empty") (not (Q.is_empty (Q.snoc Q.empty 1)));
-    check_raises (t "head on empty raises") (Failure "head: empty queue") (fun () ->
-      Q.head Q.empty);
-    check_raises (t "tail on empty raises") (Failure "tail: empty queue") (fun () ->
-      ignore (Q.is_empty (Q.tail Q.empty)));
-    (* The two places the invariant can be lost. is_empty and head look at the front
-       alone, so a queue that lets its front run dry while elements wait in the rear
-       reports empty, and raises on head, with elements still in it. *)
-    head_is "snoc onto the empty queue makes its element the head" 7 (Q.snoc Q.empty 7);
-    head_is
-      "tail past the last front element moves on to the rear"
-      2
-      (Q.tail (of_list [ 1; 2; 3 ]));
-    eq "first in, first out" [ 1; 2; 3; 4; 5; 6; 7 ] (of_list [ 1; 2; 3; 4; 5; 6; 7 ]);
-    eq "equal elements are all kept, in order" [ 7; 7; 1; 7 ] (of_list [ 7; 7; 1; 7 ]);
-    (* Emptiness reached by draining must be as good as the [empty] it started from. *)
-    let drained = Q.tail (Q.tail (of_list [ 1; 2 ])) in
-    check (t "a queue drained to nothing is empty") (Q.is_empty drained);
-    check_raises
-      (t "head on a drained queue raises")
-      (Failure "head: empty queue")
-      (fun () -> Q.head drained);
-    eq "a drained queue can be refilled" [ 8; 9 ] (Q.snoc (Q.snoc drained 8) 9);
-    (* Randomised, against the obvious model: a list, snoc at the back, tail at the front.
-       Checked after every operation and not only at the end, because a lost invariant
-       shows up as a wrong is_empty or head long before it shows up in a drain. *)
-    Random.init 20260921;
-    let bad_empty = ref 0
-    and bad_head = ref 0
-    and bad_drain = ref 0
-    and raised = ref 0 in
-    for _ = 0 to 299 do
-      let q = ref Q.empty
-      and model = ref [] in
-      (* The model is never asked for the head or tail of nothing, so any Failure in here
-         is the queue refusing an operation it owes. *)
-      try
-        for i = 0 to 59 do
-          if !model = [] || Random.int 3 > 0
-          then (
-            q := Q.snoc !q i;
-            model := !model @ [ i ])
-          else (
-            q := Q.tail !q;
-            model := List.tl !model);
-          if Q.is_empty !q <> (!model = []) then incr bad_empty;
-          match !model with
-          | x :: _ when Q.head !q <> x -> incr bad_head
-          | _ -> ()
-        done;
-        if drain !q <> !model then incr bad_drain
-      with
-      | Failure _ -> incr raised
-    done;
-    check_int
-      (t "no operation raises on a non-empty queue, 300 random runs")
-      ~expect:0
-      ~actual:!raised;
-    check_int
-      (t "is_empty agrees with a list model, 300 random runs")
-      ~expect:0
-      ~actual:!bad_empty;
-    check_int
-      (t "head agrees with a list model, 300 random runs")
-      ~expect:0
-      ~actual:!bad_head;
-    check_int
-      (t "drain agrees with a list model, 300 random runs")
-      ~expect:0
-      ~actual:!bad_drain;
-    (* Persistence: no operation may disturb its operand, so every version ever built
-       stays correct, and two futures of one queue do not see each other. *)
-    let versions = List.init 20 (fun i -> of_list (upto i)) in
-    List.iter
-      (fun v ->
-        ignore (Q.snoc v 99);
-        if not (Q.is_empty v) then ignore (Q.tail v))
-      versions;
-    let stale =
-      List.mapi (fun i v -> if drain v = upto i then 0 else 1) versions
-      |> List.fold_left ( + ) 0
-    in
-    check_int (t "every earlier version stays correct") ~expect:0 ~actual:stale;
-    let q = of_list [ 1; 2; 3 ] in
-    let a = Q.snoc q 4
-    and b = Q.snoc q 5 in
-    eq "one future of a shared queue" [ 1; 2; 3; 4 ] a;
-    eq "does not leak into the other" [ 1; 2; 3; 5 ] b
-  ;;
+  include Queues.Contract (Q)
 
   (* ---------------------------------------- sequences: one thread, from empty *)
 
@@ -366,7 +196,7 @@ module Queue_tests (Q : QUEUE) = struct
     List.iter
       (fun (sequence, driver) ->
         let within label n =
-          let ops, c = cost bound.clock (driver n) in
+          let ops, c = cost_on bound.clock (driver n) in
           check
             (t (Printf.sprintf "%s, %s: %s at n=%d" sequence label (bound.show ops c) n))
             (c <= bound.budget ops)
@@ -384,7 +214,7 @@ module Queue_tests (Q : QUEUE) = struct
     let q = ref (of_list (upto n))
     and dear = ref (0, 0.0) in
     for i = 1 to n do
-      let q', c = cost clock (fun () -> Q.tail !q) in
+      let q', c = cost_on clock (fun () -> Q.tail !q) in
       if c > snd !dear then dear := i, c;
       q := q'
     done;
@@ -459,7 +289,7 @@ module Queue_tests (Q : QUEUE) = struct
             then (
               f q;
               let _, c =
-                cost bound.clock (fun () ->
+                cost_on bound.clock (fun () ->
                   for _ = 1 to d do
                     f q
                   done)
@@ -514,9 +344,9 @@ module Queue_tests (Q : QUEUE) = struct
        they each force the same suspension, so the reverse is executed only once." *)
     let d = 10_000 in
     let v = version_before_the_dear_tail ~n ~k in
-    let _, first = cost bound.clock (fun () -> Q.tail v) in
+    let _, first = cost_on bound.clock (fun () -> Q.tail v) in
     let _, rest =
-      cost bound.clock (fun () ->
+      cost_on bound.clock (fun () ->
         for _ = 2 to d do
           ignore (Sys.opaque_identity (Q.tail v))
         done)
@@ -535,7 +365,7 @@ module Queue_tests (Q : QUEUE) = struct
        the bound holds anyway, because the operations were repeated along with the work. *)
     within
       "the whole drain repeated 10 times from one queue"
-      (cost bound.clock (branch_at_the_start ~n ~d:10));
+      (cost_on bound.clock (branch_at_the_start ~n ~d:10));
     (* Every branch point of a drain, with the shortest futures. Rotating early is what
        makes these cheap: a rotation is never forced by the operation after it, unless it
        was tiny. *)
@@ -567,7 +397,7 @@ module Queue_tests (Q : QUEUE) = struct
       (short_runs bound build ~size:Fun.id ~d:20);
     within
       "a random trace of 100000 operations, each on a random earlier version"
-      (cost bound.clock (random_trace 100_000))
+      (cost_on bound.clock (random_trace 100_000))
   ;;
 end
 
@@ -592,7 +422,7 @@ let test_snoc_worst_case () =
     let q = ref empty
     and worst = ref 0.0 in
     for i = 1 to n do
-      let q', c = cost clock (fun () -> snoc !q i) in
+      let q', c = cost_on clock (fun () -> snoc !q i) in
       q := q';
       worst := Float.max !worst c
     done;
@@ -605,7 +435,7 @@ let test_snoc_worst_case () =
        n
        w)
     (w <= constant);
-  let s = dearest steps Qc.snoc Qc.empty in
+  let s = dearest stream_steps Qc.snoc Qc.empty in
   check
     (Printf.sprintf "BankersQueue: snoc never executes a step (dearest %.0f)" s)
     (s = 0.0)
@@ -653,57 +483,6 @@ let test_theorem () =
    two thirds of it; a linear operation is out by a factor of fifty at the smallest size
    used. *)
 
-let comparisons = ref 0
-
-module Counting_int = struct
-  type t = int
-
-  let eq a b =
-    incr comparisons;
-    a = b
-  ;;
-
-  let lt a b =
-    incr comparisons;
-    a < b
-  ;;
-
-  let leq a b =
-    incr comparisons;
-    a <= b
-  ;;
-end
-
-(* Comparisons and words spent by [f]. *)
-let spent f =
-  comparisons := 0;
-  let before = Gc.minor_words () in
-  ignore (Sys.opaque_identity (f ()));
-  float_of_int !comparisons, Gc.minor_words () -. before
-;;
-
-let count_only f = int_of_float (fst (spent f))
-let log2 n = log (float_of_int n) /. log 2.
-
-(* floor (log2 n), for n >= 1: a binomial heap of n elements holds at most
-   floor (log2 (n + 1)) trees. *)
-let floor_log2 n =
-  let rec go acc n = if n <= 1 then acc else go (acc + 1) (n / 2) in
-  go 0 n
-;;
-
-let popcount n =
-  let rec go acc n = if n = 0 then acc else go (acc + (n land 1)) (n lsr 1) in
-  go 0 n
-;;
-
-(* An insert links once per trailing 1 bit: the carry chain of a binary increment, stopped
-   by the first hole. *)
-let trailing_ones n =
-  let rec go acc n = if n land 1 = 0 then acc else go (acc + 1) (n lsr 1) in
-  go 0 n
-;;
-
 (* What a heap trace did, and the largest heap it built. *)
 type heap_ops =
   { inserts : int
@@ -719,14 +498,6 @@ let budgets o =
   and i = float_of_int o.inserts
   and q = float_of_int o.queries in
   (2. *. i) +. ((2. +. (2. *. l)) *. q), (32. *. i) +. ((48. +. (16. *. l)) *. q)
-;;
-
-(* Comparisons and words spent by [f], which reports what it did. *)
-let counted f =
-  comparisons := 0;
-  let before = Gc.minor_words () in
-  let ops = Sys.opaque_identity (f ()) in
-  ops, (float_of_int !comparisons, Gc.minor_words () -. before)
 ;;
 
 (* How far a trace's cost is over its budgets: at most 1 when it is within them. *)
@@ -750,111 +521,11 @@ let within_budget name ((ops, (c, w)) as trace) =
 ;;
 
 module Heap_tests (H : HEAP with type Element.t = int) = struct
-  let of_list xs = List.fold_left (fun h x -> H.insert x h) H.empty xs
+  include Heaps.Contract (H)
 
   (* Run whatever the heap has put off. is_empty forces the list of trees, and nothing
      forces less. *)
   let force h = ignore (Sys.opaque_identity (H.is_empty h))
-
-  (* find_min/delete_min to exhaustion. That this comes out sorted is the whole
-     behavioural specification of a heap. *)
-  let drain h =
-    let rec go acc h =
-      if H.is_empty h then List.rev acc else go (H.find_min h :: acc) (H.delete_min h)
-    in
-    go [] h
-  ;;
-
-  let run_contract name =
-    let t label = Printf.sprintf "%s: %s" name label in
-    let eq label expect h =
-      check_eq (t label) ~expect ~actual:(drain h) string_of_int_list
-    in
-    check (t "empty is empty") (H.is_empty H.empty);
-    check (t "a singleton is not empty") (not (H.is_empty (H.insert 1 H.empty)));
-    check_raises
-      (t "find_min on empty raises")
-      (Failure "find_min: empty heap")
-      (fun () -> H.find_min H.empty);
-    (* Forced through is_empty: a delete_min that puts everything off, as Figure 6.2's
-       does, cannot raise before then. *)
-    check_raises
-      (t "delete_min on empty raises")
-      (Failure "delete_min: empty heap")
-      (fun () -> ignore (H.is_empty (H.delete_min H.empty)));
-    check_int (t "find_min of a singleton") ~expect:5 ~actual:(H.find_min (of_list [ 5 ]));
-    check
-      (t "delete_min of a singleton is empty")
-      (H.is_empty (H.delete_min (of_list [ 5 ])));
-    eq "drain is sorted" [ 1; 2; 3; 4; 5; 6; 7 ] (of_list [ 4; 2; 6; 1; 3; 5; 7 ]);
-    eq "a repeated element is kept when it is the root" [ 5; 5 ] (of_list [ 5; 5 ]);
-    eq
-      "a repeated element is kept when it is deep on the left"
-      [ 1; 2; 3; 4; 5; 5 ]
-      (of_list [ 5; 4; 3; 2; 1; 5 ]);
-    eq
-      "a repeated element is kept when it is deep on the right"
-      [ 1; 1; 2; 3; 4; 5 ]
-      (of_list [ 1; 2; 3; 4; 5; 1 ]);
-    eq "duplicates are all kept" [ 1; 1; 1; 2; 2; 3 ] (of_list [ 2; 1; 3; 1; 2; 1 ]);
-    check_int
-      (t "the minimum is found after ascending inserts")
-      ~expect:1
-      ~actual:(H.find_min (of_list [ 1; 2; 3 ]));
-    check_int
-      (t "the minimum is found after descending inserts")
-      ~expect:1
-      ~actual:(H.find_min (of_list [ 3; 2; 1 ]));
-    eq
-      "merge is multiset union"
-      [ 1; 2; 3; 4; 5; 6 ]
-      (H.merge (of_list [ 1; 4; 6 ]) (of_list [ 2; 3; 5 ]));
-    eq
-      "merge with an empty right operand"
-      [ 1; 2; 3 ]
-      (H.merge (of_list [ 3; 1; 2 ]) H.empty);
-    eq
-      "merge with an empty left operand"
-      [ 1; 2; 3 ]
-      (H.merge H.empty (of_list [ 3; 1; 2 ]));
-    check (t "merge of two empties is empty") (H.is_empty (H.merge H.empty H.empty));
-    (* Randomised, against List.sort as the reference, with few distinct values so that
-       equal elements are everywhere. *)
-    Random.init 20260922;
-    let bad_insert = ref 0
-    and bad_merge = ref 0
-    and raised = ref 0 in
-    for _ = 0 to 299 do
-      let xs = List.init (Random.int 40) (fun _ -> Random.int 25)
-      and ys = List.init (Random.int 40) (fun _ -> Random.int 25) in
-      match
-        if drain (of_list xs) <> List.sort compare xs then incr bad_insert;
-        if drain (H.merge (of_list xs) (of_list ys)) <> List.sort compare (xs @ ys)
-        then incr bad_merge
-      with
-      | () -> ()
-      | exception Failure _ -> incr raised
-    done;
-    check_int
-      (t "no operation raises on a non-empty heap, 300 random runs")
-      ~expect:0
-      ~actual:!raised;
-    check_int (t "insert then drain, 300 random lists") ~expect:0 ~actual:!bad_insert;
-    check_int (t "merge then drain, 300 random pairs") ~expect:0 ~actual:!bad_merge;
-    (* Persistence: no operation may disturb its operands. With suspensions in the
-       picture that includes forcing: a heap looked at through one future must read the
-       same through another. *)
-    let h = of_list [ 5; 3; 8; 1 ] in
-    let a = H.insert 0 h
-    and b = H.insert 4 h
-    and c = H.delete_min h
-    and d = H.merge h h in
-    eq "one future of a shared heap" [ 0; 1; 3; 5; 8 ] a;
-    eq "another" [ 1; 3; 4; 5; 8 ] b;
-    eq "a third" [ 3; 5; 8 ] c;
-    eq "a fourth" [ 1; 1; 3; 3; 5; 5; 8; 8 ] d;
-    eq "and the operand is untouched" [ 1; 3; 5; 8 ] h
-  ;;
 
   (* ------------------------------------------------------------- structure *)
 
@@ -868,39 +539,8 @@ module Heap_tests (H : HEAP with type Element.t = int) = struct
   (* test_ch3's binomial checks, with the forcing that this chapter makes necessary: an
      insert or a merge does its linking when its result is looked at, not before. *)
   let run_structure name =
+    run_tree_counts ~trees name;
     let t label = Printf.sprintf "%s: %s" name label in
-    let bad = ref 0
-    and first = ref "" in
-    Random.init 20260918;
-    for n = 1 to 120 do
-      let xs = List.init n (fun _ -> Random.int 1000) in
-      let h = ref (of_list xs)
-      and left = ref n in
-      while not (H.is_empty !h) do
-        if trees !h <> popcount !left
-        then (
-          incr bad;
-          if !first = ""
-          then
-            first
-            := Printf.sprintf
-                 " -- first at n=%d, %d left, %d trees, popcount %d"
-                 n
-                 !left
-                 (trees !h)
-                 (popcount !left));
-        h := H.delete_min !h;
-        decr left
-      done
-    done;
-    check
-      (t (Printf.sprintf "one tree per 1 bit of n, at every step of a drain%s" !first))
-      (!bad = 0);
-    let over = ref 0 in
-    List.iter
-      (fun n -> if trees (of_list (upto n)) > floor_log2 (n + 1) then incr over)
-      [ 1; 7; 8; 15; 16; 100; 1000; 10_000 ];
-    check_int (t "at most floor(log2 (n+1)) trees") ~expect:0 ~actual:!over;
     let bad_ins = ref 0 in
     List.iter
       (fun n ->
@@ -939,7 +579,7 @@ module Heap_tests (H : HEAP with type Element.t = int) = struct
     let k = 16 in
     let h = of_list (upto ((1 lsl k) - 1)) in
     force h;
-    let insert_c, insert_w = spent (fun () -> H.insert 0 h) in
+    let insert_c, insert_w = spent_only (fun () -> H.insert 0 h) in
     check_int
       (t "insert compares nothing when applied, on the all-ones heap")
       ~expect:0
@@ -947,7 +587,7 @@ module Heap_tests (H : HEAP with type Element.t = int) = struct
     check
       (t (Printf.sprintf "and allocates a suspension and nothing more (%.0f words)" insert_w))
       (insert_w <= 32.0);
-    let merge_c, merge_w = spent (fun () -> H.merge h h) in
+    let merge_c, merge_w = spent_only (fun () -> H.merge h h) in
     check_int
       (t "merge compares nothing when applied, on two all-ones heaps")
       ~expect:0
@@ -1043,7 +683,7 @@ module Heap_tests (H : HEAP with type Element.t = int) = struct
         let within label n =
           within_budget
             (t (Printf.sprintf "%s, %s at n=%d" sequence label n))
-            (counted (driver n))
+            (spent (driver n))
         in
         within "amortised, within budget" 1_000;
         within "still within budget a hundred times longer" 100_000)
@@ -1062,7 +702,7 @@ module Heap_tests (H : HEAP with type Element.t = int) = struct
     let trace label ~inserts ~queries f =
       within_budget
         (t label)
-        (counted (fun () ->
+        (spent (fun () ->
            for _ = 1 to d do
              ignore (Sys.opaque_identity (f ()))
            done;
@@ -1114,7 +754,7 @@ module Heap_tests (H : HEAP with type Element.t = int) = struct
         let worst = ref (0, (0.0, 0.0)) in
         for k = 0 to last do
           let (), cw =
-            counted (fun () ->
+            spent (fun () ->
               for _ = 1 to d do
                 f v.(k)
               done)
@@ -1161,7 +801,7 @@ module Heap_tests (H : HEAP with type Element.t = int) = struct
             "a random trace of %d operations, each on a random earlier version, all \
              forced"
             n))
-      (counted (fun () ->
+      (spent (fun () ->
          for i = 1 to n do
            let q = v.(from.(i - 1)) in
            v.(i)
@@ -1229,9 +869,10 @@ let test_physicists_worst_case () =
   and dearest_head = ref 0.0
   and dearest_is_empty = ref 0.0 in
   for _ = 1 to n do
-    dearest_head := Float.max !dearest_head (snd (cost words (fun () -> PhysicistsQueue.head !q)));
+    dearest_head
+    := Float.max !dearest_head (snd (cost (fun () -> PhysicistsQueue.head !q)));
     dearest_is_empty
-    := Float.max !dearest_is_empty (snd (cost words (fun () -> PhysicistsQueue.is_empty !q)));
+    := Float.max !dearest_is_empty (snd (cost (fun () -> PhysicistsQueue.is_empty !q)));
     q := PhysicistsQueue.tail !q
   done;
   check
@@ -1250,7 +891,7 @@ let test_physicists_worst_case () =
   let q = ref PhysicistsQueue.empty
   and dearest_snoc = ref 0.0 in
   for i = 1 to n do
-    let q', w = cost words (fun () -> PhysicistsQueue.snoc !q i) in
+    let q', w = cost (fun () -> PhysicistsQueue.snoc !q i) in
     dearest_snoc := Float.max !dearest_snoc w;
     q := q'
   done;
@@ -1341,47 +982,10 @@ module Sortable_tests
        val costs : sortable_costs
      end) =
 struct
-  let of_list xs = List.fold_left (fun s x -> S.add x s) S.empty xs
+  include Heaps.Sortable_contract (S)
 
   (* Run whatever the collection has put off: only a sort looks. *)
   let force s = ignore (Sys.opaque_identity (S.sort s))
-
-  let run_contract name =
-    let t label = Printf.sprintf "%s: %s" name label in
-    let eq label expect s =
-      check_eq (t label) ~expect ~actual:(S.sort s) string_of_int_list
-    in
-    eq "sort of empty is empty" [] S.empty;
-    eq "sort of a singleton" [ 5 ] (of_list [ 5 ]);
-    eq "sort sorts" [ 1; 2; 3; 4; 5; 6; 7 ] (of_list [ 4; 2; 6; 1; 3; 5; 7 ]);
-    eq "duplicates are all kept" [ 1; 1; 1; 2; 2; 3 ] (of_list [ 2; 1; 3; 1; 2; 1 ]);
-    eq "ascending input" (upto 20) (of_list (upto 20));
-    eq "descending input" (upto 20) (of_list (List.rev (upto 20)));
-    (* Sizes on either side of a power of two: every bit set, one bit set, and one more. *)
-    eq "31 elements" (upto 31) (of_list (List.rev (upto 31)));
-    eq "32 elements" (upto 32) (of_list (List.rev (upto 32)));
-    eq "33 elements" (upto 33) (of_list (List.rev (upto 33)));
-    (* Randomised, against List.sort, with few distinct values so that equal elements are
-       everywhere. *)
-    Random.init 20260925;
-    let bad = ref 0
-    and raised = ref 0 in
-    for _ = 0 to 299 do
-      let xs = List.init (Random.int 200) (fun _ -> Random.int 50) in
-      match S.sort (of_list xs) = List.sort compare xs with
-      | true -> ()
-      | false -> incr bad
-      | exception Failure _ -> incr raised
-    done;
-    check_int (t "no sort raises, 300 random lists") ~expect:0 ~actual:!raised;
-    check_int (t "sort agrees with List.sort, 300 random lists") ~expect:0 ~actual:!bad;
-    (* Persistence, in the section's own terms: xs' serves xs, x :: xs and y :: xs. *)
-    let xs' = of_list [ 5; 3; 8; 1; 9; 2 ] in
-    eq "xs" [ 1; 2; 3; 5; 8; 9 ] xs';
-    eq "x :: xs, from the same collection" [ 1; 2; 3; 4; 5; 8; 9 ] (S.add 4 xs');
-    eq "y :: xs, from the same collection" [ 0; 1; 2; 3; 5; 8; 9 ] (S.add 0 xs');
-    eq "xs again, untouched" [ 1; 2; 3; 5; 8; 9 ] xs'
-  ;;
 
   (* ----------------------------------- what an operation does when applied *)
 
@@ -1398,7 +1002,7 @@ struct
     (* The first sort of a fresh collection is the mergesort itself: every merge of two
        runs of m compares at least m times, and the segments of a collection with every
        bit set add up to at least (n/2)(log2 n - 2) of those, before the cleanup. *)
-    let first, _ = spent (fun () -> force c) in
+    let first, _ = spent_only (fun () -> force c) in
     check
       (t
          (Printf.sprintf
@@ -1406,7 +1010,7 @@ struct
             n
             first))
       (first >= float_of_int n /. 2. *. float_of_int (k - 2));
-    let add_c, add_w = spent (fun () -> S.add 0 c) in
+    let add_c, add_w = spent_only (fun () -> S.add 0 c) in
     check_int
       (t "add compares nothing when applied, on the collection with every bit set")
       ~expect:0
@@ -1419,14 +1023,14 @@ struct
             (C.costs.add_words n)))
       (add_w <= C.costs.add_words n);
     let c' = S.add 0 c in
-    let merged, _ = spent (fun () -> force c') in
+    let merged, _ = spent_only (fun () -> force c') in
     check
       (t
          (Printf.sprintf
             "the sort after it runs the merges the add put off, %.0f comparisons"
             merged))
       (merged >= float_of_int n /. 2.);
-    let again, again_w = spent (fun () -> force c') in
+    let again, again_w = spent_only (fun () -> force c') in
     check_int
       (t "a second sort of that collection compares nothing: one segment, nothing to merge")
       ~expect:0
@@ -1494,7 +1098,7 @@ struct
         let within label n =
           sortable_within C.costs
             (t (Printf.sprintf "%s, %s at n=%d" sequence label n))
-            (counted (driver n))
+            (spent (driver n))
         in
         within "amortised, within budget" 1_000;
         within "still within budget a hundred times longer" 100_000)
@@ -1509,12 +1113,14 @@ struct
     let n = (1 lsl k) - 1 in
     let c = of_list (upto n) in
     force c;
-    let d = 100 in
+    (* With c forced, every round of a trace does the same work, so d decides nothing but
+       how long the trace takes. *)
+    let d = 10 in
     let trace label ~adds ~sorts f =
       sortable_within
         C.costs
         (t label)
-        (counted (fun () ->
+        (spent (fun () ->
            for _ = 1 to d do
              ignore (Sys.opaque_identity (f ()))
            done;
@@ -1544,23 +1150,24 @@ struct
       ~sorts:1
       (fun () -> S.sort c);
     (* The shortest futures from every version of a build, one run from each unmeasured
-       first, since the version's own history is due for the merges it put off. *)
+       first, since the version's own history is due for the merges it put off. After that
+       every run from a version does the same work, so the runs are repeated d times only
+       where one is too cheap to be measured alone. *)
     let n = 2_000 in
     let v = Array.make (n + 1) S.empty in
     for i = 1 to n do
       v.(i) <- S.add i v.(i - 1)
     done;
-    let d = 20 in
     let opaque x = ignore (Sys.opaque_identity x) in
     List.iter
-      (fun (run, f, per) ->
+      (fun (run, f, per, d) ->
         let ops = { adds = d * per.adds; sorts = d * per.sorts; elements = n } in
         let worst = ref (0, (0.0, 0.0)) in
         Array.iteri
           (fun k q ->
             f q;
             let (), cw =
-              counted (fun () ->
+              spent (fun () ->
                 for _ = 1 to d do
                   f q
                 done)
@@ -1578,11 +1185,12 @@ struct
                 d
                 k))
           (ops, cw))
-      [ "sort", (fun q -> opaque (S.sort q)), { adds = 0; sorts = 1; elements = 0 }
+      [ "sort", (fun q -> opaque (S.sort q)), { adds = 0; sorts = 1; elements = 0 }, 2
       ; ( "sort of an add"
         , (fun q -> opaque (S.sort (S.add 0 q)))
-        , { adds = 1; sorts = 1; elements = 0 } )
-      ; "add", (fun q -> opaque (S.add 0 q)), { adds = 1; sorts = 0; elements = 0 }
+        , { adds = 1; sorts = 1; elements = 0 }
+        , 2 )
+      ; "add", (fun q -> opaque (S.add 0 q)), { adds = 1; sorts = 0; elements = 0 }, 20
       ];
     (* n operations, each on a version chosen at random among all built so far, three
        adds to every sort, and every version sorted at the end. *)
@@ -1602,7 +1210,7 @@ struct
             "a random trace of %d operations, each on a random earlier version, all \
              sorted"
             n))
-      (counted (fun () ->
+      (spent (fun () ->
          for i = 1 to n do
            let j = from.(i - 1) in
            if kind.(i - 1) = 3
@@ -1681,7 +1289,7 @@ module Pairing_tests (H : HEAP with type Element.t = int) = struct
     let describe = function
       | [] -> ""
       | (how, f) :: _ ->
-        let c, w = spent f in
+        let c, w = spent_only f in
         Printf.sprintf " -- %s: %.0f comparisons, %.0f words" how c w
     in
     (* find_min reads the root. *)
@@ -1692,8 +1300,8 @@ module Pairing_tests (H : HEAP with type Element.t = int) = struct
         (count_only (fun () -> H.find_min star) + count_only (fun () -> H.find_min chain));
     check
       (t "find_min allocates nothing")
-      (snd (spent (fun () -> H.find_min star)) <= 4.0
-       && snd (spent (fun () -> H.find_min chain)) <= 4.0);
+      (allocated (fun () -> H.find_min star) <= 4.0
+       && allocated (fun () -> H.find_min chain) <= 4.0);
     (* insert is one merge, whatever the heap looks like and whichever way the comparison
        goes, and the merge forces nothing: a node and at most one suspension. *)
     let inserts =
@@ -1705,7 +1313,7 @@ module Pairing_tests (H : HEAP with type Element.t = int) = struct
     let bad =
       List.filter
         (fun (_, f) ->
-          let c, w = spent f in
+          let c, w = spent_only f in
           c <> 1.0 || w > 32.0)
         inserts
     in
@@ -1727,7 +1335,7 @@ module Pairing_tests (H : HEAP with type Element.t = int) = struct
     let bad =
       List.filter
         (fun (_, f) ->
-          let c, w = spent f in
+          let c, w = spent_only f in
           c <> 1.0 || w > 32.0)
         merges
     in
@@ -1764,18 +1372,8 @@ module Pairing_tests (H : HEAP with type Element.t = int) = struct
 
   (* ------------------------------------------------- amortised O(log n) per operation *)
 
-  let drain_all h n =
-    let h = ref h in
-    for _ = 1 to n do
-      h := H.delete_min !h
-    done;
-    ignore (Sys.opaque_identity (H.is_empty !h))
-  ;;
-
-  let random_ints seed n bound =
-    Random.init seed;
-    List.init n (fun _ -> Random.int bound)
-  ;;
+  let drain_all = Base.drain_all
+  let random_ints = Base.random_ints
 
   (* test_ch5's sequences: drains of the shapes above, mixes, and heaps built by merging
      rather than inserting. A delete_min forces, so a drain leaves nothing put off. *)
@@ -1841,7 +1439,7 @@ module Pairing_tests (H : HEAP with type Element.t = int) = struct
         let measure n =
           let f = driver n in
           let ops = float_of_int (per_n * n) in
-          let c, w = spent f in
+          let c, w = spent_only f in
           let c = c /. ops
           and w = w /. ops in
           check
@@ -1899,7 +1497,7 @@ module Pairing_tests (H : HEAP with type Element.t = int) = struct
     let star = star n in
     let d = 10_000 in
     let repeat f =
-      spent (fun () ->
+      spent_only (fun () ->
         for _ = 1 to d do
           ignore (Sys.opaque_identity (f ()))
         done)
@@ -1941,7 +1539,7 @@ module Pairing_tests (H : HEAP with type Element.t = int) = struct
       "the whole drain of the star, ten times over"
       ~ops:(d * n)
       ~n
-      (spent (fun () ->
+      (spent_only (fun () ->
          for _ = 1 to d do
            drain_all star n
          done));
@@ -1981,7 +1579,7 @@ module Pairing_tests (H : HEAP with type Element.t = int) = struct
                 then (
                   f q;
                   let cw =
-                    spent (fun () ->
+                    spent_only (fun () ->
                       for _ = 1 to d do
                         f q
                       done)
@@ -2013,7 +1611,7 @@ module Pairing_tests (H : HEAP with type Element.t = int) = struct
     let ops = ref 0
     and largest = ref 0 in
     let cw =
-      spent (fun () ->
+      spent_only (fun () ->
         for i = 1 to n do
           let j = from.(i - 1) in
           incr ops;
@@ -2111,11 +1709,11 @@ struct
     let h = ref W.empty in
     for i = 1 to n do
       h := W.insert i !h;
-      note (spent (fun () -> W.is_empty !h))
+      note (spent_only (fun () -> W.is_empty !h))
     done;
     for _ = 1 to n do
       h := W.delete_min !h;
-      note (spent (fun () -> W.is_empty !h))
+      note (spent_only (fun () -> W.is_empty !h))
     done;
     check
       (t
@@ -2135,8 +1733,8 @@ struct
     ignore (W.find_min hw);
     List.iter
       (fun (op, u, w) ->
-        let cu, wu = spent u
-        and cw, ww = spent w in
+        let cu, wu = spent_only u
+        and cw, ww = spent_only w in
         check
           (t
              (Printf.sprintf
@@ -2182,7 +1780,7 @@ let test_sized_heap () =
      the unwrapped binomial heap. *)
   let n = 65_535 in
   let h = Heap_checks.of_list (upto n) in
-  let c, _ = spent (fun () -> Lazy_binomial.is_empty h) in
+  let c, _ = spent_only (fun () -> Lazy_binomial.is_empty h) in
   check
     (Printf.sprintf
        "LazyBinomialHeap.is_empty after %d inserts runs the merges they put off, %.0f \
@@ -2227,7 +1825,6 @@ let stream_costs =
 
 module Extract_tests (S : SORTABLE_WITH_EXTRACT with type Element.t = int) = struct
   let of_list xs = List.fold_left (fun s x -> S.add x s) S.empty xs
-  let first k xs = List.filteri (fun i _ -> i < k) xs
 
   (* k + 1 cells, each through one merge per segment, with one to spare. *)
   let extract_budget k n = float_of_int ((k + 1) * (floor_log2 (n + 1) + 1))
@@ -2247,7 +1844,7 @@ module Extract_tests (S : SORTABLE_WITH_EXTRACT with type Element.t = int) = str
     for _ = 0 to 299 do
       let xs = List.init (Random.int 200) (fun _ -> Random.int 50) in
       let k = Random.int 12 in
-      match S.extract k (of_list xs) = first k (List.sort compare xs) with
+      match S.extract k (of_list xs) = List.take k (List.sort compare xs) with
       | true -> ()
       | false -> incr bad
       | exception Failure _ -> incr raised
@@ -2273,7 +1870,7 @@ module Extract_tests (S : SORTABLE_WITH_EXTRACT with type Element.t = int) = str
         let n = (1 lsl j) - 1 in
         let c = of_list (upto n) in
         ignore (Sys.opaque_identity (S.sort c));
-        let one, _ = spent (fun () -> S.extract 1 c) in
+        let one, _ = spent_only (fun () -> S.extract 1 c) in
         check
           (t
              (Printf.sprintf
@@ -2290,7 +1887,7 @@ module Extract_tests (S : SORTABLE_WITH_EXTRACT with type Element.t = int) = str
     ignore (Sys.opaque_identity (S.sort c));
     List.iter
       (fun k ->
-        let e, _ = spent (fun () -> S.extract k c) in
+        let e, _ = spent_only (fun () -> S.extract k c) in
         check
           (t
              (Printf.sprintf
@@ -2304,7 +1901,7 @@ module Extract_tests (S : SORTABLE_WITH_EXTRACT with type Element.t = int) = str
     (* The first extract from a fresh collection pays for the adds' merges, at most n;
        the one after it does not. *)
     let c = of_list (upto n) in
-    let fresh, _ = spent (fun () -> S.extract 1 c) in
+    let fresh, _ = spent_only (fun () -> S.extract 1 c) in
     check
       (t
          (Printf.sprintf
@@ -2313,7 +1910,7 @@ module Extract_tests (S : SORTABLE_WITH_EXTRACT with type Element.t = int) = str
             n
             fresh))
       (fresh <= float_of_int n);
-    let next, _ = spent (fun () -> S.extract 1 c) in
+    let next, _ = spent_only (fun () -> S.extract 1 c) in
     check
       (t
          (Printf.sprintf
@@ -2328,7 +1925,7 @@ module Extract_tests (S : SORTABLE_WITH_EXTRACT with type Element.t = int) = str
     let d = 1_000 in
     let per_add = float_of_int ((2 * floor_log2 (n + 2)) + 1) in
     let e, _ =
-      spent (fun () ->
+      spent_only (fun () ->
         for i = 1 to d do
           ignore (Sys.opaque_identity (S.extract 1 (S.add i c)))
         done)

@@ -20,60 +20,6 @@
 open Okasaki.Ch3
 open Harness
 
-(* Words allocated by [f]. Sys.opaque_identity stops the optimiser discarding the result
-   and with it the allocation we are trying to measure. *)
-let words f =
-  let before = Gc.minor_words () in
-  ignore (Sys.opaque_identity (f ()));
-  Gc.minor_words () -. before
-;;
-
-(* ---------------------------------------------- an instrumented element type *)
-
-let comparisons = ref 0
-
-(* Comparisons that answered true. A search tree's [member] spends one comparison to step
-   left (lt x y is true) and two to step right (lt x y false, then lt y x true), so a raw
-   comparison count conflates depth with direction. Counting only the true answers gives
-   exactly one per step, whichever way the search turned. See [path_to_gap] below. *)
-let steps = ref 0
-
-module Counting_int = struct
-  type t = int
-
-  let eq a b =
-    incr comparisons;
-    a = b
-  ;;
-
-  let lt a b =
-    incr comparisons;
-    let less = a < b in
-    if less then incr steps;
-    less
-  ;;
-
-  let leq a b =
-    incr comparisons;
-    a <= b
-  ;;
-end
-
-(* Comparisons performed by [f]. *)
-let count f =
-  comparisons := 0;
-  let r = f () in
-  r, !comparisons
-;;
-
-let count_only f = snd (count f)
-
-(* floor (log2 n), for n >= 1. *)
-let floor_log2 n =
-  let rec go acc n = if n <= 1 then acc else go (acc + 1) (n / 2) in
-  go 0 n
-;;
-
 (* The bound Exercises 3.1 and 3.4(a) both put on a right spine. *)
 let spine_bound n = floor_log2 (n + 1)
 
@@ -85,7 +31,7 @@ let orders n =
     Random.init 20260918;
     List.init n f
   in
-  [ "ascending", List.init n Fun.id
+  [ "ascending", upto n
   ; "descending", List.init n (fun i -> n - i)
   ; "all equal", List.init n (fun _ -> 7)
   ; "sawtooth", List.init n (fun i -> if i mod 2 = 0 then i else n - i)
@@ -102,12 +48,7 @@ module Heap_tests (H : HEAP with type Element.t = int) = struct
 
   (* find_min/delete_min to exhaustion. That this comes out sorted is the whole
      behavioural specification of a heap. *)
-  let drain h =
-    let rec go acc h =
-      if H.is_empty h then List.rev acc else go (H.find_min h :: acc) (H.delete_min h)
-    in
-    go [] h
-  ;;
+  let drain h = drain_with ~is_empty:H.is_empty ~head:H.find_min ~tail:H.delete_min h
 
   (* The length of h's right spine, measured through the sealed signature. max_int is >=
      every element, so merge takes the h side at every step and walks the spine to Empty,
@@ -123,14 +64,10 @@ module Heap_tests (H : HEAP with type Element.t = int) = struct
     let t label = Printf.sprintf "%s: %s" name label in
     check (t "empty is empty") (H.is_empty H.empty);
     check (t "a singleton is not empty") (not (H.is_empty (H.insert 1 H.empty)));
-    check_raises
-      (t "find_min on empty raises")
-      (Failure "find_min: empty heap")
-      (fun () -> H.find_min H.empty);
-    check_raises
-      (t "delete_min on empty raises")
-      (Failure "delete_min: empty heap")
-      (fun () -> ignore (H.is_empty (H.delete_min H.empty)));
+    check_failure (t "find_min on empty raises") "find_min: empty heap" (fun () ->
+      H.find_min H.empty);
+    check_failure (t "delete_min on empty raises") "delete_min: empty heap" (fun () ->
+      ignore (H.is_empty (H.delete_min H.empty)));
     check_int (t "find_min of a singleton") ~expect:5 ~actual:(H.find_min (of_list [ 5 ]));
     check
       (t "delete_min of a singleton is empty")
@@ -202,15 +139,12 @@ module Heap_tests (H : HEAP with type Element.t = int) = struct
       (fun n ->
         List.iter
           (fun (how, xs) ->
-            List.iter
-              (fun (built, h) ->
-                let r = rank_of h in
-                if r > spine_bound n
-                then
-                  over
-                  := Printf.sprintf "%s/%s n=%d rank=%d>%d" how built n r (spine_bound n)
-                     :: !over)
-              [ "insert", of_list xs ])
+            let r = rank_of (of_list xs) in
+            if r > spine_bound n
+            then
+              over
+              := Printf.sprintf "%s/insert n=%d rank=%d>%d" how n r (spine_bound n)
+                 :: !over)
           (orders n))
       [ 1; 2; 3; 4; 7; 8; 15; 16; 17; 100; 511; 512; 1000 ];
     check
@@ -259,8 +193,8 @@ module Heap_tests (H : HEAP with type Element.t = int) = struct
     and bad_log = ref 0 in
     List.iter
       (fun (n1, n2) ->
-        let h1 = of_list (List.init n1 Fun.id)
-        and h2 = of_list (List.init n2 Fun.id) in
+        let h1 = of_list (upto n1)
+        and h2 = of_list (upto n2) in
         let r1 = rank_of h1
         and r2 = rank_of h2 in
         let c = count_only (fun () -> H.merge h1 h2) in
@@ -274,7 +208,7 @@ module Heap_tests (H : HEAP with type Element.t = int) = struct
     let bad_insert_cost = ref 0 in
     List.iter
       (fun n ->
-        let h = of_list (List.init n Fun.id) in
+        let h = of_list (upto n) in
         let c = count_only (fun () -> H.insert max_int h) in
         if c > spine_bound n then incr bad_insert_cost)
       [ 1; 7; 8; 100; 1000; 10_000 ];
@@ -283,7 +217,7 @@ module Heap_tests (H : HEAP with type Element.t = int) = struct
     let bad_delete = ref 0 in
     List.iter
       (fun n ->
-        let h = of_list (List.init n Fun.id) in
+        let h = of_list (upto n) in
         let c = count_only (fun () -> H.delete_min h) in
         if c > 2 * spine_bound n then incr bad_delete)
       [ 1; 7; 8; 100; 1000; 10_000 ];
@@ -292,9 +226,9 @@ module Heap_tests (H : HEAP with type Element.t = int) = struct
     let bad_find = ref 0 in
     List.iter
       (fun n ->
-        let h = of_list (List.init n Fun.id) in
+        let h = of_list (upto n) in
         if count_only (fun () -> H.find_min h) <> 0 then incr bad_find;
-        if words (fun () -> H.find_min h) > 4.0 then incr bad_find)
+        if allocated (fun () -> H.find_min h) > 4.0 then incr bad_find)
       [ 1; 100; 100_000 ];
     check_int (t "find_min is O(1)") ~expect:0 ~actual:!bad_find
   ;;
@@ -303,14 +237,10 @@ end
 (* from_list is Exercise 3.3, a leftist-heap exercise, and deliberately not part of HEAP:
    only the modules that actually implement it are held to this contract. *)
 module From_list_tests (H : HEAP_WITH_FROM_LIST with type Element.t = int) = struct
-  let of_list xs = List.fold_left (fun h x -> H.insert x h) H.empty xs
+  module Base = Heap_tests (H)
 
-  let drain h =
-    let rec go acc h =
-      if H.is_empty h then List.rev acc else go (H.find_min h :: acc) (H.delete_min h)
-    in
-    go [] h
-  ;;
+  let of_list = Base.of_list
+  let drain = Base.drain
 
   let run name =
     let t label = Printf.sprintf "%s: %s" name label in
@@ -409,70 +339,25 @@ end
    is (trees - 1). That reads the tree count from outside the sealed signature, the way
    rank_of reads a spine length for leftist heaps. *)
 module Binomial_tests (H : HEAP with type Element.t = int) = struct
-  let of_list xs = List.fold_left (fun h x -> H.insert x h) H.empty xs
+  module Base = Heaps.Contract (H)
+
+  let of_list = Base.of_list
   let trees h = count_only (fun () -> H.find_min h) + 1
 
-  let popcount n =
-    let rec go acc n = if n = 0 then acc else go (acc + (n land 1)) (n lsr 1) in
-    go 0 n
-  ;;
-
-  (* An insert links once per trailing 1 bit: the carry chain of a binary increment,
-     stopped by the first hole. *)
-  let trailing_ones n =
-    let rec go acc n = if n land 1 = 0 then acc else go (acc + 1) (n lsr 1) in
-    go 0 n
-  ;;
-
   let run name =
+    Base.run_tree_counts ~trees name;
     let t label = Printf.sprintf "%s: %s" name label in
-    (* Checked at EVERY step of a drain, not merely after construction: a mislabelled tree
-       stays self-consistent until it is itself opened, so a single delete_min is not
-       enough to expose it. *)
-    let bad = ref 0
-    and first = ref "" in
-    Random.init 20260918;
-    for n = 1 to 120 do
-      let xs = List.init n (fun _ -> Random.int 1000) in
-      let h = ref (of_list xs)
-      and left = ref n in
-      while not (H.is_empty !h) do
-        if trees !h <> popcount !left
-        then (
-          incr bad;
-          if !first = ""
-          then
-            first
-            := Printf.sprintf
-                 " -- first at n=%d, %d left, %d trees, popcount %d"
-                 n
-                 !left
-                 (trees !h)
-                 (popcount !left));
-        h := H.delete_min !h;
-        decr left
-      done
-    done;
-    check
-      (t (Printf.sprintf "one tree per 1 bit of n, at every step of a drain%s" !first))
-      (!bad = 0);
-    (* That count is what makes every operation logarithmic. *)
-    let over = ref 0 in
-    List.iter
-      (fun n -> if trees (of_list (List.init n Fun.id)) > spine_bound n then incr over)
-      [ 1; 7; 8; 15; 16; 100; 1000; 10_000 ];
-    check_int (t "at most floor(log2 (n+1)) trees") ~expect:0 ~actual:!over;
     let bad_ins = ref 0 in
     List.iter
       (fun n ->
-        let h = of_list (List.init n Fun.id) in
+        let h = of_list (upto n) in
         if count_only (fun () -> H.insert max_int h) <> trailing_ones n then incr bad_ins)
       [ 1; 2; 3; 7; 8; 15; 31; 100; 255; 1000 ];
     check_int (t "insert links once per trailing 1 bit of n") ~expect:0 ~actual:!bad_ins;
     let bad_merge = ref 0 in
     List.iter
       (fun (n1, n2) ->
-        let a = of_list (List.init n1 Fun.id)
+        let a = of_list (upto n1)
         and b = of_list (List.init n2 (fun i -> i + n1)) in
         if count_only (fun () -> H.merge a b) > spine_bound (n1 + n2) + 1
         then incr bad_merge)
@@ -523,7 +408,7 @@ let test_find_min_direct () =
   let heap_of n = Binom.of_list (List.init n (fun i -> i * 7919 mod 100_000)) in
   (* Guard against a vacuous check: if the probe cannot see allocation at all, everything
      below passes for the wrong reason. Building a heap certainly allocates. *)
-  let probe = words (fun () -> heap_of 64) in
+  let probe = allocated (fun () -> heap_of 64) in
   check
     (Printf.sprintf
        "the allocation probe registers work (building a heap costs %.0f words)"
@@ -532,8 +417,8 @@ let test_find_min_direct () =
   (* one tree versus sixteen *)
   let h_small = heap_of 1
   and h_large = heap_of 65_535 in
-  let w_small = words (fun () -> B.find_min h_small)
-  and w_large = words (fun () -> B.find_min h_large) in
+  let w_small = allocated (fun () -> B.find_min h_small)
+  and w_large = allocated (fun () -> B.find_min h_large) in
   check
     (Printf.sprintf
        "find_min allocation does not grow with the tree count (%.0f -> %.0f words)"
@@ -544,7 +429,7 @@ let test_find_min_direct () =
     List.fold_left
       (fun acc n ->
         let h = heap_of n in
-        Float.max acc (words (fun () -> B.find_min h)))
+        Float.max acc (allocated (fun () -> B.find_min h)))
       0.0
       [ 1; 7; 255; 4095; 65_535 ]
   in
@@ -587,7 +472,7 @@ let test_explicit_min () =
   let over = ref 0 in
   List.iter
     (fun n ->
-      let h = Explicit.of_list (List.init n Fun.id) in
+      let h = Explicit.of_list (upto n) in
       if count_only (fun () -> X.insert max_int h) > spine_bound n + 1 then incr over;
       if count_only (fun () -> X.delete_min h) > (2 * spine_bound n) + 2 then incr over)
     [ 1; 7; 8; 100; 1000; 10_000 ];
@@ -656,9 +541,6 @@ module Rb = RedBlackSet (Counting_int)
 
 let rb_of_list xs = List.fold_left (fun s x -> Rb.insert x s) Rb.empty xs
 
-(* Sets are built from even numbers so that every odd number is a gap to probe. *)
-let evens n = List.init n (fun i -> 2 * i)
-
 (* Nodes on the path from the root to the empty slot a failed search for [x] falls into. *)
 let path_to_gap x s =
   steps := 0;
@@ -678,12 +560,6 @@ let perfect_depth n = if n = 0 then 0 else floor_log2 n + 1
 
 (* Exercise 3.8's bound on the depth of any node in a red-black tree of size n. *)
 let depth_bound n = 2 * spine_bound n
-
-let shuffle seed xs =
-  Random.init seed;
-  List.map snd (List.sort compare (List.map (fun x -> Random.bits (), x) xs))
-;;
-
 let rb_sizes = [ 0; 1; 2; 3; 4; 7; 8; 15; 16; 31; 32; 100; 500; 1000 ]
 
 let test_redblack () =
@@ -710,7 +586,7 @@ let test_redblack () =
     let n = 1 + Random.int 40 in
     let xs =
       if trial mod 3 = 0
-      then List.init n Fun.id (* ascending: the order that rebalances most *)
+      then upto n (* ascending: the order that rebalances most *)
       else List.init n (fun _ -> Random.int 60)
     in
     let s = rb_of_list xs in
@@ -728,7 +604,7 @@ let test_redblack () =
   let base = evens 7 in
   let once = rb_of_list base in
   let again =
-    List.init 20 Fun.id
+    upto 20
     |> List.fold_left (fun s _ -> List.fold_left (fun s x -> Rb.insert x s) s base) once
   in
   check
@@ -849,7 +725,7 @@ let test_from_ord_list () =
      list is built outside the closure so that only the construction is measured. *)
   let per_element n =
     let xs = evens n in
-    words (fun () -> Rb.from_ord_list xs) /. float_of_int n
+    allocated (fun () -> Rb.from_ord_list xs) /. float_of_int n
   in
   let small = per_element 1000
   and large = per_element 16_000 in
@@ -949,7 +825,7 @@ let test_redblack_cost () =
   List.iter
     (fun n ->
       let s = rb_of_list (evens n) in
-      let w = words (fun () -> Rb.member ((2 * n) + 1) s) in
+      let w = allocated (fun () -> Rb.member ((2 * n) + 1) s) in
       if w <> 0.0 then searching := (n, w) :: !searching)
     [ 10; 100; 1000; 10_000 ];
   check
@@ -963,7 +839,7 @@ let test_redblack_cost () =
      ten thousand times as many elements must not cost ten thousand times as many words. *)
   let cost n =
     let s = rb_of_list (evens n) in
-    words (fun () -> Rb.insert ((2 * n) + 1) s)
+    allocated (fun () -> Rb.insert ((2 * n) + 1) s)
   in
   let small = cost 10
   and large = cost 100_000 in
@@ -983,8 +859,8 @@ let test_redblack_cost () =
      the copy altogether, which is one of the optimisations the Hint to Practitioners
      means. *)
   let s = rb_of_list (evens 1000) in
-  let dup = words (fun () -> Rb.insert 0 s)
-  and fresh = words (fun () -> Rb.insert 2001 s) in
+  let dup = allocated (fun () -> Rb.insert 0 s)
+  and fresh = allocated (fun () -> Rb.insert 2001 s) in
   check
     (Printf.sprintf
        "a duplicate insert costs less than a fresh one (%.0f < %.0f)"

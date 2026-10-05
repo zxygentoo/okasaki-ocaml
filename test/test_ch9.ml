@@ -40,42 +40,12 @@
 open Okasaki.Ch9
 open Harness
 
-let upto n = List.init n Fun.id
-
-(* head/tail to exhaustion. A list whose tail does not advance would never come to an end,
-   and neither would the list this builds, so a drain past any size used here gives up and
-   raises, and the case it is in ends there as the failure it is. *)
-let drain_limit = 100_000
-
-let drain_with ~is_empty ~head ~tail q =
-  let rec go n acc q =
-    if is_empty q
-    then List.rev acc
-    else if n = drain_limit
-    then failwith "drain: no end in sight"
-    else go (n + 1) (head q :: acc) (tail q)
-  in
-  go 0 [] q
-;;
-
-(* ---------------------------------------------------------------- the clock *)
-
-(* Words allocated by [f], read before and after. Sys.opaque_identity stops the optimiser
-   discarding the result and with it the allocation being measured. The clock counts in
-   integers: a float reading would box, and the two words of the box would land inside the
-   measurement. *)
-let words () = int_of_float (Gc.minor_words ())
-
-let cost f =
-  let before = words () in
-  let r = Sys.opaque_identity (f ()) in
-  r, float_of_int (words () - before)
-;;
-
-(* floor (log2 n), for n >= 1. *)
-let floor_log2 n =
-  let rec go acc n = if n <= 1 then acc else go (acc + 1) (n / 2) in
-  go 0 n
+(* [f], the operation [what], must refuse with Failure [msg]; [note] hears it if not. *)
+let refused note what msg f =
+  match f () with
+  | _ -> note (what ^ " did not raise")
+  | exception Failure m when m = msg -> ()
+  | exception e -> note (what ^ " raised " ^ Printexc.to_string e)
 ;;
 
 (* p.120: a list of n elements has at most floor (log (n + 1)) trees, and no tree is
@@ -138,14 +108,9 @@ module Rlist_tests (R : RANDOM_ACCESS_LIST) = struct
          | got when got = xs -> ()
          | got -> note n ("lookups " ^ string_of_int_list got)
          | exception Failure why -> note n ("lookup raised " ^ why));
-        (match R.lookup n r with
-         | _ -> note n "lookup one past the end did not raise"
-         | exception Failure m when m = "lookup: not found" -> ()
-         | exception e -> note n ("lookup one past the end raised " ^ Printexc.to_string e));
-        match R.lookup (-1) r with
-        | _ -> note n "lookup at -1 did not raise"
-        | exception Failure m when m = "lookup: not found" -> ()
-        | exception e -> note n ("lookup at -1 raised " ^ Printexc.to_string e)
+        refused (note n) "lookup one past the end" "lookup: not found" (fun () ->
+          R.lookup n r);
+        refused (note n) "lookup at -1" "lookup: not found" (fun () -> R.lookup (-1) r)
       with
       | e -> note n ("raised " ^ Printexc.to_string e)
     done;
@@ -166,14 +131,8 @@ module Rlist_tests (R : RANDOM_ACCESS_LIST) = struct
         match tails n (of_list (upto n)) with
         | r ->
           if not (R.is_empty r) then note n "is not empty";
-          (match R.head r with
-           | _ -> note n "head did not raise"
-           | exception Failure m when m = "head: empty list" -> ()
-           | exception e -> note n ("head raised " ^ Printexc.to_string e));
-          (match R.tail r with
-           | _ -> note n "tail did not raise"
-           | exception Failure m when m = "tail: empty list" -> ()
-           | exception e -> note n ("tail raised " ^ Printexc.to_string e));
+          refused (note n) "head" "head: empty list" (fun () -> R.head r);
+          refused (note n) "tail" "tail: empty list" (fun () -> R.tail r);
           (match to_list (R.cons 7 r) with
            | [ 7 ] -> ()
            | got -> note n ("cons onto it reads back " ^ string_of_int_list got)
@@ -212,14 +171,9 @@ module Rlist_tests (R : RANDOM_ACCESS_LIST) = struct
             then note n (Printf.sprintf "update %d then cons reads back wrong" i)
           | exception Failure why -> note n (Printf.sprintf "update %d raised %s" i why)
         done;
-        (match R.update (-1) 0 r with
-         | _ -> note n "update at -1 did not raise"
-         | exception Failure m when m = "update: not found" -> ()
-         | exception e -> note n ("update at -1 raised " ^ Printexc.to_string e));
-        match R.update n 0 r with
-        | _ -> note n "update one past the end did not raise"
-        | exception Failure m when m = "update: not found" -> ()
-        | exception e -> note n ("update one past the end raised " ^ Printexc.to_string e)
+        refused (note n) "update at -1" "update: not found" (fun () -> R.update (-1) 0 r);
+        refused (note n) "update one past the end" "update: not found" (fun () ->
+          R.update n 0 r)
       with
       | e -> note n ("raised " ^ Printexc.to_string e)
     done;
@@ -467,8 +421,6 @@ module type WITH_DROP = sig
   val drop : int -> 'a rlist -> 'a rlist
 end
 
-let list_drop k xs = List.filteri (fun i _ -> i >= k) xs
-
 module Drop_tests (R : WITH_DROP) = struct
   module Base = Rlist_tests (R)
 
@@ -504,7 +456,7 @@ module Drop_tests (R : WITH_DROP) = struct
         let xs = upto n in
         let r = of_list xs in
         for k = 0 to n do
-          let expect = list_drop k xs in
+          let expect = List.drop k xs in
           match R.drop k r with
           | r' ->
             (match to_list r' with
@@ -555,7 +507,7 @@ module Drop_tests (R : WITH_DROP) = struct
         let xs = upto n in
         let r = of_list xs in
         for k = 0 to n do
-          let survivors = list_drop k xs in
+          let survivors = List.drop k xs in
           let m = n - k in
           match R.drop k r with
           | r' ->
@@ -601,7 +553,7 @@ module Drop_tests (R : WITH_DROP) = struct
                      (Printexc.to_string e)));
             (try
                for j = 0 to m do
-                 if to_list (R.drop j r') <> list_drop (k + j) xs
+                 if to_list (R.drop j r') <> List.drop (k + j) xs
                  then note n (Printf.sprintf "drop %d then drop %d reads back wrong" k j)
                done
              with
@@ -653,7 +605,7 @@ module Drop_tests (R : WITH_DROP) = struct
            | _ ->
              let k = Random.int (n + 1) in
              r := R.drop k !r;
-             model := list_drop k !model);
+             model := List.drop k !model);
           if R.is_empty !r <> (!model = []) then incr bad_model;
           match !model with
           | x :: _ when R.head !r <> x -> incr bad_model
@@ -676,7 +628,7 @@ module Drop_tests (R : WITH_DROP) = struct
     let v = of_list (upto 10) in
     eq
       "a dropped version reads the survivors"
-      (list_drop 3 (upto 10))
+      (List.drop 3 (upto 10))
       (fun () -> R.drop 3 v);
     eq "the version it came from does not change" (upto 10) (fun () ->
       ignore (R.drop 3 v);
@@ -687,7 +639,7 @@ module Drop_tests (R : WITH_DROP) = struct
       R.cons 42 v);
     eq
       "as can the dropped version"
-      (99 :: list_drop 3 (upto 10))
+      (99 :: List.drop 3 (upto 10))
       (fun () ->
         let w = R.drop 3 v in
         ignore (R.cons 42 v);
@@ -806,11 +758,8 @@ module Create_tests (R : WITH_CREATE) = struct
            | got -> note n ("looks up " ^ string_of_int_list got)
            | exception e -> note n ("lookup raised " ^ Printexc.to_string e));
           if R.is_empty r <> (n = 0) then note n "is_empty is wrong";
-          (match R.lookup n r with
-           | _ -> note n "lookup one past the end did not raise"
-           | exception Failure m when m = "lookup: not found" -> ()
-           | exception e ->
-             note n ("lookup one past the end raised " ^ Printexc.to_string e))
+          refused (note n) "lookup one past the end" "lookup: not found" (fun () ->
+            R.lookup n r)
         | exception e -> note n ("create raised " ^ Printexc.to_string e)
       with
       | e -> note n ("raised " ^ Printexc.to_string e)
@@ -840,11 +789,8 @@ module Create_tests (R : WITH_CREATE) = struct
              if lookups n r' <> expect
              then note n (Printf.sprintf "update %d looks up wrong" i)
            done;
-           match R.update n 1 r with
-           | _ -> note n "update one past the end did not raise"
-           | exception Failure m when m = "update: not found" -> ()
-           | exception e ->
-             note n ("update one past the end raised " ^ Printexc.to_string e)
+           refused (note n) "update one past the end" "update: not found" (fun () ->
+             R.update n 1 r)
          with
          | e -> note n ("update raised " ^ Printexc.to_string e));
         (try
@@ -907,7 +853,7 @@ module Create_tests (R : WITH_CREATE) = struct
            | _ ->
              let k = Random.int (n + 1) in
              r := R.drop k !r;
-             model := list_drop k !model);
+             model := List.drop k !model);
           if R.is_empty !r <> (!model = []) then incr bad_model;
           match !model with
           | x :: _ when R.head !r <> x -> incr bad_model
@@ -1205,24 +1151,6 @@ let rec numerals k =
 
 let digit_budget k = per_digit *. float_of_int (k + 1)
 
-(* A loop of checks as one check: [f] calls [note] on every failure, and the first is the
-   one reported, with the count. *)
-let all_of name f =
-  let first = ref None
-  and count = ref 0 in
-  let note why =
-    incr count;
-    if !first = None then first := Some why
-  in
-  (try f note with
-   | e -> note ("raised " ^ Printexc.to_string e));
-  check
-    (match !first with
-     | None -> name
-     | Some why -> Printf.sprintf "%s -- %d wrong, the first: %s" name !count why)
-    (!first = None)
-;;
-
 let test_zeroless_contract () =
   let t label = "Zeroless: " ^ label in
   let z = string_of_z in
@@ -1372,6 +1300,18 @@ let test_zeroless_short_costs () =
 ;;
 
 (* Long families at k digits: each call on the clock by itself, inputs made beforehand. *)
+(* Each call on the clock by itself, inputs made beforehand; the dearest, and what it was. *)
+let dearest_call calls =
+  let dearest = ref (0.0, "") in
+  List.iter
+    (fun (what, f) ->
+      match cost f with
+      | _, c -> if c > fst !dearest then dearest := c, what
+      | exception e -> dearest := infinity, what ^ " raised " ^ Printexc.to_string e)
+    calls;
+  !dearest
+;;
+
 let test_zeroless_long_costs k =
   let ones = List.init k (fun _ -> Z.One)
   and twos = List.init k (fun _ -> Z.Two)
@@ -1394,14 +1334,7 @@ let test_zeroless_long_costs k =
     ; ("dec of a random numeral", fun () -> Z.dec r1)
     ]
   in
-  let dearest = ref (0.0, "") in
-  List.iter
-    (fun (what, f) ->
-      match cost f with
-      | _, c -> if c > fst !dearest then dearest := c, what
-      | exception e -> dearest := infinity, what ^ " raised " ^ Printexc.to_string e)
-    calls;
-  let c, what = !dearest in
+  let c, what = dearest_call calls in
   check
     (Printf.sprintf
        "Zeroless, %d digits: the dearest of dec and add is %s at %.0f words, budget %.0f"
@@ -1476,17 +1409,10 @@ let test_zeroless_head_at n =
     ignore (Sys.opaque_identity !sum);
     !dear
   in
-  match dearest () with
-  | c ->
-    check
-      (Printf.sprintf
-         "%s, dearest at %.0f words, budget %.0f whatever n"
-         name
-         c
-         per_digit)
-      (c <= per_digit)
-  | exception e ->
-    check (Printf.sprintf "%s: raised %s" name (Printexc.to_string e)) false
+  let c = dearest () in
+  check
+    (Printf.sprintf "%s, dearest at %.0f words, budget %.0f whatever n" name c per_digit)
+    (c <= per_digit)
 ;;
 
 let test_zeroless_list () =
@@ -1539,11 +1465,7 @@ module Lite_tests (R : RANDOM_ACCESS_LIST_LITE) = struct
     let n = List.length l in
     if n <= 12
     then string_of_int_list l
-    else
-      Printf.sprintf
-        "%s... (%d elements)"
-        (string_of_int_list (List.filteri (fun i _ -> i < 10) l))
-        n
+    else Printf.sprintf "%s... (%d elements)" (string_of_int_list (List.take 10 l)) n
   ;;
 
   (* [r] read back, for [all_of]: a note unless it is [expect]. *)
@@ -1590,16 +1512,16 @@ module Lite_tests (R : RANDOM_ACCESS_LIST_LITE) = struct
         try
           let r = tails n (of_list (from 0 n)) in
           if not (R.is_empty r) then note (Printf.sprintf "n=%d: not empty" n);
-          (match R.head r with
-           | _ -> note (Printf.sprintf "n=%d: head did not raise" n)
-           | exception Failure m when m = "head: empty list" -> ()
-           | exception e ->
-             note (Printf.sprintf "n=%d: head raised %s" n (Printexc.to_string e)));
-          (match R.tail r with
-           | _ -> note (Printf.sprintf "n=%d: tail did not raise" n)
-           | exception Failure m when m = "tail: empty list" -> ()
-           | exception e ->
-             note (Printf.sprintf "n=%d: tail raised %s" n (Printexc.to_string e)));
+          refused
+            (fun why -> note (Printf.sprintf "n=%d: %s" n why))
+            "head"
+            "head: empty list"
+            (fun () -> R.head r);
+          refused
+            (fun why -> note (Printf.sprintf "n=%d: %s" n why))
+            "tail"
+            "tail: empty list"
+            (fun () -> R.tail r);
           reads note (Printf.sprintf "n=%d: a cons onto it" n) [ 7 ] (fun () ->
             R.cons 7 r)
         with
@@ -1852,17 +1774,14 @@ module Lite_tests (R : RANDOM_ACCESS_LIST_LITE) = struct
     List.iter
       (fun (what, f) ->
         let label = Printf.sprintf "%s: %s" name what in
-        match mean f with
-        | c ->
-          check
-            (Printf.sprintf
-               "%s, %.1f words a cons or tail, budget %.0f"
-               label
-               c
-               amortised_budget)
-            (c <= amortised_budget)
-        | exception e ->
-          check (Printf.sprintf "%s: raised %s" label (Printexc.to_string e)) false)
+        let c = mean f in
+        check
+          (Printf.sprintf
+             "%s, %.1f words a cons or tail, budget %.0f"
+             label
+             c
+             amortised_budget)
+          (c <= amortised_budget))
       (sequences k)
   ;;
 
@@ -2231,18 +2150,6 @@ let test_seg1_long () =
    sizes below. *)
 let flat_budget = 2.0 *. per_digit
 
-(* Each call on the clock by itself, inputs made beforehand; the dearest, and what it was. *)
-let dearest_call calls =
-  let dearest = ref (0.0, "") in
-  List.iter
-    (fun (what, f) ->
-      match cost f with
-      | _, c -> if c > fst !dearest then dearest := c, what
-      | exception e -> dearest := infinity, what ^ " raised " ^ Printexc.to_string e)
-    calls;
-  !dearest
-;;
-
 let within_flat_budget name (c, what) =
   check
     (Printf.sprintf
@@ -2559,53 +2466,13 @@ let test_seg2 () =
    log2 (n + 1), about twice what the dearest of them spends. That the probe can tell O(1)
    from O(log n) is checked on Figure 3.4's heap. *)
 
-let comparisons = ref 0
-
-module Counting_int = struct
-  type t = int
-
-  let eq a b =
-    incr comparisons;
-    a = b
-  ;;
-
-  let lt a b =
-    incr comparisons;
-    a < b
-  ;;
-
-  let leq a b =
-    incr comparisons;
-    a <= b
-  ;;
-end
-
 module SH = SegmentedBinomialHeap (Counting_int)
-
-let popcount n =
-  let rec go acc n = if n = 0 then acc else go (acc + (n land 1)) (n lsr 1) in
-  go 0 n
-;;
-
-(* The result of one call of [f], with the comparisons and the words it spent. *)
-let spent f =
-  comparisons := 0;
-  let before = words () in
-  let r = Sys.opaque_identity (f ()) in
-  r, (!comparisons, words () - before)
-;;
 
 let sh_of_list xs = List.fold_left (fun h x -> SH.insert x h) SH.empty xs
 let sh_drain h = drain_with ~is_empty:SH.is_empty ~head:SH.find_min ~tail:SH.delete_min h
 
 (* Trees in [h]: find_min compares every root but the first once. *)
-let sh_trees h =
-  if SH.is_empty h
-  then 0
-  else (
-    let _, (c, _) = spent (fun () -> SH.find_min h) in
-    c + 1)
-;;
+let sh_trees h = if SH.is_empty h then 0 else count_only (fun () -> SH.find_min h) + 1
 
 (* ----------------------------------------------------------------- contract *)
 
@@ -2724,8 +2591,8 @@ let test_sh_contract () =
        let sk_of_list = List.fold_left (fun h x -> SK.insert x h) SK.empty in
        for n = 1 to 80 do
          let xs = List.init n (fun tag -> Random.int 4, tag) in
-         let half = List.filteri (fun i _ -> i < n / 2) xs
-         and rest = List.filteri (fun i _ -> i >= n / 2) xs in
+         let half = List.take (n / 2) xs
+         and rest = List.drop (n / 2) xs in
          List.iter
            (fun (how, h) ->
              match
@@ -2811,7 +2678,6 @@ let test_sh_shape () =
 
 (* ------------------------------------------- every operation on its own clock *)
 
-let sh_log2 n = log (float_of_int n) /. log 2.
 let sh_insert_comparisons = 1.0
 let sh_insert_words = flat_budget
 let sh_query_comparisons l = (6. *. l) +. 6.
@@ -2824,15 +2690,15 @@ let sh_dearer (ratio, what) ~at ~op ~size (c, w) =
     if op = "insert"
     then sh_insert_comparisons, sh_insert_words
     else (
-      let l = sh_log2 (size + 1) in
+      let l = log2 (size + 1) in
       sh_query_comparisons l, sh_query_words l)
   in
-  let r = Float.max (float_of_int c /. cb) (float_of_int w /. wb) in
+  let r = Float.max (c /. cb) (w /. wb) in
   if r > ratio
   then
     ( r
     , Printf.sprintf
-        "%s #%d on %d elements, %d comparisons and %d words (budget %.0f, %.0f)"
+        "%s #%d on %d elements, %.0f comparisons and %.0f words (budget %.0f, %.0f)"
         op
         at
         size
@@ -3012,7 +2878,7 @@ let test_sh_guard () =
       Strict_heap.empty
       (upto ((1 lsl k) - 1))
   in
-  let _, (c, _) = spent (fun () -> Strict_heap.insert (-1) h) in
+  let c = count_only (fun () -> Strict_heap.insert (-1) h) in
   check
     (Printf.sprintf
        "guard: the same probe sees Figure 3.4's insert into the all-ones heap of 2^%d - \
@@ -3277,22 +3143,26 @@ module Five_tests (N : FIVE) = struct
     if n <= 40 then "[" ^ N.show x ^ "]" else Printf.sprintf "a numeral of %d digits" n
   ;;
 
-  (* Why [r] is not what [model] says of [x], if it is not. *)
-  let fault ~model x r =
+  (* A numeral with the number it stands for. *)
+  let numbered x = x, five_bits (N.to_digits x)
+
+  (* [r] with its number, if it is what [model] says of [bits], the number of the operand;
+     why not, if it is not. *)
+  let fault ~model bits r =
     match N.block_fault r with
-    | Some why -> Some why
+    | Some why -> Error why
     | None ->
       let ds = N.to_digits r in
       (match five_fault ds with
-       | Some why -> Some why
+       | Some why -> Error why
        | None ->
-         if five_bits ds <> model (five_bits (N.to_digits x))
-         then Some "the wrong number"
-         else None)
+         let r_bits = five_bits ds in
+         if r_bits <> model bits then Error "the wrong number" else Ok (r, r_bits))
   ;;
 
-  (* inc or dec of [x], checked: the result, or None once [note] has heard what is wrong. *)
-  let step note where op x =
+  (* inc or dec of a numbered [x], checked: the result, numbered, or None once [note] has
+     heard what is wrong, from the step [where ()] names. *)
+  let step note where op (x, bits) =
     let name, f, model =
       match op with
       | `Inc -> "inc", N.inc, inc_bits
@@ -3300,26 +3170,33 @@ module Five_tests (N : FIVE) = struct
     in
     match f x with
     | r ->
-      (match fault ~model x r with
-       | None -> Some r
-       | Some why ->
-         note (Printf.sprintf "%s%s %s = %s: %s" where name (show x) (show r) why);
+      (match fault ~model bits r with
+       | Ok r -> Some r
+       | Error why ->
+         note (Printf.sprintf "%s%s %s = %s: %s" (where ()) name (show x) (show r) why);
          None)
     | exception e ->
-      note (Printf.sprintf "%s%s %s raised %s" where name (show x) (Printexc.to_string e));
+      note
+        (Printf.sprintf
+           "%s%s %s raised %s"
+           (where ())
+           name
+           (show x)
+           (Printexc.to_string e));
       None
   ;;
 
-  (* [ops] steps from [x], each checked, stopping at the first wrong one. *)
+  (* [ops] steps from [x], each checked, stopping at the first wrong one. Each step's
+     result is numbered once, and its number is the next step's model. *)
   let chain note what ops x =
     let rec go i x = function
       | [] -> ()
       | op :: ops ->
-        (match step note (Printf.sprintf "%s, step %d: " what i) op x with
+        (match step note (fun () -> Printf.sprintf "%s, step %d: " what i) op x with
          | Some r -> go (i + 1) r ops
          | None -> ())
     in
-    go 1 x ops
+    go 1 (numbered x) ops
   ;;
 
   let test_contract () =
@@ -3327,9 +3204,9 @@ module Five_tests (N : FIVE) = struct
     all_of (t "inc and dec of every regular numeral of up to 8 digits") (fun note ->
       List.iter
         (fun ds ->
-          let x = N.of_digits ds in
-          ignore (step note "" `Inc x);
-          if ds <> [] then ignore (step note "" `Dec x))
+          let x = numbered (N.of_digits ds) in
+          ignore (step note (fun () -> "") `Inc x);
+          if ds <> [] then ignore (step note (fun () -> "") `Dec x))
         (Lazy.force five_short));
     all_of (t "counting up to 2^16 from zero, then back down to zero") (fun note ->
       let n = 1 lsl 16 in
@@ -3375,9 +3252,8 @@ let test_five_guard () =
   let k = 1000 in
   let x = Five_dense.of_digits ((2 :: List.init k (fun _ -> 1)) @ [ 4 ]) in
   let name = Printf.sprintf "guard: the same clock sees the dense dec of 2 1^%d 4" k in
-  match cost (fun () -> FD.dec x) with
-  | _, c -> check (Printf.sprintf "%s walk its yellows, %.0f words" name c) (c >= float k)
-  | exception e -> check (Printf.sprintf "%s: raised %s" name (Printexc.to_string e)) false
+  let _, c = cost (fun () -> FD.dec x) in
+  check (Printf.sprintf "%s walk its yellows, %.0f words" name c) (c >= float k)
 ;;
 
 (* inc and dec of every family at k, inputs made beforehand. *)
@@ -3390,10 +3266,10 @@ let five_calls k =
     (five_families k @ [ "k random groups", five_random k 8 ])
 ;;
 
-let test_five_costs k =
+let test_five_costs k calls =
   within_flat_budget
     (Printf.sprintf "SegmentedRepresentation, inc and dec, k=%d" k)
-    (dearest_call (five_calls k))
+    (dearest_call calls)
 ;;
 
 (* The clock cannot see a walk that allocates nothing, a List.length on a block say. So at
@@ -3404,7 +3280,7 @@ let test_five_costs k =
 let five_reps = 10_000
 let five_cpu_limit = 0.1
 
-let test_five_stopwatch k =
+let test_five_stopwatch k calls =
   let slowest = ref (0.0, "") in
   (try
      List.iter
@@ -3416,7 +3292,7 @@ let test_five_stopwatch k =
          let took = Sys.time () -. started in
          if took > fst !slowest then slowest := took, what;
          if took > five_cpu_limit then raise Exit)
-       (five_calls k)
+       calls
    with
    | Exit -> ()
    | e -> slowest := infinity, "a call that raised " ^ Printexc.to_string e);
@@ -3478,9 +3354,10 @@ let test_five_segmented () =
   Five_segmented_tests.test_long ();
   test_five_guard ();
   test_five_counting_cost ();
-  test_five_costs 1_000;
-  test_five_costs 100_000;
-  test_five_stopwatch 100_000
+  test_five_costs 1_000 (five_calls 1_000);
+  let calls = five_calls 100_000 in
+  test_five_costs 100_000 calls;
+  test_five_stopwatch 100_000 calls
 ;;
 
 (* ---------------------------------- SegmentedRandomAccessList (Exercise 9.13) *)

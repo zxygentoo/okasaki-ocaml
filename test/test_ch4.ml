@@ -39,14 +39,6 @@ open Okasaki.Ch4
 open Stream
 open Harness
 
-(* Words allocated by [f]. Sys.opaque_identity stops the optimiser discarding the result
-   and with it the allocation we are trying to measure. *)
-let words f =
-  let before = Gc.minor_words () in
-  ignore (Sys.opaque_identity (f ()));
-  Gc.minor_words () -. before
-;;
-
 (* -------------------------------------------------------------- instruments *)
 
 (* [xs] as a stream, ending in [last]. Every cell is already a value, so forcing one
@@ -57,7 +49,6 @@ let stream_ending last xs =
 ;;
 
 let of_list xs = stream_ending (Lazy.from_val Nil) xs
-let upto n = List.init n Fun.id
 
 (* The counter. A stream over [xs] whose cells report to [opened] as they are computed --
    once each, since a suspension runs once -- so [!opened] is the number of distinct cells
@@ -101,13 +92,16 @@ let rec prefix k s =
 
 let force_cells k s = ignore (prefix k s)
 
+(* The whole of [s]. A stream that never ends would never come to an end here either, so
+   past any length used here this gives up, as a drain does. *)
 let to_list s =
-  let rec go acc s =
+  let rec go n acc s =
     match Lazy.force s with
     | Nil -> List.rev acc
-    | Cons (x, rest) -> go (x :: acc) rest
+    | Cons _ when n = drain_limit -> failwith "drain: no end in sight"
+    | Cons (x, rest) -> go (n + 1) (x :: acc) rest
   in
-  go [] s
+  go 0 [] s
 ;;
 
 (* [s] with its first [k] cells walked past. *)
@@ -118,23 +112,6 @@ let rec nth_tail k s =
     match Lazy.force s with
     | Nil -> s
     | Cons (_, rest) -> nth_tail (k - 1) rest)
-;;
-
-(* The list oracles. *)
-let rec list_take n = function
-  | x :: xs when n > 0 -> x :: list_take (n - 1) xs
-  | _ -> []
-;;
-
-let rec list_drop n = function
-  | _ :: xs when n > 0 -> list_drop (n - 1) xs
-  | l -> l
-;;
-
-(* For a check that sweeps many cases and keeps the offenders: say which came first. *)
-let first_of describe = function
-  | [] -> ""
-  | bad -> " -- " ^ describe (List.nth bad (List.length bad - 1))
 ;;
 
 (* ------------------------------------------------------------------- values *)
@@ -183,8 +160,8 @@ let test_values () =
     let s = of_list xs
     and t = of_list ys in
     if to_list (s ++ t) <> xs @ ys then incr bad_append;
-    if to_list (take n s) <> list_take n xs then incr bad_take;
-    if to_list (drop n s) <> list_drop n xs then incr bad_drop;
+    if to_list (take n s) <> List.take n xs then incr bad_take;
+    if to_list (drop n s) <> List.drop n xs then incr bad_drop;
     if to_list (reverse s) <> List.rev xs then incr bad_reverse;
     if to_list (take n s ++ drop n s) <> xs then incr bad_split
   done;
@@ -415,7 +392,7 @@ let rec walk s =
 let test_cost () =
   (* Guard against a vacuous check: if the probe cannot see allocation at all, everything
      below passes for the wrong reason. Building a stream certainly allocates. *)
-  let probe = words (fun () -> of_list (upto 64)) in
+  let probe = allocated (fun () -> of_list (upto 64)) in
   check
     (Printf.sprintf
        "the allocation probe registers work (building a stream costs %.0f words)"
@@ -423,7 +400,7 @@ let test_cost () =
     (probe > 0.0);
   let drop_cost n =
     let r = drop n (of_list (upto (n + 1))) in
-    words (fun () -> Lazy.force r)
+    allocated (fun () -> Lazy.force r)
   in
   let small = drop_cost 10
   and large = drop_cost 100_000 in
@@ -436,7 +413,7 @@ let test_cost () =
     (large <= small +. 4.0);
   let reverse_cost n =
     let r = reverse (of_list (upto n)) in
-    words (fun () -> walk r) /. float_of_int n
+    allocated (fun () -> walk r) /. float_of_int n
   in
   let small = reverse_cost 500
   and large = reverse_cost 4000 in
@@ -463,8 +440,6 @@ let test_cost () =
    A strict insertion sort fails that at k = 1, since it finishes all O(n²) of its work
    before it can return anything. So does any sort that merely hides a strict one inside a
    suspension, which is why "the call is free" is necessary here but nowhere near enough. *)
-
-let comparisons = ref 0
 
 let counting_compare a b =
   incr comparisons;

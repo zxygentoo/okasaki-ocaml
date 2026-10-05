@@ -33,22 +33,6 @@
 open Okasaki.Ch7
 open Harness
 
-let upto n = List.init n Fun.id
-
-(* ---------------------------------------------------------------- the clock *)
-
-(* Words allocated by [f], read before and after. Sys.opaque_identity stops the optimiser
-   discarding the result and with it the allocation being measured. The clock counts in
-   integers: a float reading would box, and the two words of the box would land inside the
-   measurement. *)
-let words () = int_of_float (Gc.minor_words ())
-
-let cost f =
-  let before = words () in
-  let r = Sys.opaque_identity (f ()) in
-  r, float_of_int (words () - before)
-;;
-
 (* The most a single operation may allocate, in words. Outside the schedule an operation
    of Figure 7.1 is a cons onto the rear and a fresh triple, 7 words. The one cell of the
    schedule it forces runs a step of rotate: a cons, the suspended cons pushed onto the
@@ -62,381 +46,24 @@ let constant = 48.0
 
 (* ---------------------------------------------------- shared queue contract *)
 
-module Queue_tests (Q : QUEUE) = struct
-  let of_list xs = List.fold_left Q.snoc Q.empty xs
-
-  (* head/tail to exhaustion. That this returns the elements in the order they were
-     snoc'ed is the whole behavioural specification of a queue. *)
-  let drain q =
-    let rec go acc q =
-      if Q.is_empty q then List.rev acc else go (Q.head q :: acc) (Q.tail q)
-    in
-    go [] q
-  ;;
-
-  let run_contract name =
-    let t label = Printf.sprintf "%s: %s" name label in
-    let eq label expect q =
-      check_eq (t label) ~expect ~actual:(drain q) string_of_int_list
-    in
-    let head_is label expect q = check_int (t label) ~expect ~actual:(Q.head q) in
-    check (t "empty is empty") (Q.is_empty Q.empty);
-    check (t "a singleton is not empty") (not (Q.is_empty (Q.snoc Q.empty 1)));
-    check_raises (t "head on empty raises") (Failure "head: empty queue") (fun () ->
-      Q.head Q.empty);
-    check_raises (t "tail on empty raises") (Failure "tail: empty queue") (fun () ->
-      ignore (Q.is_empty (Q.tail Q.empty)));
-    (* The two places the invariant can be lost. is_empty and head look at the front
-       alone, so a queue that lets its front run dry while elements wait in the rear
-       reports empty, and raises on head, with elements still in it. In this queue that is
-       what a snoc or a tail that skips the schedule does: the rotation is triggered by
-       the schedule running out, and nothing else moves the rear to the front. *)
-    head_is "snoc onto the empty queue makes its element the head" 7 (Q.snoc Q.empty 7);
-    head_is
-      "tail past the last front element moves on to the rear"
-      2
-      (Q.tail (of_list [ 1; 2; 3 ]));
-    eq "first in, first out" [ 1; 2; 3; 4; 5; 6; 7 ] (of_list [ 1; 2; 3; 4; 5; 6; 7 ]);
-    eq "equal elements are all kept, in order" [ 7; 7; 1; 7 ] (of_list [ 7; 7; 1; 7 ]);
-    (* Emptiness reached by draining must be as good as the [empty] it started from. *)
-    let drained = Q.tail (Q.tail (of_list [ 1; 2 ])) in
-    check (t "a queue drained to nothing is empty") (Q.is_empty drained);
-    check_raises
-      (t "head on a drained queue raises")
-      (Failure "head: empty queue")
-      (fun () -> Q.head drained);
-    eq "a drained queue can be refilled" [ 8; 9 ] (Q.snoc (Q.snoc drained 8) 9);
-    (* Randomised, against the obvious model: a list, snoc at the back, tail at the front.
-       Checked after every operation and not only at the end, because a lost invariant
-       shows up as a wrong is_empty or head long before it shows up in a drain. *)
-    Random.init 20260921;
-    let bad_empty = ref 0
-    and bad_head = ref 0
-    and bad_drain = ref 0
-    and raised = ref 0 in
-    for _ = 0 to 299 do
-      let q = ref Q.empty
-      and model = ref [] in
-      (* The model is never asked for the head or tail of nothing, so any Failure in here
-         is the queue refusing an operation it owes. *)
-      try
-        for i = 0 to 59 do
-          if !model = [] || Random.int 3 > 0
-          then (
-            q := Q.snoc !q i;
-            model := !model @ [ i ])
-          else (
-            q := Q.tail !q;
-            model := List.tl !model);
-          if Q.is_empty !q <> (!model = []) then incr bad_empty;
-          match !model with
-          | x :: _ when Q.head !q <> x -> incr bad_head
-          | _ -> ()
-        done;
-        if drain !q <> !model then incr bad_drain
-      with
-      | Failure _ -> incr raised
-    done;
-    check_int
-      (t "no operation raises on a non-empty queue, 300 random runs")
-      ~expect:0
-      ~actual:!raised;
-    check_int
-      (t "is_empty agrees with a list model, 300 random runs")
-      ~expect:0
-      ~actual:!bad_empty;
-    check_int
-      (t "head agrees with a list model, 300 random runs")
-      ~expect:0
-      ~actual:!bad_head;
-    check_int
-      (t "drain agrees with a list model, 300 random runs")
-      ~expect:0
-      ~actual:!bad_drain;
-    (* Persistence: no operation may disturb its operand, so every version ever built
-       stays correct, and two futures of one queue do not see each other. *)
-    let versions = List.init 20 (fun i -> of_list (upto i)) in
-    List.iter
-      (fun v ->
-        ignore (Q.snoc v 99);
-        if not (Q.is_empty v) then ignore (Q.tail v))
-      versions;
-    let stale =
-      List.mapi (fun i v -> if drain v = upto i then 0 else 1) versions
-      |> List.fold_left ( + ) 0
-    in
-    check_int (t "every earlier version stays correct") ~expect:0 ~actual:stale;
-    let q = of_list [ 1; 2; 3 ] in
-    let a = Q.snoc q 4
-    and b = Q.snoc q 5 in
-    eq "one future of a shared queue" [ 1; 2; 3; 4 ] a;
-    eq "does not leak into the other" [ 1; 2; 3; 5 ] b
-  ;;
-end
+(* Of the contract's two places where the invariant can be lost, a queue that lets its
+   front run dry while elements wait in the rear: in this queue that is what a snoc or a
+   tail that skips the schedule does, since the rotation is triggered by the schedule
+   running out, and nothing else moves the rear to the front. *)
+module Queue_tests (Q : QUEUE) = Queues.Contract (Q)
 
 (* ------------------------------------------ every operation on its own clock *)
 
-(* A sequence is data, built before anything is measured, so that building it cannot land
-   on the clock. *)
-type op =
-  | Snoc of int
-  | Tail
-  | Head
-
-let describe = function
-  | Snoc x -> Printf.sprintf "snoc %d" x
-  | Tail -> "tail"
-  | Head -> "head"
-;;
-
-module Worst_case (Q : QUEUE) = struct
-  let of_list xs = List.fold_left Q.snoc Q.empty xs
-
-  (* Runs [ops] from the empty queue with every operation on the clock by itself, and
-     reports the dearest: its index, what it was, and what it cost. The queue is threaded
-     through a reference and each closure is built before its clock starts, so nothing but
-     the operation is measured. *)
-  let dearest ops =
-    let q = ref Q.empty
-    and sum = ref 0
-    and dear = ref (0, Tail, 0.0) in
-    Array.iteri
-      (fun i op ->
-        let c =
-          match op with
-          | Snoc x ->
-            let q', c = cost (fun () -> Q.snoc !q x) in
-            q := q';
-            c
-          | Tail ->
-            let q', c = cost (fun () -> Q.tail !q) in
-            q := q';
-            c
-          | Head ->
-            let x, c = cost (fun () -> Q.head !q) in
-            sum := !sum + x;
-            c
-        in
-        let _, _, worst = !dear in
-        if c > worst then dear := i, op, c)
-      ops;
-    ignore (Sys.opaque_identity !q);
-    ignore (Sys.opaque_identity !sum);
-    !dear
-  ;;
-
-  (* ----------------------------------------- sequences: one thread, from empty *)
-
-  (* The sequences of test_ch6, as data. They differ in where the rotations fall: ever
-     larger ones at ever longer intervals, a tiny one at every step, or two snocs to every
-     tail so the front never stops growing. The heads sequence is the one in which a head
-     can do work: the head taken right after a rotation forces the first cell of the new
-     front, and that cell is a step of rotate. *)
-  let fill_then_drain n =
-    Array.init (2 * n) (fun i -> if i < n then Snoc (i + 1) else Tail)
-  ;;
-
-  let alternate n =
-    Array.init (2 * n) (fun i -> if i mod 2 = 0 then Snoc ((i / 2) + 1) else Tail)
-  ;;
-
-  let two_snocs_per_tail n =
-    Array.init (3 * n) (fun i -> if i mod 3 = 2 then Tail else Snoc ((i / 3) + 1))
-  ;;
-
-  let snoc_then_head n =
-    Array.init (2 * n) (fun i -> if i mod 2 = 0 then Snoc ((i / 2) + 1) else Head)
-  ;;
-
-  let random_mix n =
-    Random.init 20260921;
-    let size = ref 0 in
-    Array.init n (fun i ->
-      if !size = 0 || Random.int 3 > 0
-      then (
-        incr size;
-        Snoc i)
-      else (
-        decr size;
-        Tail))
-  ;;
-
-  let sequences =
-    [ "n snocs then n tails", fill_then_drain
-    ; "snoc and tail alternating", alternate
-    ; "two snocs to every tail", two_snocs_per_tail
-    ; "a head after every snoc", snoc_then_head
-    ; "a random mix", random_mix
-    ]
-  ;;
-
-  (* O(1) worst-case, asserted the only way a worst-case bound can be: on the dearest
-     single operation. The small size comes first and guards the large one, as in the
-     earlier chapters: an operation that is secretly linear makes a sequence quadratic,
-     and at n = 100_000 that is not a failure but a hang. The check at n = 1000 ends the
-     case instead. *)
-  let run_sequences name =
-    let t label = Printf.sprintf "%s: %s" name label in
-    List.iter
-      (fun (sequence, ops) ->
-        let within label n =
-          let i, op, c = dearest (ops n) in
-          check
-            (t
-               (Printf.sprintf
-                  "%s, %s: dearest is #%d (%s) at %.0f words, n=%d"
-                  sequence
-                  label
-                  i
-                  (describe op)
-                  c
-                  n))
-            (c <= constant)
-        in
-        within "O(1) worst-case" 1_000;
-        within "still O(1) worst-case, a hundred times longer" 100_000)
-      sequences
-  ;;
-
-  (* -------------------------------------- versions: several futures of one queue *)
-
-  (* n snocs, every version kept, and every snoc on the clock: the first future of each
-     version of a build. A build's versions are the ones on the brink of a rotation, and
-     the snoc that makes the next version is the one that starts it. *)
-  let build n =
-    let v = Array.make (n + 1) Q.empty
-    and dear = ref (0, 0.0) in
-    for i = 1 to n do
-      let q, c = cost (fun () -> Q.snoc v.(i - 1) i) in
-      v.(i) <- q;
-      if c > snd !dear then dear := i, c
-    done;
-    v, !dear
-  ;;
-
-  (* The same for a drain of a snoc-built queue: every version kept, every tail on the
-     clock. In Figure 6.1 one of these tails ran the reverse. *)
-  let drain n =
-    let v = Array.make (n + 1) Q.empty
-    and dear = ref (0, 0.0) in
-    v.(0) <- of_list (upto n);
-    for i = 1 to n do
-      let q, c = cost (fun () -> Q.tail v.(i - 1)) in
-      v.(i) <- q;
-      if c > snd !dear then dear := i, c
-    done;
-    v, !dear
-  ;;
-
-  (* One operation of each kind from every version in [v] whose size ([size k] for the
-     k-th) allows it, each on the clock, and each a second future of its version: the
-     future that built the array was the first. For each kind, the version it was dearest
-     from and what it cost there. *)
-  let short_futures v ~size =
-    let opaque x = ignore (Sys.opaque_identity x) in
-    let runs =
-      [ "tail", (fun q -> opaque (Q.tail q)), 1
-      ; "head", (fun q -> opaque (Q.head q)), 1
-      ; "snoc", (fun q -> opaque (Q.snoc q 0)), 0
-      ]
-    in
-    List.map
-      (fun (run, f, needs) ->
-        let worst = ref (0, 0.0) in
-        Array.iteri
-          (fun k q ->
-            if size k >= needs
-            then (
-              let _, c = cost (fun () -> f q) in
-              if c > snd !worst then worst := k, c))
-          v;
-        run, fst !worst, snd !worst)
-      runs
-  ;;
-
-  (* The whole drain, d times over from the same starting queue, every tail on the clock.
-     p.65 of Chapter 6 called this the branch point where "memoization does not help at
-     all": each round builds its own suspensions. Here each round is also its own
-     schedule, and pays as it goes. *)
-  let repeated_drain ~n ~d =
-    let q0 = of_list (upto n)
-    and dear = ref (0, 0.0) in
-    for round = 1 to d do
-      let q = ref q0 in
-      for _ = 1 to n do
-        let q', c = cost (fun () -> Q.tail !q) in
-        q := q';
-        if c > snd !dear then dear := round, c
-      done;
-      ignore (Sys.opaque_identity !q)
-    done;
-    !dear
-  ;;
-
-  (* n operations, each applied to a version chosen at random among all built so far, and
-     each on the clock. *)
-  let random_trace n =
-    Random.init 20260923;
-    let from = Array.init n (fun i -> Random.int (i + 1)) in
-    let wants_snoc = Array.init n (fun _ -> Random.int 3 > 0) in
-    let v = Array.make (n + 1) Q.empty
-    and dear = ref (0, Tail, 0.0) in
-    for i = 1 to n do
-      let q = v.(from.(i - 1)) in
-      let op = if wants_snoc.(i - 1) || Q.is_empty q then Snoc i else Tail in
-      let q', c =
-        match op with
-        | Snoc x -> cost (fun () -> Q.snoc q x)
-        | Tail | Head -> cost (fun () -> Q.tail q)
-      in
-      v.(i) <- q';
-      let _, _, worst = !dear in
-      if c > worst then dear := i, op, c
-    done;
-    ignore (Sys.opaque_identity v);
-    !dear
-  ;;
-
-  let run_versions name =
-    let t label = Printf.sprintf "%s: %s" name label in
-    let within label (k, c) =
-      check
-        (t (Printf.sprintf "%s, dearest from #%d at %.0f words" label k c))
-        (c <= constant)
-    in
-    let n = 2_000 in
-    let v, dear = build n in
-    within (Printf.sprintf "the snoc that makes each version of a build of %d" n) dear;
-    List.iter
-      (fun (run, k, c) ->
-        within (Printf.sprintf "%s from every version of a build of %d" run n) (k, c))
-      (short_futures v ~size:Fun.id);
-    let n = 1_000 in
-    let v, dear = drain n in
-    within (Printf.sprintf "the tail that makes each version of a drain of %d" n) dear;
-    List.iter
-      (fun (run, k, c) ->
-        within (Printf.sprintf "%s from every version of a drain of %d" run n) (k, c))
-      (short_futures v ~size:(fun k -> n - k));
-    within
-      (Printf.sprintf
-         "the whole drain of %d repeated 10 times from one queue, dearest round"
-         n)
-      (repeated_drain ~n ~d:10);
-    let n = 100_000 in
-    let i, op, c = random_trace n in
-    check
-      (t
-         (Printf.sprintf
-            "a random trace of %d operations, each on a random earlier version, dearest \
-             is #%d (%s) at %.0f words"
-            n
-            i
-            (describe op)
-            c))
-      (c <= constant)
-  ;;
-end
+(* In this queue a head can do work: the head taken right after a rotation forces the
+   first cell of the new front, and that cell is a step of rotate. *)
+module Worst_case (Q : QUEUE) =
+  Queues.Worst_case
+    (Q)
+    (struct
+      let constant = constant
+      let mix_seed = 20260921
+      let trace_seed = 20260923
+    end)
 
 (* -------------------------------------------------------------------- guard *)
 
@@ -455,10 +82,10 @@ let test_guard () =
        "guard: the same probe over Figure 6.1's queue sees its reverse, #%d (%s) at %.0f \
         words in a fill and drain of %d"
        i
-       (describe op)
+       (Queues.describe op)
        c
        n)
-    (op = Tail && c >= float_of_int n /. 2.)
+    (op = Queues.Tail && c >= float_of_int n /. 2.)
 ;;
 
 (* -------------------------------------------------------- RealTimeQueue (7.2) *)
@@ -512,14 +139,10 @@ let test_real_time () =
    rotate steps as usual. *)
 
 module Size_tests (Q : QUEUE_WITH_SIZES) = struct
-  let of_list xs = List.fold_left Q.snoc Q.empty xs
+  module Base = Queue_tests (Q)
 
-  let drain q =
-    let rec go acc q =
-      if Q.is_empty q then List.rev acc else go (Q.head q :: acc) (Q.tail q)
-    in
-    go [] q
-  ;;
+  let of_list = Base.of_list
+  let drain = Base.drain
 
   let run_sizes name =
     let t label = Printf.sprintf "%s: %s" name label in
@@ -720,49 +343,6 @@ let test_sizes () =
    comparisons, once a merge with the empty heap has normalized it: remove_min_tree
    compares once per tree but the first. *)
 
-let comparisons = ref 0
-
-module Counting_int = struct
-  type t = int
-
-  let eq a b =
-    incr comparisons;
-    a = b
-  ;;
-
-  let lt a b =
-    incr comparisons;
-    a < b
-  ;;
-
-  let leq a b =
-    incr comparisons;
-    a <= b
-  ;;
-end
-
-(* The result of one call of [f], with the comparisons and the words it spent. *)
-let spent f =
-  comparisons := 0;
-  let before = words () in
-  let r = Sys.opaque_identity (f ()) in
-  r, (float_of_int !comparisons, float_of_int (words () - before))
-;;
-
-let log2 n = log (float_of_int n) /. log 2.
-
-(* floor (log2 n), for n >= 1: a binomial heap of n elements holds at most floor (log2
-   (n + 1)) trees. *)
-let floor_log2 n =
-  let rec go acc n = if n <= 1 then acc else go (acc + 1) (n / 2) in
-  go 0 n
-;;
-
-let popcount n =
-  let rec go acc n = if n = 0 then acc else go (acc + (n land 1)) (n lsr 1) in
-  go 0 n
-;;
-
 (* The budgets of a single operation, worst case, given the size of the heap it is applied
    to. An insert is a node, the suspended digit insTree returns, a cons onto the schedule
    and a pair, and then two exec steps, each a link -- a node and a cons -- with the digit
@@ -790,16 +370,21 @@ type dear =
 
 let no_dear = { at = 0; op = ""; ratio = 0.0; c = 0.0; w = 0.0; size = 0 }
 
-let dearer d ~at ~op ~size (c, w) =
-  let cb, wb =
+(* The dearer of [d] and the operation just measured, each as a fraction of the budgets
+   [budget op size] gives it. *)
+let dearer_by budget d ~at ~op ~size (c, w) =
+  let cb, wb = budget op size in
+  let ratio = Float.max (c /. cb) (w /. wb) in
+  if ratio > d.ratio then { at; op; ratio; c; w; size } else d
+;;
+
+let dearer =
+  dearer_by (fun op size ->
     if op = "insert"
     then insert_comparisons, insert_words
     else (
       let l = log2 (size + 1) in
-      query_comparisons l, query_words l)
-  in
-  let ratio = Float.max (c /. cb) (w /. wb) in
-  if ratio > d.ratio then { at; op; ratio; c; w; size } else d
+      query_comparisons l, query_words l))
 ;;
 
 let show_dear d =
@@ -813,111 +398,11 @@ let show_dear d =
 ;;
 
 module Heap_tests (H : HEAP with type Element.t = int) = struct
-  let of_list xs = List.fold_left (fun h x -> H.insert x h) H.empty xs
+  include Heaps.Contract (H)
 
   (* A merge with the empty heap normalizes: every suspension in the digit stream is
      forced and the schedule is emptied. What the clocks then see is the heap's own. *)
   let normalized h = H.merge h H.empty
-
-  (* find_min/delete_min to exhaustion. That this comes out sorted is the whole
-     behavioural specification of a heap. *)
-  let drain h =
-    let rec go acc h =
-      if H.is_empty h then List.rev acc else go (H.find_min h :: acc) (H.delete_min h)
-    in
-    go [] h
-  ;;
-
-  (* ---------------------------------------------------------------- contract *)
-
-  let run_contract name =
-    let t label = Printf.sprintf "%s: %s" name label in
-    let eq label expect h =
-      check_eq (t label) ~expect ~actual:(drain h) string_of_int_list
-    in
-    check (t "empty is empty") (H.is_empty H.empty);
-    check (t "a singleton is not empty") (not (H.is_empty (H.insert 1 H.empty)));
-    check_raises
-      (t "find_min on empty raises")
-      (Failure "find_min: empty heap")
-      (fun () -> H.find_min H.empty);
-    check_raises
-      (t "delete_min on empty raises")
-      (Failure "delete_min: empty heap")
-      (fun () -> ignore (H.is_empty (H.delete_min H.empty)));
-    check_int (t "find_min of a singleton") ~expect:5 ~actual:(H.find_min (of_list [ 5 ]));
-    check
-      (t "delete_min of a singleton is empty")
-      (H.is_empty (H.delete_min (of_list [ 5 ])));
-    eq "drain is sorted" [ 1; 2; 3; 4; 5; 6; 7 ] (of_list [ 4; 2; 6; 1; 3; 5; 7 ]);
-    eq "a repeated element is kept when it is the root" [ 5; 5 ] (of_list [ 5; 5 ]);
-    eq
-      "a repeated element is kept when it is deep on the left"
-      [ 1; 2; 3; 4; 5; 5 ]
-      (of_list [ 5; 4; 3; 2; 1; 5 ]);
-    eq
-      "a repeated element is kept when it is deep on the right"
-      [ 1; 1; 2; 3; 4; 5 ]
-      (of_list [ 1; 2; 3; 4; 5; 1 ]);
-    eq "duplicates are all kept" [ 1; 1; 1; 2; 2; 3 ] (of_list [ 2; 1; 3; 1; 2; 1 ]);
-    check_int
-      (t "the minimum is found after ascending inserts")
-      ~expect:1
-      ~actual:(H.find_min (of_list [ 1; 2; 3 ]));
-    check_int
-      (t "the minimum is found after descending inserts")
-      ~expect:1
-      ~actual:(H.find_min (of_list [ 3; 2; 1 ]));
-    eq
-      "merge is multiset union"
-      [ 1; 2; 3; 4; 5; 6 ]
-      (H.merge (of_list [ 1; 4; 6 ]) (of_list [ 2; 3; 5 ]));
-    eq
-      "merge with an empty right operand"
-      [ 1; 2; 3 ]
-      (H.merge (of_list [ 3; 1; 2 ]) H.empty);
-    eq
-      "merge with an empty left operand"
-      [ 1; 2; 3 ]
-      (H.merge H.empty (of_list [ 3; 1; 2 ]));
-    check (t "merge of two empties is empty") (H.is_empty (H.merge H.empty H.empty));
-    (* Randomised, against List.sort as the reference, with few distinct values so that
-       equal elements are everywhere. *)
-    Random.init 20260922;
-    let bad_insert = ref 0
-    and bad_merge = ref 0
-    and raised = ref 0 in
-    for _ = 0 to 299 do
-      let xs = List.init (Random.int 40) (fun _ -> Random.int 25)
-      and ys = List.init (Random.int 40) (fun _ -> Random.int 25) in
-      match
-        if drain (of_list xs) <> List.sort compare xs then incr bad_insert;
-        if drain (H.merge (of_list xs) (of_list ys)) <> List.sort compare (xs @ ys)
-        then incr bad_merge
-      with
-      | () -> ()
-      | exception Failure _ -> incr raised
-    done;
-    check_int
-      (t "no operation raises on a non-empty heap, 300 random runs")
-      ~expect:0
-      ~actual:!raised;
-    check_int (t "insert then drain, 300 random lists") ~expect:0 ~actual:!bad_insert;
-    check_int (t "merge then drain, 300 random pairs") ~expect:0 ~actual:!bad_merge;
-    (* Persistence: no operation may disturb its operands. With suspensions in the picture
-       that includes forcing: a heap looked at through one future must read the same
-       through another. *)
-    let h = of_list [ 5; 3; 8; 1 ] in
-    let a = H.insert 0 h
-    and b = H.insert 4 h
-    and c = H.delete_min h
-    and d = H.merge h h in
-    eq "one future of a shared heap" [ 0; 1; 3; 5; 8 ] a;
-    eq "another" [ 1; 3; 4; 5; 8 ] b;
-    eq "a third" [ 3; 5; 8 ] c;
-    eq "a fourth" [ 1; 1; 3; 3; 5; 5; 8; 8 ] d;
-    eq "and the operand is untouched" [ 1; 3; 5; 8 ] h
-  ;;
 
   (* --------------------------------------------------------------- structure *)
 
@@ -925,45 +410,10 @@ module Heap_tests (H : HEAP with type Element.t = int) = struct
      force. *)
   let trees h =
     let nh = normalized h in
-    let _, (c, _) = spent (fun () -> H.find_min nh) in
-    int_of_float c + 1
+    count_only (fun () -> H.find_min nh) + 1
   ;;
 
-  let run_structure name =
-    let t label = Printf.sprintf "%s: %s" name label in
-    let bad = ref 0
-    and first = ref "" in
-    Random.init 20260918;
-    for n = 1 to 120 do
-      let xs = List.init n (fun _ -> Random.int 1000) in
-      let h = ref (of_list xs)
-      and left = ref n in
-      while not (H.is_empty !h) do
-        if trees !h <> popcount !left
-        then (
-          incr bad;
-          if !first = ""
-          then
-            first
-            := Printf.sprintf
-                 " -- first at n=%d, %d left, %d trees, popcount %d"
-                 n
-                 !left
-                 (trees !h)
-                 (popcount !left));
-        h := H.delete_min !h;
-        decr left
-      done
-    done;
-    check
-      (t (Printf.sprintf "one tree per 1 bit of n, at every step of a drain%s" !first))
-      (!bad = 0);
-    let over = ref 0 in
-    List.iter
-      (fun n -> if trees (of_list (upto n)) > floor_log2 (n + 1) then incr over)
-      [ 1; 7; 8; 15; 16; 100; 1000; 10_000 ];
-    check_int (t "at most floor(log2 (n+1)) trees") ~expect:0 ~actual:!over
-  ;;
+  let run_structure name = run_tree_counts ~trees name
 
   (* ------------------------------------------- every operation on its own clock *)
 
@@ -1255,67 +705,15 @@ let add_words l = (64. *. l) +. 64.
 let sort_comparisons n = (4. *. float_of_int n) +. 4.
 let sort_words n = (96. *. float_of_int n) +. 128.
 
-let dearer_sortable d ~at ~op ~size (c, w) =
-  let cb, wb =
+let dearer_sortable =
+  dearer_by (fun op size ->
     if op = "add"
     then add_comparisons (size + 1), add_words (log2 (size + 2))
-    else sort_comparisons size, sort_words size
-  in
-  let ratio = Float.max (c /. cb) (w /. wb) in
-  if ratio > d.ratio then { at; op; ratio; c; w; size } else d
-;;
-
-let show_sortable_dear d =
-  Printf.sprintf
-    "dearest is #%d (%s on %d elements) at %.0f comparisons and %.0f words"
-    d.at
-    d.op
-    d.size
-    d.c
-    d.w
+    else sort_comparisons size, sort_words size)
 ;;
 
 module Sortable_tests (S : SORTABLE with type Element.t = int) = struct
-  let of_list xs = List.fold_left (fun s x -> S.add x s) S.empty xs
-
-  (* ---------------------------------------------------------------- contract *)
-
-  let run_contract name =
-    let t label = Printf.sprintf "%s: %s" name label in
-    let eq label expect s =
-      check_eq (t label) ~expect ~actual:(S.sort s) string_of_int_list
-    in
-    eq "sort of empty is empty" [] S.empty;
-    eq "sort of a singleton" [ 5 ] (of_list [ 5 ]);
-    eq "sort sorts" [ 1; 2; 3; 4; 5; 6; 7 ] (of_list [ 4; 2; 6; 1; 3; 5; 7 ]);
-    eq "duplicates are all kept" [ 1; 1; 1; 2; 2; 3 ] (of_list [ 2; 1; 3; 1; 2; 1 ]);
-    eq "ascending input" (upto 20) (of_list (upto 20));
-    eq "descending input" (upto 20) (of_list (List.rev (upto 20)));
-    (* Sizes on either side of a power of two: every bit set, one bit set, and one more. *)
-    eq "31 elements" (upto 31) (of_list (List.rev (upto 31)));
-    eq "32 elements" (upto 32) (of_list (List.rev (upto 32)));
-    eq "33 elements" (upto 33) (of_list (List.rev (upto 33)));
-    (* Randomised, against List.sort, with few distinct values so that equal elements are
-       everywhere. *)
-    Random.init 20260925;
-    let bad = ref 0
-    and raised = ref 0 in
-    for _ = 0 to 299 do
-      let xs = List.init (Random.int 200) (fun _ -> Random.int 50) in
-      match S.sort (of_list xs) = List.sort compare xs with
-      | true -> ()
-      | false -> incr bad
-      | exception Failure _ -> incr raised
-    done;
-    check_int (t "no sort raises, 300 random lists") ~expect:0 ~actual:!raised;
-    check_int (t "sort agrees with List.sort, 300 random lists") ~expect:0 ~actual:!bad;
-    (* Persistence, in the section's own terms: xs' serves xs, x :: xs and y :: xs. *)
-    let xs' = of_list [ 5; 3; 8; 1; 9; 2 ] in
-    eq "xs" [ 1; 2; 3; 5; 8; 9 ] xs';
-    eq "x :: xs, from the same collection" [ 1; 2; 3; 4; 5; 8; 9 ] (S.add 4 xs');
-    eq "y :: xs, from the same collection" [ 0; 1; 2; 3; 5; 8; 9 ] (S.add 0 xs');
-    eq "xs again, untouched" [ 1; 2; 3; 5; 8; 9 ] xs'
-  ;;
+  include Heaps.Sortable_contract (S)
 
   (* ------------------------------------------- every operation on its own clock *)
 
@@ -1391,22 +789,10 @@ module Sortable_tests (S : SORTABLE with type Element.t = int) = struct
           let add, sort = dearest (ops n) in
           let fine d = d.ratio <= 1.0 in
           check
-            (t
-               (Printf.sprintf
-                  "%s, %s at n=%d: %s"
-                  sequence
-                  label
-                  n
-                  (show_sortable_dear add)))
+            (t (Printf.sprintf "%s, %s at n=%d: %s" sequence label n (show_dear add)))
             (fine add);
           check
-            (t
-               (Printf.sprintf
-                  "%s, %s at n=%d: %s"
-                  sequence
-                  label
-                  n
-                  (show_sortable_dear sort)))
+            (t (Printf.sprintf "%s, %s at n=%d: %s" sequence label n (show_dear sort)))
             (fine sort)
         in
         within "O(log n) adds and O(n) sorts, worst-case" small;
@@ -1419,7 +805,7 @@ module Sortable_tests (S : SORTABLE with type Element.t = int) = struct
   let run_versions name =
     let t label = Printf.sprintf "%s: %s" name label in
     let within label d =
-      check (t (Printf.sprintf "%s, %s" label (show_sortable_dear d))) (d.ratio <= 1.0)
+      check (t (Printf.sprintf "%s, %s" label (show_dear d))) (d.ratio <= 1.0)
     in
     (* Every version of a build kept, every add on the clock: the first future of each. *)
     let n = 2_000 in

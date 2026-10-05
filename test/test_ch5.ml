@@ -26,16 +26,6 @@
 open Okasaki.Ch5
 open Harness
 
-(* Words allocated by [f]. Sys.opaque_identity stops the optimiser discarding the result
-   and with it the allocation we are trying to measure. *)
-let words f =
-  let before = Gc.minor_words () in
-  ignore (Sys.opaque_identity (f ()));
-  Gc.minor_words () -. before
-;;
-
-let upto n = List.init n Fun.id
-
 (* The most a cheap operation may allocate, in words, and the most a sequence may average
    per operation. Outside the reversal, an operation of Figure 5.2 allocates a cons and a
    pair at the very most twice over, 12 words; the reversal's 3 words per element are
@@ -45,12 +35,6 @@ let upto n = List.init n Fun.id
    near an operation that is really linear: at the sizes used here that is out by a factor
    of hundreds. *)
 let constant = 16.0
-
-(* For a check that sweeps many cases and keeps the offenders: say which came first. *)
-let first_of describe = function
-  | [] -> ""
-  | bad -> " -- " ^ describe (List.nth bad (List.length bad - 1))
-;;
 
 (* Amortised O(1), asserted the only way an amortised bound can be: over whole sequences.
    Each is (name, operations per unit of n, driver), and a driver runs its sequence from
@@ -65,7 +49,7 @@ let run_sequences name sequences =
   List.iter
     (fun (sequence, per_n, driver) ->
       let within label n =
-        let w = words (driver n) /. float_of_int (per_n * n) in
+        let w = allocated (driver n) /. float_of_int (per_n * n) in
         check
           (t
              (Printf.sprintf
@@ -84,113 +68,7 @@ let run_sequences name sequences =
 (* ---------------------------------------------------- shared queue contract *)
 
 module Queue_tests (Q : QUEUE) = struct
-  let of_list xs = List.fold_left Q.snoc Q.empty xs
-
-  (* head/tail to exhaustion. That this returns the elements in the order they were
-     snoc'ed is the whole behavioural specification of a queue. *)
-  let drain q =
-    let rec go acc q =
-      if Q.is_empty q then List.rev acc else go (Q.head q :: acc) (Q.tail q)
-    in
-    go [] q
-  ;;
-
-  let run_contract name =
-    let t label = Printf.sprintf "%s: %s" name label in
-    let eq label expect q =
-      check_eq (t label) ~expect ~actual:(drain q) string_of_int_list
-    in
-    let head_is label expect q = check_int (t label) ~expect ~actual:(Q.head q) in
-    check (t "empty is empty") (Q.is_empty Q.empty);
-    check (t "a singleton is not empty") (not (Q.is_empty (Q.snoc Q.empty 1)));
-    check_raises (t "head on empty raises") (Failure "head: empty queue") (fun () ->
-      Q.head Q.empty);
-    check_raises (t "tail on empty raises") (Failure "tail: empty queue") (fun () ->
-      ignore (Q.is_empty (Q.tail Q.empty)));
-    (* The two places the invariant can be lost. is_empty and head look at the front list
-       alone, so a queue that lets its front run dry while elements wait in the rear
-       reports empty, and raises on head, with elements still in it. *)
-    head_is "snoc onto the empty queue makes its element the head" 7 (Q.snoc Q.empty 7);
-    head_is
-      "tail past the last front element moves on to the rear"
-      2
-      (Q.tail (of_list [ 1; 2; 3 ]));
-    eq "first in, first out" [ 1; 2; 3; 4; 5; 6; 7 ] (of_list [ 1; 2; 3; 4; 5; 6; 7 ]);
-    eq "equal elements are all kept, in order" [ 7; 7; 1; 7 ] (of_list [ 7; 7; 1; 7 ]);
-    (* Emptiness reached by draining must be as good as the [empty] it started from. *)
-    let drained = Q.tail (Q.tail (of_list [ 1; 2 ])) in
-    check (t "a queue drained to nothing is empty") (Q.is_empty drained);
-    check_raises
-      (t "head on a drained queue raises")
-      (Failure "head: empty queue")
-      (fun () -> Q.head drained);
-    eq "a drained queue can be refilled" [ 8; 9 ] (Q.snoc (Q.snoc drained 8) 9);
-    (* Randomised, against the obvious model: a list, snoc at the back, tail at the front.
-       Checked after every operation and not only at the end, because a lost invariant
-       shows up as a wrong is_empty or head long before it shows up in a drain. *)
-    Random.init 20260921;
-    let bad_empty = ref 0
-    and bad_head = ref 0
-    and bad_drain = ref 0
-    and raised = ref 0 in
-    for _ = 0 to 299 do
-      let q = ref Q.empty
-      and model = ref [] in
-      (* The model is never asked for the head or tail of nothing, so any Failure in here
-         is the queue refusing an operation it owes. *)
-      try
-        for i = 0 to 59 do
-          if !model = [] || Random.int 3 > 0
-          then (
-            q := Q.snoc !q i;
-            model := !model @ [ i ])
-          else (
-            q := Q.tail !q;
-            model := List.tl !model);
-          if Q.is_empty !q <> (!model = []) then incr bad_empty;
-          match !model with
-          | x :: _ when Q.head !q <> x -> incr bad_head
-          | _ -> ()
-        done;
-        if drain !q <> !model then incr bad_drain
-      with
-      | Failure _ -> incr raised
-    done;
-    check_int
-      (t "no operation raises on a non-empty queue, 300 random runs")
-      ~expect:0
-      ~actual:!raised;
-    check_int
-      (t "is_empty agrees with a list model, 300 random runs")
-      ~expect:0
-      ~actual:!bad_empty;
-    check_int
-      (t "head agrees with a list model, 300 random runs")
-      ~expect:0
-      ~actual:!bad_head;
-    check_int
-      (t "drain agrees with a list model, 300 random runs")
-      ~expect:0
-      ~actual:!bad_drain;
-    (* Persistence: no operation may disturb its operand, so every version ever built
-       stays correct, and two futures of one queue do not see each other. *)
-    let versions = List.init 20 (fun i -> of_list (upto i)) in
-    List.iter
-      (fun v ->
-        ignore (Q.snoc v 99);
-        if not (Q.is_empty v) then ignore (Q.tail v))
-      versions;
-    let stale =
-      List.mapi (fun i v -> if drain v = upto i then 0 else 1) versions
-      |> List.fold_left ( + ) 0
-    in
-    check_int (t "every earlier version stays correct") ~expect:0 ~actual:stale;
-    let q = of_list [ 1; 2; 3 ] in
-    let a = Q.snoc q 4
-    and b = Q.snoc q 5 in
-    eq "one future of a shared queue" [ 1; 2; 3; 4 ] a;
-    eq "does not leak into the other" [ 1; 2; 3; 5 ] b
-  ;;
+  include Queues.Contract (Q)
 
   (* ------------------------------------------------- amortised O(1) per operation *)
 
@@ -274,7 +152,7 @@ let test_batched_worst_case () =
   let bad = ref [] in
   List.iter
     (fun (n, q) ->
-      let w = words (fun () -> BatchedQueue.head q) in
+      let w = allocated (fun () -> BatchedQueue.head q) in
       if w <> 0.0 then bad := (n, w) :: !bad)
     built;
   check
@@ -286,8 +164,8 @@ let test_batched_worst_case () =
     (!bad = []);
   let worst =
     List.fold_left
-      (fun acc (_, q) -> Float.max acc (words (fun () -> BatchedQueue.snoc q 0)))
-      (words (fun () -> BatchedQueue.snoc BatchedQueue.empty 0))
+      (fun acc (_, q) -> Float.max acc (allocated (fun () -> BatchedQueue.snoc q 0)))
+      (allocated (fun () -> BatchedQueue.snoc BatchedQueue.empty 0))
       built
   in
   check
@@ -298,7 +176,7 @@ let test_batched_worst_case () =
      reversal, the amortised checks would pass without having measured anything. *)
   let n = 100_000 in
   let q = List.assoc n built in
-  let expensive = words (fun () -> BatchedQueue.tail q) in
+  let expensive = allocated (fun () -> BatchedQueue.tail q) in
   check
     (Printf.sprintf
        "BatchedQueue: the tail that runs the front out reverses the whole rear (%.0f \
@@ -309,7 +187,7 @@ let test_batched_worst_case () =
   (* ... and it is the only one. Having paid, the next n-2 tails are as cheap as a tail
      can be, which is where the amortised bound comes from. *)
   let rest = BatchedQueue.tail q in
-  let cheap = words (fun () -> BatchedQueue.tail rest) in
+  let cheap = allocated (fun () -> BatchedQueue.tail rest) in
   check
     (Printf.sprintf
        "BatchedQueue: and the tail after it is cheap again (%.0f words)"
@@ -358,198 +236,13 @@ let test_batched () =
 module Deque_tests (D : DEQUE) = struct
   module As_queue = Queue_tests (D)
 
-  (* Four ways to build the deque that reads [xs] from front to back. *)
-  let snocs xs = List.fold_left D.snoc D.empty xs
-  let conses xs = List.fold_left (fun q x -> D.cons x q) D.empty (List.rev xs)
-
-  let halves xs =
-    let k = List.length xs / 2 in
-    List.filteri (fun i _ -> i < k) xs, List.filteri (fun i _ -> i >= k) xs
-  ;;
-
-  let builds =
-    [ "snoc", snocs
-    ; "cons", conses
-    ; ( "cons onto snoc"
-      , fun xs ->
-          let left, right = halves xs in
-          List.fold_left (fun q x -> D.cons x q) (snocs right) (List.rev left) )
-    ; ( "snoc onto cons"
-      , fun xs ->
-          let left, right = halves xs in
-          List.fold_left D.snoc (conses left) right )
-    ]
-  ;;
-
-  (* Three ways to take one apart. Each returns the elements front to back. *)
-  let drain_front q =
-    let rec go acc q =
-      if D.is_empty q then List.rev acc else go (D.head q :: acc) (D.tail q)
-    in
-    go [] q
-  ;;
-
-  let drain_back q =
-    let rec go acc q = if D.is_empty q then acc else go (D.last q :: acc) (D.init q) in
-    go [] q
-  ;;
-
-  let drain_both_ends q =
-    let rec go front back from_front q =
-      if D.is_empty q
-      then List.rev_append front back
-      else if from_front
-      then go (D.head q :: front) back false (D.tail q)
-      else go front (D.last q :: back) true (D.init q)
-    in
-    go [] [] true q
-  ;;
-
-  let drains =
-    [ "the front", drain_front; "the back", drain_back; "both ends", drain_both_ends ]
-  ;;
-
-  let run_contract name =
-    let t label = Printf.sprintf "%s: %s" name label in
-    check_raises (t "last on empty raises") (Failure "last: empty queue") (fun () ->
-      D.last D.empty);
-    check_raises (t "init on empty raises") (Failure "init: empty queue") (fun () ->
-      ignore (D.is_empty (D.init D.empty)));
-    (* One element, by every route: put there from either end, or left behind by a removal
-       from either end of each two-element deque. *)
-    let routes =
-      [ ("snoc", fun () -> D.snoc D.empty 7)
-      ; ("cons", fun () -> D.cons 7 D.empty)
-      ; ("tail of two snocs", fun () -> D.tail (snocs [ 0; 7 ]))
-      ; ("init of two snocs", fun () -> D.init (snocs [ 7; 0 ]))
-      ; ("tail of two conses", fun () -> D.tail (conses [ 0; 7 ]))
-      ; ("init of two conses", fun () -> D.init (conses [ 7; 0 ]))
-      ; ("tail of a cons onto a snoc", fun () -> D.tail (D.cons 0 (D.snoc D.empty 7)))
-      ; ("init of a snoc onto a cons", fun () -> D.init (D.snoc (D.cons 7 D.empty) 0))
-      ]
-    in
-    (* The first thing a one-element deque owes that [make ()] does not deliver. *)
-    let lacks make =
-      match
-        let q = make () in
-        if D.is_empty q
-        then Some "it claims to be empty"
-        else if D.head q <> 7
-        then Some "head is wrong"
-        else if D.last q <> 7
-        then Some "last is wrong"
-        else if not (D.is_empty (D.tail q))
-        then Some "its tail is not empty"
-        else if not (D.is_empty (D.init q))
-        then Some "its init is not empty"
-        else None
-      with
-      | verdict -> verdict
-      | exception Failure why -> Some ("it raised " ^ why)
-    in
-    let bad =
-      List.filter_map
-        (fun (route, make) -> Option.map (fun why -> route, why) (lacks make))
-        (List.rev routes)
-    in
-    check
-      (t
-         (Printf.sprintf
-            "one element behaves the same by every route to it%s"
-            (first_of
-               (fun (route, why) -> Printf.sprintf "reached by %s, %s" route why)
-               bad)))
-      (bad = []);
-    (* The crossing. Every build, read from every end, at every small size: 0 to 20 covers
-       the empty deque, both one-element shapes, the two- and three-element rebalances
-       where a half is a single element, and odd and even splits after that. *)
-    let bad = ref [] in
-    for n = 20 downto 0 do
-      let xs = upto n in
-      List.iter
-        (fun (build, make) ->
-          List.iter
-            (fun (drain, take) ->
-              match take (make xs) with
-              | got when got = xs -> ()
-              | got -> bad := (build, drain, n, string_of_int_list got) :: !bad
-              | exception Failure why -> bad := (build, drain, n, "raised " ^ why) :: !bad)
-            drains)
-        builds
-    done;
-    check
-      (t
-         (Printf.sprintf
-            "every build reads back correctly from every end, sizes 0 to 20%s"
-            (match !bad with
-             | [] -> ""
-             | (build, drain, n, got) :: _ ->
-               Printf.sprintf " -- built by %s, n=%d, read from %s: %s" build n drain got)))
-      (!bad = []);
-    (* Randomised against a list, with all four writers and all three readers, checked
-       after every operation. *)
-    Random.init 20260921;
-    let bad_empty = ref 0
-    and bad_head = ref 0
-    and bad_last = ref 0
-    and bad_drain = ref 0
-    and raised = ref 0 in
-    for run = 0 to 299 do
-      let q = ref D.empty
-      and model = ref [] in
-      try
-        for i = 0 to 59 do
-          (match Random.int 6 with
-           | 0 | 1 ->
-             q := D.snoc !q i;
-             model := !model @ [ i ]
-           | 2 | 3 ->
-             q := D.cons i !q;
-             model := i :: !model
-           | 4 when !model <> [] ->
-             q := D.tail !q;
-             model := List.tl !model
-           | 5 when !model <> [] ->
-             q := D.init !q;
-             model := List.rev (List.tl (List.rev !model))
-           | _ -> ());
-          if D.is_empty !q <> (!model = []) then incr bad_empty;
-          match !model with
-          | [] -> ()
-          | x :: _ ->
-            if D.head !q <> x then incr bad_head;
-            if D.last !q <> List.hd (List.rev !model) then incr bad_last
-        done;
-        let _, take = List.nth drains (run mod 3) in
-        if take !q <> !model then incr bad_drain
-      with
-      | Failure _ -> incr raised
-    done;
-    check_int
-      (t "no operation raises on a non-empty deque, 300 random runs")
-      ~expect:0
-      ~actual:!raised;
-    check_int (t "is_empty agrees with a list model") ~expect:0 ~actual:!bad_empty;
-    check_int (t "head agrees with a list model") ~expect:0 ~actual:!bad_head;
-    check_int (t "last agrees with a list model") ~expect:0 ~actual:!bad_last;
-    check_int (t "every drain agrees with a list model") ~expect:0 ~actual:!bad_drain;
-    (* Persistence, with all four writers let loose on every version. *)
-    let versions = List.init 20 (fun i -> snocs (upto i)) in
-    List.iter
-      (fun v ->
-        ignore (D.snoc v 99);
-        ignore (D.cons 99 v);
-        if not (D.is_empty v)
-        then (
-          ignore (D.tail v);
-          ignore (D.init v)))
-      versions;
-    let stale =
-      List.mapi (fun i v -> if drain_both_ends v = upto i then 0 else 1) versions
-      |> List.fold_left ( + ) 0
-    in
-    check_int (t "every earlier version stays correct") ~expect:0 ~actual:stale
-  ;;
+  include
+    Queues.Deque_contract
+      (D)
+      (struct
+        let refused name op f = check_failure name (op ^ ": empty queue") f
+        let seed = 20260921
+      end)
 
   (* --------------------------------------------- amortised O(1), switching ends *)
 
@@ -627,9 +320,11 @@ module Deque_tests (D : DEQUE) = struct
         let t label = Printf.sprintf "%s: %s, %s" name side label in
         let q = build (upto n) in
         (* What the invariant is for: both ends readable without going looking. *)
-        let looking q = words (fun () -> D.head q) +. words (fun () -> D.last q) in
+        let looking q =
+          allocated (fun () -> D.head q) +. allocated (fun () -> D.last q)
+        in
         check (t "head and last allocate nothing before the rebalance") (looking q = 0.0);
-        let expensive = words (fun () -> remove q) in
+        let expensive = allocated (fun () -> remove q) in
         (* Linear, because it moves half: at least a cons for each element that crosses.
            It is also the guard on the amortised checks, which would pass unmeasured if
            the probe could not see a rebalance at all. *)
@@ -642,8 +337,8 @@ module Deque_tests (D : DEQUE) = struct
           (expensive >= 1.5 *. float_of_int (n - 2));
         let after = remove q in
         check (t "head and last allocate nothing after it") (looking after = 0.0);
-        let near = words (fun () -> remove after)
-        and far = words (fun () -> remove_other after) in
+        let near = allocated (fun () -> remove after)
+        and far = allocated (fun () -> remove_other after) in
         check
           (t
              (Printf.sprintf
@@ -654,7 +349,7 @@ module Deque_tests (D : DEQUE) = struct
         (* In half: the side that ran dry now holds n/2, so that is how many removals it
            takes to run it dry again. Carrying one element across gives 0 here. *)
         let rec cheap_run count q =
-          if count > n || words (fun () -> remove q) > constant
+          if count > n || allocated (fun () -> remove q) > constant
           then count
           else cheap_run (count + 1) (remove q)
         in
@@ -715,37 +410,6 @@ let test_deque () =
    quietly losing an element equal to the pivot, or carrying a subtree to the wrong side
    of its parent. *)
 
-let comparisons = ref 0
-
-module Counting_int = struct
-  type t = int
-
-  let eq a b =
-    incr comparisons;
-    a = b
-  ;;
-
-  let lt a b =
-    incr comparisons;
-    a < b
-  ;;
-
-  let leq a b =
-    incr comparisons;
-    a <= b
-  ;;
-end
-
-(* Comparisons performed by [f]. *)
-let count f =
-  comparisons := 0;
-  let r = f () in
-  r, !comparisons
-;;
-
-let count_only f = snd (count f)
-let log2 n = log (float_of_int n) /. log 2.
-
 (* Per operation, amortised, for the O(log n) heaps of this chapter: Theorem 5.2's 1 + 2
    log2(#t) partition calls, two comparisons each, doubled for a two-pass partition; and
    for words, the nodes those calls copy, with room for delete_min's. #t is the size plus
@@ -767,8 +431,9 @@ let run_log_sequences name sequences =
       let within n =
         let f = driver n in
         let ops = float_of_int (per_n * n) in
-        let c = float_of_int (count_only f) /. ops in
-        let w = words f /. ops in
+        let _, (c, w) = spent f in
+        let c = c /. ops
+        and w = w /. ops in
         check
           (t
              (Printf.sprintf
@@ -810,100 +475,10 @@ let run_log_sequences name sequences =
 ;;
 
 module Heap_tests (H : HEAP with type Element.t = int) = struct
-  let of_list xs = List.fold_left (fun h x -> H.insert x h) H.empty xs
-
-  (* find_min/delete_min to exhaustion. That this comes out sorted is the whole
-     behavioural specification of a heap. *)
-  let drain h =
-    let rec go acc h =
-      if H.is_empty h then List.rev acc else go (H.find_min h :: acc) (H.delete_min h)
-    in
-    go [] h
-  ;;
+  include Heaps.Contract (H)
 
   let run_contract name =
-    let t label = Printf.sprintf "%s: %s" name label in
-    let eq label expect h =
-      check_eq (t label) ~expect ~actual:(drain h) string_of_int_list
-    in
-    check (t "empty is empty") (H.is_empty H.empty);
-    check (t "a singleton is not empty") (not (H.is_empty (H.insert 1 H.empty)));
-    check_raises
-      (t "find_min on empty raises")
-      (Failure "find_min: empty heap")
-      (fun () -> H.find_min H.empty);
-    check_raises
-      (t "delete_min on empty raises")
-      (Failure "delete_min: empty heap")
-      (fun () -> ignore (H.is_empty (H.delete_min H.empty)));
-    check_int (t "find_min of a singleton") ~expect:5 ~actual:(H.find_min (of_list [ 5 ]));
-    check
-      (t "delete_min of a singleton is empty")
-      (H.is_empty (H.delete_min (of_list [ 5 ])));
-    eq "drain is sorted" [ 1; 2; 3; 4; 5; 6; 7 ] (of_list [ 4; 2; 6; 1; 3; 5; 7 ]);
-    (* Aimed at Exercise 5.4. A drain of distinct elements cannot tell which side of the
-       partition an element equal to the pivot went to -- but it must go to one of them.
-       Sent to neither, it vanishes. The copy is met at the root, at the bottom of the
-       left spine and at the bottom of the right spine, so every branch of the partition
-       meets it. *)
-    eq "a repeated element is kept when it is the root" [ 5; 5 ] (of_list [ 5; 5 ]);
-    eq
-      "a repeated element is kept when it is deep on the left"
-      [ 1; 2; 3; 4; 5; 5 ]
-      (of_list [ 5; 4; 3; 2; 1; 5 ]);
-    eq
-      "a repeated element is kept when it is deep on the right"
-      [ 1; 1; 2; 3; 4; 5 ]
-      (of_list [ 1; 2; 3; 4; 5; 1 ]);
-    eq "duplicates are all kept" [ 1; 1; 1; 2; 2; 3 ] (of_list [ 2; 1; 3; 1; 2; 1 ]);
-    (* Also aimed at Exercise 5.4. A subtree carried to the wrong side of its parent keeps
-       every element, so only the order notices, and it notices first at the minimum:
-       find_min follows left branches, and a minimum that has been put on the right is not
-       where it looks. *)
-    check_int
-      (t "the minimum is found after ascending inserts")
-      ~expect:1
-      ~actual:(H.find_min (of_list [ 1; 2; 3 ]));
-    check_int
-      (t "the minimum is found after descending inserts")
-      ~expect:1
-      ~actual:(H.find_min (of_list [ 3; 2; 1 ]));
-    eq
-      "merge is multiset union"
-      [ 1; 2; 3; 4; 5; 6 ]
-      (H.merge (of_list [ 1; 4; 6 ]) (of_list [ 2; 3; 5 ]));
-    eq
-      "merge with an empty right operand"
-      [ 1; 2; 3 ]
-      (H.merge (of_list [ 3; 1; 2 ]) H.empty);
-    eq
-      "merge with an empty left operand"
-      [ 1; 2; 3 ]
-      (H.merge H.empty (of_list [ 3; 1; 2 ]));
-    check (t "merge of two empties is empty") (H.is_empty (H.merge H.empty H.empty));
-    (* Randomised, against List.sort as the reference, with few distinct values so that
-       equal elements are everywhere. *)
-    Random.init 20260922;
-    let bad_insert = ref 0
-    and bad_merge = ref 0
-    and raised = ref 0 in
-    for _ = 0 to 299 do
-      let xs = List.init (Random.int 40) (fun _ -> Random.int 25)
-      and ys = List.init (Random.int 40) (fun _ -> Random.int 25) in
-      match
-        if drain (of_list xs) <> List.sort compare xs then incr bad_insert;
-        if drain (H.merge (of_list xs) (of_list ys)) <> List.sort compare (xs @ ys)
-        then incr bad_merge
-      with
-      | () -> ()
-      | exception Failure _ -> incr raised
-    done;
-    check_int
-      (t "no operation raises on a non-empty heap, 300 random runs")
-      ~expect:0
-      ~actual:!raised;
-    check_int (t "insert then drain, 300 random lists") ~expect:0 ~actual:!bad_insert;
-    check_int (t "merge then drain, 300 random pairs") ~expect:0 ~actual:!bad_merge;
+    run_core name;
     (* Persistence: no operation may disturb its operands. A splay heap restructures on
        every insert and delete_min, so this is the check that the restructuring builds new
        nodes rather than reusing old ones in a new place. *)
@@ -912,7 +487,11 @@ module Heap_tests (H : HEAP with type Element.t = int) = struct
     and _ = H.insert 4 h
     and _ = H.delete_min h
     and _ = H.merge h h in
-    eq "operands are untouched" [ 1; 3; 5; 8 ] h
+    check_eq
+      (Printf.sprintf "%s: operands are untouched" name)
+      ~expect:[ 1; 3; 5; 8 ]
+      ~actual:(drain h)
+      string_of_int_list
   ;;
 
   (* ------------------------------------------------- amortised O(log n) per operation *)
@@ -1017,13 +596,13 @@ module Heap_tests (H : HEAP with type Element.t = int) = struct
       (t "find_min compares nothing")
       ~expect:0
       ~actual:(count_only (fun () -> H.find_min spine));
-    check (t "find_min allocates nothing") (words (fun () -> H.find_min spine) <= 4.0);
+    check (t "find_min allocates nothing") (allocated (fun () -> H.find_min spine) <= 4.0);
     check_int
       (t "delete_min compares nothing")
       ~expect:0
       ~actual:(count_only (fun () -> H.delete_min spine));
     (* delete_min rebuilds the whole spine ... *)
-    let first = words (fun () -> H.delete_min spine) in
+    let first = allocated (fun () -> H.delete_min spine) in
     check
       (t
          (Printf.sprintf
@@ -1035,7 +614,7 @@ module Heap_tests (H : HEAP with type Element.t = int) = struct
        rebuild that did not restructure would cost the same again, and one that flattened
        the path entirely would not be this algorithm. *)
     let after = H.delete_min spine in
-    let second = words (fun () -> H.delete_min after) in
+    let second = allocated (fun () -> H.delete_min after) in
     check
       (t
          (Printf.sprintf
@@ -1130,9 +709,8 @@ let test_splay_sort () =
   (* Cost per element, at two sizes a hundred apart. *)
   let per_element xs =
     let n = float_of_int (List.length xs) in
-    let c = float_of_int (count_only (fun () -> sort xs)) /. n in
-    let w = words (fun () -> sort xs) /. n in
-    c, w
+    let _, (c, w) = spent (fun () -> sort xs) in
+    c /. n, w /. n
   in
   let small = 1_000
   and large = 100_000 in
@@ -1214,7 +792,9 @@ let test_splay_sort () =
    insert and merge. The sequences below hold them to the proven O(log n). *)
 
 module Pairing_tests (H : HEAP with type Element.t = int) = struct
-  let of_list xs = List.fold_left (fun h x -> H.insert x h) H.empty xs
+  module Base = Heap_tests (H)
+
+  let of_list = Base.of_list
   let star n = of_list (upto n)
   let chain n = of_list (List.init n (fun i -> n - i))
 
@@ -1233,8 +813,8 @@ module Pairing_tests (H : HEAP with type Element.t = int) = struct
         (count_only (fun () -> H.find_min star) + count_only (fun () -> H.find_min chain));
     check
       (t "find_min allocates nothing")
-      (words (fun () -> H.find_min star) <= 4.0
-       && words (fun () -> H.find_min chain) <= 4.0);
+      (allocated (fun () -> H.find_min star) <= 4.0
+       && allocated (fun () -> H.find_min chain) <= 4.0);
     (* insert is one merge, whatever the heap looks like and whichever way the comparison
        goes: a new maximum onto the star, a new minimum onto it, anything onto the chain. *)
     let inserts =
@@ -1244,7 +824,9 @@ module Pairing_tests (H : HEAP with type Element.t = int) = struct
       ]
     in
     let bad =
-      List.filter (fun (_, f) -> count_only f <> 1 || words f > 16.0) (List.rev inserts)
+      List.filter
+        (fun (_, f) -> count_only f <> 1 || allocated f > 16.0)
+        (List.rev inserts)
     in
     check
       (t
@@ -1257,7 +839,7 @@ module Pairing_tests (H : HEAP with type Element.t = int) = struct
                    "%s: %d comparisons, %.0f words"
                    how
                    (count_only f)
-                   (words f))
+                   (allocated f))
                bad)))
       (bad = []);
     (* merge is one comparison, whatever the two sizes. *)
@@ -1269,7 +851,9 @@ module Pairing_tests (H : HEAP with type Element.t = int) = struct
       ]
     in
     let bad =
-      List.filter (fun (_, f) -> count_only f <> 1 || words f > 16.0) (List.rev merges)
+      List.filter
+        (fun (_, f) -> count_only f <> 1 || allocated f > 16.0)
+        (List.rev merges)
     in
     check
       (t
@@ -1282,7 +866,7 @@ module Pairing_tests (H : HEAP with type Element.t = int) = struct
                    "%s: %d comparisons, %.0f words"
                    how
                    (count_only f)
-                   (words f))
+                   (allocated f))
                bad)))
       (bad = []);
     (* --------------------------------------------------- delete_min is O(n) at worst *)
@@ -1305,18 +889,8 @@ module Pairing_tests (H : HEAP with type Element.t = int) = struct
   (* Drains of the shapes above, mixes, and -- since pairing heaps are "much faster for
      applications that do [use merge]" (p.53) -- sequences that build the heap by merging
      rather than inserting. *)
-  let drain_all h n =
-    let h = ref h in
-    for _ = 1 to n do
-      h := H.delete_min !h
-    done;
-    !h
-  ;;
-
-  let random_ints seed n bound =
-    Random.init seed;
-    List.init n (fun _ -> Random.int bound)
-  ;;
+  let drain_all = Base.drain_all
+  let random_ints = Base.random_ints
 
   let sequences =
     [ ( "n random inserts, then n delete_mins"
@@ -1507,7 +1081,7 @@ let test_to_binary () =
   let rec chain n = if n = 0 then [] else [ T1 (n, chain (n - 1)) ] in
   let per_node shape n =
     let h = shape n in
-    words (fun () -> to_binary h) /. float_of_int n
+    allocated (fun () -> to_binary h) /. float_of_int n
   in
   List.iter
     (fun (name, shape) ->
@@ -1516,21 +1090,18 @@ let test_to_binary () =
          already at n=1000, and minutes of work at n=100000, so the large size is guarded. *)
       if small > 32.0
       then
-        check
-          (Printf.sprintf
-             "to_binary is linear on %s (%.1f words per node at n=1000)"
-             name
-             small)
-          false
-      else (
-        let large = per_node shape 100_000 in
-        check
-          (Printf.sprintf
-             "to_binary is linear on %s (%.1f words per node at n=1000, %.1f at n=100000)"
-             name
-             small
-             large)
-          (large <= small +. 0.5)))
+        Alcotest.failf
+          "to_binary is linear on %s (%.1f words per node at n=1000)"
+          name
+          small;
+      let large = per_node shape 100_000 in
+      check
+        (Printf.sprintf
+           "to_binary is linear on %s (%.1f words per node at n=1000, %.1f at n=100000)"
+           name
+           small
+           large)
+        (large <= small +. 0.5))
     [ "a star", star; ("a chain", fun n -> T1 (0, chain n)) ]
 ;;
 

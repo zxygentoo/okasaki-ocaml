@@ -64,40 +64,6 @@ let check_refuses name op f =
     Alcotest.failf "%s: expected %s, got %s" name wanted (Printexc.to_string e)
 ;;
 
-let upto n = List.init n Fun.id
-
-(* head/tail to exhaustion. A queue whose tail does not advance would never come to an
-   end, and neither would the list this builds, so a drain past any size used here gives
-   up and raises, and the case it is in ends there as the failure it is. *)
-let drain_limit = 100_000
-
-let drain_with ~is_empty ~head ~tail q =
-  let rec go n acc q =
-    if is_empty q
-    then List.rev acc
-    else if n = drain_limit
-    then failwith "drain: no end in sight"
-    else go (n + 1) (head q :: acc) (tail q)
-  in
-  go 0 [] q
-;;
-
-(* ---------------------------------------------------------------- the clock *)
-
-(* Words allocated by [f], read before and after. Sys.opaque_identity stops the optimiser
-   discarding the result and with it the allocation being measured. The clock counts in
-   integers: a float reading would box, and the two words of the box would land inside the
-   measurement. *)
-let words () = int_of_float (Gc.minor_words ())
-
-let cost_on clock f =
-  let before = clock () in
-  let r = Sys.opaque_identity (f ()) in
-  r, float_of_int (clock () - before)
-;;
-
-let cost f = cost_on words f
-
 (* The most a single operation may allocate, in words. Every operation rebuilds the queue
    record once on the way in and once on the way out of its steps, 5 words each now that
    Exercise 8.3 has left it four fields, and a snoc adds a cons onto the rear. Between
@@ -270,267 +236,18 @@ end
 
 (* ------------------------------------------ every operation on its own clock *)
 
-(* A sequence is data, built before anything is measured, so that building it cannot land
-   on the clock. *)
-type op =
-  | Snoc of int
-  | Tail
-  | Head
-
-let describe = function
-  | Snoc x -> Printf.sprintf "snoc %d" x
-  | Tail -> "tail"
-  | Head -> "head"
-;;
-
-module Worst_case (Q : QUEUE) = struct
-  let of_list xs = List.fold_left Q.snoc Q.empty xs
-
-  (* Runs [ops] from the empty queue with every operation on the clock by itself, and
-     reports the dearest: its index, what it was, and what it cost. The queue is threaded
-     through a reference and each closure is built before its clock starts, so nothing but
-     the operation is measured. *)
-  let dearest ops =
-    let q = ref Q.empty
-    and sum = ref 0
-    and dear = ref (0, Tail, 0.0) in
-    Array.iteri
-      (fun i op ->
-        let c =
-          match op with
-          | Snoc x ->
-            let q', c = cost (fun () -> Q.snoc !q x) in
-            q := q';
-            c
-          | Tail ->
-            let q', c = cost (fun () -> Q.tail !q) in
-            q := q';
-            c
-          | Head ->
-            let x, c = cost (fun () -> Q.head !q) in
-            sum := !sum + x;
-            c
-        in
-        let _, _, worst = !dear in
-        if c > worst then dear := i, op, c)
-      ops;
-    ignore (Sys.opaque_identity !q);
-    ignore (Sys.opaque_identity !sum);
-    !dear
-  ;;
-
-  (* ----------------------------------------- sequences: one thread, from empty *)
-
-  (* The sequences of test_ch6 and test_ch7, as data. They differ in where the rotations
-     fall: ever larger ones at ever longer intervals, a tiny one at every step, or two
-     snocs to every tail so the front never stops growing. In Figure 8.1 a head does no
-     work at all, it reads the working copy; the heads sequence is kept so that the clock
-     says so. *)
-  let fill_then_drain n =
-    Array.init (2 * n) (fun i -> if i < n then Snoc (i + 1) else Tail)
-  ;;
-
-  let alternate n =
-    Array.init (2 * n) (fun i -> if i mod 2 = 0 then Snoc ((i / 2) + 1) else Tail)
-  ;;
-
-  let two_snocs_per_tail n =
-    Array.init (3 * n) (fun i -> if i mod 3 = 2 then Tail else Snoc ((i / 3) + 1))
-  ;;
-
-  let snoc_then_head n =
-    Array.init (2 * n) (fun i -> if i mod 2 = 0 then Snoc ((i / 2) + 1) else Head)
-  ;;
-
-  let random_mix n =
-    Random.init 20260925;
-    let size = ref 0 in
-    Array.init n (fun i ->
-      if !size = 0 || Random.int 3 > 0
-      then (
-        incr size;
-        Snoc i)
-      else (
-        decr size;
-        Tail))
-  ;;
-
-  let sequences =
-    [ "n snocs then n tails", fill_then_drain
-    ; "snoc and tail alternating", alternate
-    ; "two snocs to every tail", two_snocs_per_tail
-    ; "a head after every snoc", snoc_then_head
-    ; "a random mix", random_mix
-    ]
-  ;;
-
-  (* O(1) worst-case, asserted the only way a worst-case bound can be: on the dearest
-     single operation. The small size comes first and guards the large one, as in the
-     earlier chapters: an operation that is secretly linear makes a sequence quadratic,
-     and at n = 100_000 that is not a failure but a hang. The check at n = 1000 ends the
-     case instead. *)
-  let run_sequences name =
-    let t label = Printf.sprintf "%s: %s" name label in
-    List.iter
-      (fun (sequence, ops) ->
-        let within label n =
-          let i, op, c = dearest (ops n) in
-          check
-            (t
-               (Printf.sprintf
-                  "%s, %s: dearest is #%d (%s) at %.0f words, n=%d"
-                  sequence
-                  label
-                  i
-                  (describe op)
-                  c
-                  n))
-            (c <= constant)
-        in
-        within "O(1) worst-case" 1_000;
-        within "still O(1) worst-case, a hundred times longer" 100_000)
-      sequences
-  ;;
-
-  (* -------------------------------------- versions: several futures of one queue *)
-
-  (* n snocs, every version kept, and every snoc on the clock: the first future of each
-     version of a build. A build's versions are the ones on the brink of a rotation, and
-     the snoc that makes the next version is the one that starts it. *)
-  let build n =
-    let v = Array.make (n + 1) Q.empty
-    and dear = ref (0, 0.0) in
-    for i = 1 to n do
-      let q, c = cost (fun () -> Q.snoc v.(i - 1) i) in
-      v.(i) <- q;
-      if c > snd !dear then dear := i, c
-    done;
-    v, !dear
-  ;;
-
-  (* The same for a drain of a snoc-built queue: every version kept, every tail on the
-     clock. In Figure 5.2 one of these tails ran the reverse. *)
-  let drain n =
-    let v = Array.make (n + 1) Q.empty
-    and dear = ref (0, 0.0) in
-    v.(0) <- of_list (upto n);
-    for i = 1 to n do
-      let q, c = cost (fun () -> Q.tail v.(i - 1)) in
-      v.(i) <- q;
-      if c > snd !dear then dear := i, c
-    done;
-    v, !dear
-  ;;
-
-  (* One operation of each kind from every version in [v] whose size ([size k] for the
-     k-th) allows it, each on the clock, and each a second future of its version: the
-     future that built the array was the first. For each kind, the version it was dearest
-     from and what it cost there. *)
-  let short_futures v ~size =
-    let opaque x = ignore (Sys.opaque_identity x) in
-    let runs =
-      [ "tail", (fun q -> opaque (Q.tail q)), 1
-      ; "head", (fun q -> opaque (Q.head q)), 1
-      ; "snoc", (fun q -> opaque (Q.snoc q 0)), 0
-      ]
-    in
-    List.map
-      (fun (run, f, needs) ->
-        let worst = ref (0, 0.0) in
-        Array.iteri
-          (fun k q ->
-            if size k >= needs
-            then (
-              let _, c = cost (fun () -> f q) in
-              if c > snd !worst then worst := k, c))
-          v;
-        run, fst !worst, snd !worst)
-      runs
-  ;;
-
-  (* The whole drain, d times over from the same starting queue, every tail on the clock.
-     p.65 of Chapter 6 called this the branch point where "memoization does not help at
-     all". Here there is nothing to memoise and nothing that could have been: each round
-     runs its own rotations, step by step, and pays as it goes. *)
-  let repeated_drain ~n ~d =
-    let q0 = of_list (upto n)
-    and dear = ref (0, 0.0) in
-    for round = 1 to d do
-      let q = ref q0 in
-      for _ = 1 to n do
-        let q', c = cost (fun () -> Q.tail !q) in
-        q := q';
-        if c > snd !dear then dear := round, c
-      done;
-      ignore (Sys.opaque_identity !q)
-    done;
-    !dear
-  ;;
-
-  (* n operations, each applied to a version chosen at random among all built so far, and
-     each on the clock. *)
-  let random_trace n =
-    Random.init 20260926;
-    let from = Array.init n (fun i -> Random.int (i + 1)) in
-    let wants_snoc = Array.init n (fun _ -> Random.int 3 > 0) in
-    let v = Array.make (n + 1) Q.empty
-    and dear = ref (0, Tail, 0.0) in
-    for i = 1 to n do
-      let q = v.(from.(i - 1)) in
-      let op = if wants_snoc.(i - 1) || Q.is_empty q then Snoc i else Tail in
-      let q', c =
-        match op with
-        | Snoc x -> cost (fun () -> Q.snoc q x)
-        | Tail | Head -> cost (fun () -> Q.tail q)
-      in
-      v.(i) <- q';
-      let _, _, worst = !dear in
-      if c > worst then dear := i, op, c
-    done;
-    ignore (Sys.opaque_identity v);
-    !dear
-  ;;
-
-  let run_versions name =
-    let t label = Printf.sprintf "%s: %s" name label in
-    let within label (k, c) =
-      check
-        (t (Printf.sprintf "%s, dearest from #%d at %.0f words" label k c))
-        (c <= constant)
-    in
-    let n = 2_000 in
-    let v, dear = build n in
-    within (Printf.sprintf "the snoc that makes each version of a build of %d" n) dear;
-    List.iter
-      (fun (run, k, c) ->
-        within (Printf.sprintf "%s from every version of a build of %d" run n) (k, c))
-      (short_futures v ~size:Fun.id);
-    let n = 1_000 in
-    let v, dear = drain n in
-    within (Printf.sprintf "the tail that makes each version of a drain of %d" n) dear;
-    List.iter
-      (fun (run, k, c) ->
-        within (Printf.sprintf "%s from every version of a drain of %d" run n) (k, c))
-      (short_futures v ~size:(fun k -> n - k));
-    within
-      (Printf.sprintf
-         "the whole drain of %d repeated 10 times from one queue, dearest round"
-         n)
-      (repeated_drain ~n ~d:10);
-    let n = 100_000 in
-    let i, op, c = random_trace n in
-    check
-      (t
-         (Printf.sprintf
-            "a random trace of %d operations, each on a random earlier version, dearest \
-             is #%d (%s) at %.0f words"
-            n
-            i
-            (describe op)
-            c))
-      (c <= constant)
-  ;;
-end
+(* In Figure 8.1 a head does no work at all, it reads the working copy; the heads sequence
+   is kept so that the clock says so. And when a drain is repeated from one queue, there
+   is nothing to memoise and nothing that could have been: each round runs its own
+   rotations, step by step. *)
+module Worst_case (Q : QUEUE) =
+  Queues.Worst_case
+    (Q)
+    (struct
+      let constant = constant
+      let mix_seed = 20260925
+      let trace_seed = 20260926
+    end)
 
 (* -------------------------------------------------------------------- guard *)
 
@@ -550,10 +267,10 @@ let test_guard () =
        "guard: the same probe over Figure 5.2's queue sees its reverse, #%d (%s) at %.0f \
         words in a fill and drain of %d"
        i
-       (describe op)
+       (Queues.describe op)
        c
        n)
-    (op = Tail && c >= float_of_int n /. 2.)
+    (op = Queues.Tail && c >= float_of_int n /. 2.)
 ;;
 
 (* ---------------------------------------------------- HoodMelvilleQueue (8.2.1) *)
@@ -1094,63 +811,9 @@ let test_cons_queue () =
    is worth, to the reader. c is a functor argument, so the whole suite runs at c = 2, and
    the contract and the word budgets again at c = 3. *)
 
-(* Figure 4.1's streams with every step counted: one per cell that ++ copies, take keeps,
-   drop passes over or reverse moves. *)
-module Counting_stream = struct
-  type 'a stream_cell =
-    | Nil
-    | Cons of 'a * 'a stream
-
-  and 'a stream = 'a stream_cell lazy_t
-
-  let steps = ref 0
-
-  let rec ( ++ ) s1 s2 =
-    lazy
-      (match s1 with
-       | (lazy Nil) -> Lazy.force s2
-       | (lazy (Cons (x, s))) ->
-         incr steps;
-         Cons (x, s ++ s2))
-  ;;
-
-  let rec take n s =
-    lazy
-      (match n, s with
-       | 0, _ | _, (lazy Nil) -> Nil
-       | _, (lazy (Cons (x, s'))) ->
-         incr steps;
-         Cons (x, take (n - 1) s'))
-  ;;
-
-  let drop n s =
-    let rec aux n (lazy c) =
-      match n, c with
-      | 0, _ -> c
-      | _, Nil -> Nil
-      | _, Cons (_, s') ->
-        incr steps;
-        aux (n - 1) s'
-    in
-    lazy (aux n s)
-  ;;
-
-  let reverse s =
-    let rec aux lhs rhs =
-      match lhs with
-      | (lazy Nil) -> rhs
-      | (lazy (Cons (x, s))) ->
-        incr steps;
-        aux s (Cons (x, lazy rhs))
-    in
-    lazy (aux s Nil)
-  ;;
-end
-
-let steps () = !Counting_stream.steps
-
-(* The same four functions with nothing suspended: each runs on the spot and wraps its
-   result as a stream already forced. Figure 8.3 over these is batched rebuilding. *)
+(* The four functions of harness.ml's Counting_stream with nothing suspended: each runs on
+   the spot and wraps its result as a stream already forced. Figure 8.3 over these is
+   batched rebuilding. *)
 module Strict_stream = struct
   type 'a stream_cell =
     | Nil
@@ -1226,194 +889,13 @@ module Deque_tests (D : DEQUE) = struct
 
   let opaque x = ignore (Sys.opaque_identity x)
 
-  (* Four ways to build the deque that reads [xs] from front to back. *)
-  let snocs xs = List.fold_left D.snoc D.empty xs
-  let conses xs = List.fold_left (fun q x -> D.cons x q) D.empty (List.rev xs)
-
-  let halves xs =
-    let k = List.length xs / 2 in
-    List.filteri (fun i _ -> i < k) xs, List.filteri (fun i _ -> i >= k) xs
-  ;;
-
-  let builds =
-    [ "snoc", snocs
-    ; "cons", conses
-    ; ( "cons onto snoc"
-      , fun xs ->
-          let left, right = halves xs in
-          List.fold_left (fun q x -> D.cons x q) (snocs right) (List.rev left) )
-    ; ( "snoc onto cons"
-      , fun xs ->
-          let left, right = halves xs in
-          List.fold_left D.snoc (conses left) right )
-    ]
-  ;;
-
-  (* Three ways to take one apart. Each returns the elements front to back. *)
-  let drain_front q = drain_with ~is_empty:D.is_empty ~head:D.head ~tail:D.tail q
-
-  let drain_back q =
-    List.rev (drain_with ~is_empty:D.is_empty ~head:D.last ~tail:D.init q)
-  ;;
-
-  let drain_both_ends q =
-    let rec go n front back from_front q =
-      if D.is_empty q
-      then List.rev_append front back
-      else if n = drain_limit
-      then failwith "drain: no end in sight"
-      else if from_front
-      then go (n + 1) (D.head q :: front) back false (D.tail q)
-      else go (n + 1) front (D.last q :: back) true (D.init q)
-    in
-    go 0 [] [] true q
-  ;;
-
-  let drains =
-    [ "the front", drain_front; "the back", drain_back; "both ends", drain_both_ends ]
-  ;;
-
-  let run_contract name =
-    let t label = Printf.sprintf "%s: %s" name label in
-    check_refuses (t "last on empty raises") "last" (fun () -> D.last D.empty);
-    check_refuses (t "init on empty raises") "init" (fun () ->
-      ignore (D.is_empty (D.init D.empty)));
-    (* One element, by every route: put there from either end, or left behind by a removal
-       from either end of each two-element deque. The invariant lets it sit in either
-       stream, and every reader has to cope with both. *)
-    let routes =
-      [ ("snoc", fun () -> D.snoc D.empty 7)
-      ; ("cons", fun () -> D.cons 7 D.empty)
-      ; ("tail of two snocs", fun () -> D.tail (snocs [ 0; 7 ]))
-      ; ("init of two snocs", fun () -> D.init (snocs [ 7; 0 ]))
-      ; ("tail of two conses", fun () -> D.tail (conses [ 0; 7 ]))
-      ; ("init of two conses", fun () -> D.init (conses [ 7; 0 ]))
-      ; ("tail of a cons onto a snoc", fun () -> D.tail (D.cons 0 (D.snoc D.empty 7)))
-      ; ("init of a snoc onto a cons", fun () -> D.init (D.snoc (D.cons 7 D.empty) 0))
-      ]
-    in
-    (* The first thing a one-element deque owes that [make ()] does not deliver. *)
-    let lacks make =
-      match
-        let q = make () in
-        if D.is_empty q
-        then Some "it claims to be empty"
-        else if D.head q <> 7
-        then Some "head is wrong"
-        else if D.last q <> 7
-        then Some "last is wrong"
-        else if not (D.is_empty (D.tail q))
-        then Some "its tail is not empty"
-        else if not (D.is_empty (D.init q))
-        then Some "its init is not empty"
-        else None
-      with
-      | verdict -> verdict
-      | exception Failure why -> Some ("it raised " ^ why)
-    in
-    let bad =
-      List.filter_map
-        (fun (route, make) -> Option.map (fun why -> route, why) (lacks make))
-        routes
-    in
-    check
-      (t
-         (Printf.sprintf
-            "one element behaves the same by every route to it%s"
-            (match bad with
-             | [] -> ""
-             | (route, why) :: _ -> Printf.sprintf " -- reached by %s, %s" route why)))
-      (bad = []);
-    (* The crossing. Every build, read from every end, at every small size: 0 to 20 covers
-       the empty deque, both one-element shapes, the two- and three-element rebalances
-       where a half is a single element, and odd and even splits after that. *)
-    let bad = ref [] in
-    for n = 20 downto 0 do
-      let xs = upto n in
-      List.iter
-        (fun (build, make) ->
-          List.iter
-            (fun (drain, take) ->
-              match take (make xs) with
-              | got when got = xs -> ()
-              | got -> bad := (build, drain, n, string_of_int_list got) :: !bad
-              | exception Failure why -> bad := (build, drain, n, "raised " ^ why) :: !bad)
-            drains)
-        builds
-    done;
-    check
-      (t
-         (Printf.sprintf
-            "every build reads back correctly from every end, sizes 0 to 20%s"
-            (match !bad with
-             | [] -> ""
-             | (build, drain, n, got) :: _ ->
-               Printf.sprintf " -- built by %s, n=%d, read from %s: %s" build n drain got)))
-      (!bad = []);
-    (* Randomised against a list, with all four writers and all three readers, checked
-       after every operation. *)
-    Random.init 20260926;
-    let bad_empty = ref 0
-    and bad_head = ref 0
-    and bad_last = ref 0
-    and bad_drain = ref 0
-    and raised = ref 0 in
-    for run = 0 to 299 do
-      let q = ref D.empty
-      and model = ref [] in
-      try
-        for i = 0 to 59 do
-          (match Random.int 6 with
-           | 0 | 1 ->
-             q := D.snoc !q i;
-             model := !model @ [ i ]
-           | 2 | 3 ->
-             q := D.cons i !q;
-             model := i :: !model
-           | 4 when !model <> [] ->
-             q := D.tail !q;
-             model := List.tl !model
-           | 5 when !model <> [] ->
-             q := D.init !q;
-             model := List.rev (List.tl (List.rev !model))
-           | _ -> ());
-          if D.is_empty !q <> (!model = []) then incr bad_empty;
-          match !model with
-          | [] -> ()
-          | x :: _ ->
-            if D.head !q <> x then incr bad_head;
-            if D.last !q <> List.hd (List.rev !model) then incr bad_last
-        done;
-        let _, take = List.nth drains (run mod 3) in
-        if take !q <> !model then incr bad_drain
-      with
-      | Failure _ -> incr raised
-    done;
-    check_int
-      (t "no operation raises on a non-empty deque, 300 random runs")
-      ~expect:0
-      ~actual:!raised;
-    check_int (t "is_empty agrees with a list model") ~expect:0 ~actual:!bad_empty;
-    check_int (t "head agrees with a list model") ~expect:0 ~actual:!bad_head;
-    check_int (t "last agrees with a list model") ~expect:0 ~actual:!bad_last;
-    check_int (t "every drain agrees with a list model") ~expect:0 ~actual:!bad_drain;
-    (* Persistence, with all four writers let loose on every version. *)
-    let versions = List.init 20 (fun i -> snocs (upto i)) in
-    List.iter
-      (fun v ->
-        ignore (D.snoc v 99);
-        ignore (D.cons 99 v);
-        if not (D.is_empty v)
-        then (
-          ignore (D.tail v);
-          ignore (D.init v)))
-      versions;
-    let stale =
-      List.mapi (fun i v -> if drain_both_ends v = upto i then 0 else 1) versions
-      |> List.fold_left ( + ) 0
-    in
-    check_int (t "every earlier version stays correct") ~expect:0 ~actual:stale
-  ;;
+  include
+    Queues.Deque_contract
+      (D)
+      (struct
+        let refused = check_refuses
+        let seed = 20260926
+      end)
 
   (* ---------------------------------------- sequences: one thread, from empty *)
 
@@ -1934,7 +1416,7 @@ let test_deque_unshared () =
            n
            s)
         (s = 0.0))
-    (Unshared_steps.run steps n)
+    (Unshared_steps.run stream_steps n)
 ;;
 
 (* The branch point after a rebalance, to the step: the first removal from the version
@@ -1946,7 +1428,7 @@ let test_deque_steps () =
   and d = 10_000 in
   List.iter
     (fun { T.direction; build; remove; _ } ->
-      let k, dear = T.dearest_removal steps ~build ~remove n in
+      let k, dear = T.dearest_removal stream_steps ~build ~remove n in
       check
         (t
            (Printf.sprintf
@@ -1957,9 +1439,9 @@ let test_deque_steps () =
               dear))
         (dear >= reverse_floor n);
       let v = T.version_before ~build ~remove ~n ~k in
-      let _, first = cost_on steps (fun () -> remove v) in
+      let _, first = cost_on stream_steps (fun () -> remove v) in
       let _, rest =
-        cost_on steps (fun () ->
+        cost_on stream_steps (fun () ->
           for _ = 2 to d do
             T.opaque (remove v)
           done)
@@ -2347,9 +1829,9 @@ struct
     S.T.run_contract (name ^ " over the counting stream");
     let budget = real_time_steps C.c in
     W.run_plans name words ~budget:real_time_words ~unit:"words";
-    S.run_plans (name ^ ", in steps") steps ~budget ~unit:"steps";
+    S.run_plans (name ^ ", in steps") stream_steps ~budget ~unit:"steps";
     W.run_versions (name ^ ", persistently") words ~budget:real_time_words ~unit:"words";
-    S.run_versions (name ^ ", persistently, in steps") steps ~budget ~unit:"steps"
+    S.run_versions (name ^ ", persistently, in steps") stream_steps ~budget ~unit:"steps"
   ;;
 end
 
@@ -2366,7 +1848,9 @@ let test_real_time_guards () =
   let n = 1_000 in
   let plan = "n snocs then n tails, a queue" in
   let k, c =
-    Bankers2_counting_rt.dearest steps (List.assoc plan Bankers2_counting_rt.plans n)
+    Bankers2_counting_rt.dearest
+      stream_steps
+      (List.assoc plan Bankers2_counting_rt.plans n)
   in
   check
     (Printf.sprintf
@@ -2412,58 +1896,8 @@ let test_real_time_guards () =
    two are the same code today, and pinning that down means that when insert is touched
    for the estimates, its shape is known not to have moved. *)
 
-let comparisons = ref 0
-
-(* Comparisons that answered true: one per node on a search path, whichever way the search
-   turned, since a step left is one true lt and a step right is one false lt then one true
-   one. *)
-let steps = ref 0
-
-module Counting_int = struct
-  type t = int
-
-  let eq a b =
-    incr comparisons;
-    a = b
-  ;;
-
-  let lt a b =
-    incr comparisons;
-    let less = a < b in
-    if less then incr steps;
-    less
-  ;;
-
-  let leq a b =
-    incr comparisons;
-    a <= b
-  ;;
-end
-
-(* Comparisons performed by [f]. *)
-let count_only f =
-  comparisons := 0;
-  ignore (Sys.opaque_identity (f ()));
-  !comparisons
-;;
-
-(* floor (log2 n), for n >= 1. *)
-let floor_log2 n =
-  let rec go acc n = if n <= 1 then acc else go (acc + 1) (n / 2) in
-  go 0 n
-;;
-
 (* Exercise 3.8's bound on the depth of any node in a red-black tree of size n. *)
 let depth_bound n = 2 * floor_log2 (n + 1)
-
-(* Sets are built from even numbers so that every odd number is a gap to probe. *)
-let evens n = List.init n (fun i -> 2 * i)
-
-let shuffle seed xs =
-  Random.init seed;
-  List.map snd (List.sort compare (List.map (fun x -> Random.bits (), x) xs))
-;;
-
 let set_sizes = [ 0; 1; 2; 3; 4; 7; 8; 15; 16; 31; 32; 100; 500; 1000 ]
 
 (* The three insertion orders the depth bound is checked over: ascending sends every
@@ -2583,7 +2017,6 @@ module Set_tests (S : SET with type elem = int) = struct
 
   let run_costs name =
     let t label = Printf.sprintf "%s: %s" name label in
-    let allocated f = snd (cost f) in
     (* The defining property of a persistent structure: an insert leaves the old set
        whole, and not merely the previous version but every version ever built. *)
     let s = of_list (evens 50) in
@@ -2705,7 +2138,6 @@ module Delete_tests (S : SET_WITH_DELETE with type elem = int) = struct
 
   let delete_all xs s = List.fold_left (fun s x -> S.delete x s) s xs
   let range lo hi = List.init (hi - lo + 1) (fun i -> lo + i)
-  let first_of k xs = List.filteri (fun i _ -> i < k) xs
 
   let run_contract name =
     let t label = Printf.sprintf "%s: %s" name label in
@@ -2750,7 +2182,7 @@ module Delete_tests (S : SET_WITH_DELETE with type elem = int) = struct
     List.iteri
       (fun i v ->
         (* version i is after i + 1 deletions: the first i + 1 of [order] are gone *)
-        let gone = first_of (i + 1) order in
+        let gone = List.take (i + 1) order in
         if not (List.for_all (fun x -> S.member x v = not (List.mem x gone)) xs)
         then incr stale)
       versions;
@@ -2758,33 +2190,33 @@ module Delete_tests (S : SET_WITH_DELETE with type elem = int) = struct
       (t "every version of a drain stays correct, across rebuilds")
       ~expect:0
       ~actual:!stale;
-    (* Against a list model, checked after every operation, with runs long enough to cross
-       the rebuild threshold many times over. *)
+    (* Against a model, a table of who is in, checked after every operation, with runs
+       long enough to cross the rebuild threshold many times over. *)
     Random.init 20260929;
     let bad = ref 0
     and raised = ref 0 in
     for _ = 0 to 299 do
       let s = ref S.empty
-      and model = ref [] in
+      and model = Array.make 42 false in
       try
         for _ = 1 to 200 do
           let x = Random.int 40 in
           if Random.int 5 < 3
           then (
             s := S.insert x !s;
-            if not (List.mem x !model) then model := x :: !model)
+            model.(x + 1) <- true)
           else (
             s := S.delete x !s;
-            model := List.filter (fun y -> y <> x) !model);
+            model.(x + 1) <- false);
           for q = -1 to 40 do
-            if S.member q !s <> List.mem q !model then incr bad
+            if S.member q !s <> model.(q + 1) then incr bad
           done
         done
       with
       | _ -> incr raised
     done;
     check_int
-      (t "member agrees with a list model after every operation, 300 random runs")
+      (t "member agrees with a model after every operation, 300 random runs")
       ~expect:0
       ~actual:!bad;
     check_int (t "no operation raises, 300 random runs") ~expect:0 ~actual:!raised
@@ -2803,7 +2235,7 @@ module Delete_tests (S : SET_WITH_DELETE with type elem = int) = struct
        hit or miss, is still two comparisons per level of the tree that was built. *)
     let n = 1024 in
     let xs = shuffle 20260930 (evens n) in
-    let s = delete_all (first_of 500 (shuffle 20260931 xs)) (Base.of_list xs) in
+    let s = delete_all (List.take 500 (shuffle 20260931 xs)) (Base.of_list xs) in
     let dearest =
       List.fold_left
         (fun d q -> max d (count_only (fun () -> S.member q s)))
@@ -2886,7 +2318,7 @@ module Delete_tests (S : SET_WITH_DELETE with type elem = int) = struct
             trusted
             (String.concat
                ","
-               (List.map (fun (i, _) -> string_of_int i) (first_of 8 rebuilds)))))
+               (List.map (fun (i, _) -> string_of_int i) (List.take 8 rebuilds)))))
       (trusted >= floor_log2 n - 6 && spacing_ok rebuilds);
     check
       (t
@@ -2903,7 +2335,7 @@ module Delete_tests (S : SET_WITH_DELETE with type elem = int) = struct
        pass; what this catches is a rebuild that is not a search tree or not balanced. *)
     let n = 1024 in
     let xs = shuffle 20260934 (evens n) in
-    let s = delete_all (first_of 600 (shuffle 20260935 xs)) (Base.of_list xs) in
+    let s = delete_all (List.take 600 (shuffle 20260935 xs)) (Base.of_list xs) in
     let extra = 2048 in
     let grown =
       List.fold_left (fun s x -> S.insert x s) s (List.init extra (fun i -> 2 * (n + i)))

@@ -10,14 +10,6 @@
 open Okasaki.Ch2
 open Harness
 
-(* Words allocated by [f]. Sys.opaque_identity stops the optimiser discarding the result
-   and with it the allocation we are trying to measure. *)
-let words f =
-  let before = Gc.minor_words () in
-  ignore (Sys.opaque_identity (f ()));
-  Gc.minor_words () -. before
-;;
-
 let string_of_int_list_list l =
   "[" ^ String.concat "; " (List.map string_of_int_list l) ^ "]"
 ;;
@@ -28,106 +20,95 @@ let string_of_int_list_list l =
    observable behaviour. *)
 module Stack_tests (S : STACK) = struct
   let of_list l = List.fold_right S.cons l S.empty
-
-  let to_list s =
-    let rec go acc s =
-      if S.is_empty s then List.rev acc else go (S.head s :: acc) (S.tail s)
-    in
-    go [] s
-  ;;
+  let to_list s = drain_with ~is_empty:S.is_empty ~head:S.head ~tail:S.tail s
 
   let run name =
-    let t label x = Printf.sprintf "%s: %s" name label, x in
-    let named label = fst (t label ()) in
+    let t label = Printf.sprintf "%s: %s" name label in
     check_eq
-      (named "of_list/to_list round trip")
+      (t "of_list/to_list round trip")
       ~expect:[ 1; 2; 3 ]
       ~actual:(to_list (of_list [ 1; 2; 3 ]))
       string_of_int_list;
-    check_int (named "head") ~expect:1 ~actual:(S.head (of_list [ 1; 2; 3 ]));
+    check_int (t "head") ~expect:1 ~actual:(S.head (of_list [ 1; 2; 3 ]));
     check_eq
-      (named "tail")
+      (t "tail")
       ~expect:[ 2; 3 ]
       ~actual:(to_list (S.tail (of_list [ 1; 2; 3 ])))
       string_of_int_list;
-    check (named "is_empty empty") (S.is_empty S.empty);
-    check (named "is_empty non-empty") (not (S.is_empty (of_list [ 1 ])));
+    check (t "is_empty empty") (S.is_empty S.empty);
+    check (t "is_empty non-empty") (not (S.is_empty (of_list [ 1 ])));
     (* Regression: an accumulator-shaped (++) reverses its left operand and still passes
        the [s ++ empty] case, so the mixed cases carry the weight. *)
     let cat a b = to_list S.(of_list a ++ of_list b) in
     check_eq
-      (named "(++) [1;2;3] [4;5]")
+      (t "(++) [1;2;3] [4;5]")
       ~expect:[ 1; 2; 3; 4; 5 ]
       ~actual:(cat [ 1; 2; 3 ] [ 4; 5 ])
       string_of_int_list;
     check_eq
-      (named "(++) [1] [2]")
+      (t "(++) [1] [2]")
       ~expect:[ 1; 2 ]
       ~actual:(cat [ 1 ] [ 2 ])
       string_of_int_list;
     check_eq
-      (named "(++) with empty right")
+      (t "(++) with empty right")
       ~expect:[ 1; 2; 3 ]
       ~actual:(cat [ 1; 2; 3 ] [])
       string_of_int_list;
     check_eq
-      (named "(++) with empty left")
+      (t "(++) with empty left")
       ~expect:[ 1; 2; 3 ]
       ~actual:(cat [] [ 1; 2; 3 ])
       string_of_int_list;
-    check_eq (named "(++) empty empty") ~expect:[] ~actual:(cat [] []) string_of_int_list;
+    check_eq (t "(++) empty empty") ~expect:[] ~actual:(cat [] []) string_of_int_list;
     (* (++) starts with '+', so OCaml parses it left-associatively; the value is the same
        either way. *)
     let a = of_list [ 1; 2 ]
     and b = of_list [ 3; 4 ]
     and c = of_list [ 5; 6 ] in
     check_eq
-      (named "(++) associates left")
+      (t "(++) associates left")
       ~expect:[ 1; 2; 3; 4; 5; 6 ]
       ~actual:(to_list S.(a ++ b ++ c))
       string_of_int_list;
     check_eq
-      (named "(++) associates right")
+      (t "(++) associates right")
       ~expect:[ 1; 2; 3; 4; 5; 6 ]
       ~actual:(to_list S.(a ++ (b ++ c)))
       string_of_int_list;
     (* Both implementations must fail identically, or the signature is a lie. These are
        the library's own names, not Stdlib's "hd"/"tl". *)
-    check_raises (named "head empty raises") (Failure "head") (fun () -> S.head S.empty);
-    check_raises (named "tail empty raises") (Failure "tail") (fun () ->
+    check_failure (t "head empty raises") "head" (fun () -> S.head S.empty);
+    check_failure (t "tail empty raises") "tail" (fun () ->
       ignore (to_list (S.tail S.empty)));
     (* update: replace the element at an index, copying the path to it. *)
     let xs = of_list [ 1; 2; 3; 4; 5 ] in
     let updated i = to_list (S.update i 99 xs) in
     check_eq
-      (named "update at the head")
+      (t "update at the head")
       ~expect:[ 99; 2; 3; 4; 5 ]
       ~actual:(updated 0)
       string_of_int_list;
     (* The head index is the case a head-dropping implementation still gets right, so the
        interior and last indices are the ones that carry the weight. *)
     check_eq
-      (named "update in the middle")
+      (t "update in the middle")
       ~expect:[ 1; 2; 99; 4; 5 ]
       ~actual:(updated 2)
       string_of_int_list;
     check_eq
-      (named "update at the last index")
+      (t "update at the last index")
       ~expect:[ 1; 2; 3; 4; 99 ]
       ~actual:(updated 4)
       string_of_int_list;
-    check_eq
-      (named "update keeps the length")
-      ~expect:5
-      ~actual:(List.length (updated 2))
-      string_of_int;
-    check_raises (named "update past the end raises") (Failure "update") (fun () ->
+    check_int (t "update keeps the length") ~expect:5 ~actual:(List.length (updated 2));
+    check_failure (t "update past the end raises") "update" (fun () ->
       ignore (to_list (S.update 5 99 xs)));
-    check_raises (named "update far past the end raises") (Failure "update") (fun () ->
+    check_failure (t "update far past the end raises") "update" (fun () ->
       ignore (to_list (S.update 99 99 xs)));
-    check_raises (named "update at a negative index raises") (Failure "update") (fun () ->
+    check_failure (t "update at a negative index raises") "update" (fun () ->
       ignore (to_list (S.update (-1) 99 xs)));
-    check_raises (named "update on the empty stack raises") (Failure "update") (fun () ->
+    check_failure (t "update on the empty stack raises") "update" (fun () ->
       ignore (to_list (S.update 0 99 S.empty)));
     (* PERFORMANCE: the point of update is path copying -- only the nodes from the head to
        index i are rebuilt, and everything past i is SHARED with the original. Physical
@@ -135,22 +116,22 @@ module Stack_tests (S : STACK) = struct
        implementation that copied the whole stack. *)
     let rec drop n s = if n = 0 then s else drop (n - 1) (S.tail s) in
     check
-      (named "update shares every node past the updated index")
+      (t "update shares every node past the updated index")
       (drop 3 (S.update 2 99 xs) == drop 3 xs);
     check
-      (named "update at the head shares all but one node")
+      (t "update at the head shares all but one node")
       (drop 1 (S.update 0 99 xs) == drop 1 xs);
     (* Persistence: nothing observes a change to the original. *)
     let s = of_list [ 1; 2; 3 ] in
     let _ = S.cons 0 s
     and _ = S.tail s in
     check_eq
-      (named "original unchanged")
+      (t "original unchanged")
       ~expect:[ 1; 2; 3 ]
       ~actual:(to_list s)
       string_of_int_list;
     check_eq
-      (named "update leaves the original alone")
+      (t "update leaves the original alone")
       ~expect:[ 1; 2; 3; 4; 5 ]
       ~actual:(to_list xs)
       string_of_int_list
@@ -181,7 +162,7 @@ let test_suffixes () =
   (* The empty list has exactly one suffix: itself. *)
   check_eq "suffixes []" ~expect:[ [] ] ~actual:(suffixes []) string_of_int_list_list;
   for n = 0 to 50 do
-    let xs = List.init n (fun i -> i) in
+    let xs = upto n in
     check_int
       (Printf.sprintf "suffixes length for n=%d" n)
       ~expect:(n + 1)
@@ -193,7 +174,7 @@ let test_suffixes () =
    rather than a copy. Physical equality checks that directly; structural equality would
    pass even for a copying implementation. *)
 let test_suffixes_share () =
-  let xs = List.init 200 (fun i -> i) in
+  let xs = upto 200 in
   let s = suffixes xs in
   check "first suffix is the original list" (List.hd s == xs);
   let rec tails_shared = function
@@ -207,8 +188,8 @@ let test_suffixes_share () =
   (* Only the n+1 cons cells of the outer list are new. A copying implementation would
      allocate O(n^2). *)
   let n = 300 in
-  let ys = List.init n (fun i -> i) in
-  let w = words (fun () -> suffixes ys) in
+  let ys = upto n in
+  let w = allocated (fun () -> suffixes ys) in
   check
     (Printf.sprintf "suffixes allocates O(n) words (n=%d, got %.0f)" n w)
     (w <= 6.0 *. float_of_int (n + 1))
@@ -216,45 +197,14 @@ let test_suffixes_share () =
 
 (* ------------------------------------------------- ordered modules for trees *)
 
-let comparisons = ref 0
-
-module Counting_int = struct
-  type t = int
-
-  let eq a b =
-    incr comparisons;
-    a = b
-  ;;
-
-  let lt a b =
-    incr comparisons;
-    a < b
-  ;;
-
-  let leq a b =
-    incr comparisons;
-    a <= b
-  ;;
-end
-
-(* Comparisons performed by [f]. *)
-let count f =
-  comparisons := 0;
-  let r = f () in
-  r, !comparisons
-;;
-
 module S = UnbalancedSet (Counting_int)
 module M = UnbalancedMap (Counting_int)
 
 (* Inserting 0,1,..,n-1 in order sends every element right, giving a right spine of known
    depth n. Knowing d without inspecting the tree matters because UnbalancedSet.set is
    abstract. *)
-let spine_set n = List.fold_left (fun s x -> S.insert x s) S.empty (List.init n Fun.id)
-
-let spine_map n =
-  List.fold_left (fun m k -> M.bind k (k * 10) m) M.empty (List.init n Fun.id)
-;;
+let spine_set n = List.fold_left (fun s x -> S.insert x s) S.empty (upto n)
+let spine_map n = List.fold_left (fun m k -> M.bind k (k * 10) m) M.empty (upto n)
 
 (* An insertion order that builds a balanced tree of depth ceil(log2 (n+1)). *)
 let balanced_order n =
@@ -290,7 +240,7 @@ let test_set () =
     let n = 1 + Random.int 25 in
     let xs =
       if trial mod 3 = 0
-      then List.init n Fun.id (* degenerate *)
+      then upto n (* degenerate *)
       else List.init n (fun _ -> Random.int 40)
     in
     let s = List.fold_left (fun s x -> S.insert x s) S.empty xs in
@@ -343,8 +293,8 @@ let test_set_no_copying () =
   for x = 0 to n - 1 do
     check (Printf.sprintf "insert %d returns the original set" x) (S.insert x deep == deep)
   done;
-  let dup = words (fun () -> S.insert (n - 1) deep) in
-  let fresh = words (fun () -> S.insert 1000 deep) in
+  let dup = allocated (fun () -> S.insert (n - 1) deep) in
+  let fresh = allocated (fun () -> S.insert 1000 deep) in
   check
     (Printf.sprintf
        "duplicate insert allocates less than a fresh one (%.0f < %.0f)"
@@ -407,14 +357,14 @@ let test_complete_sharing () =
   check "aliasing holds all the way down at depth 40" (all_levels_alias (complete 0 40));
   List.iter
     (fun d ->
-      let w = words (fun () -> complete 0 d) in
+      let w = allocated (fun () -> complete 0 d) in
       (* one node per level; a naive version would allocate 2^d of them *)
       check
         (Printf.sprintf "complete _ %d allocates O(d) words (got %.0f)" d w)
         (w <= 20.0 *. float_of_int (d + 1)))
     [ 4; 10; 22; 40 ];
   (* Representing 2^61 logical nodes has to stay instant. *)
-  let w = words (fun () -> complete 0 60) in
+  let w = allocated (fun () -> complete 0 60) in
   check (Printf.sprintf "complete _ 60 stays small (%.0f words)" w) (w <= 2000.0)
 ;;
 
@@ -445,7 +395,7 @@ let test_create () =
 let test_create_cost () =
   let bound_for n = 40.0 *. float_of_int (ceil_log2 (n + 1) + 1) in
   let cost n =
-    let w = words (fun () -> create 0 n) in
+    let w = allocated (fun () -> create 0 n) in
     check
       (Printf.sprintf
          "create _ %d allocates O(log n) words (got %.0f, bound %.0f)"
@@ -575,7 +525,7 @@ let test_map_comparisons () =
     (Printf.sprintf "bind, new key: %d <= 2d+1 = %d" c ((2 * d) + 1))
     (c <= (2 * d) + 1);
   (* A rebind changes the tree, so copying the path is necessary work. *)
-  let w = words (fun () -> M.bind (n - 1) 0 deep) in
+  let w = allocated (fun () -> M.bind (n - 1) 0 deep) in
   check
     (Printf.sprintf "rebind copies the search path (%.0f words)" w)
     (w >= 4.0 *. float_of_int n)
