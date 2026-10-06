@@ -204,21 +204,21 @@ let calls : (string * (int stream -> int stream -> int stream)) list =
 let test_call_is_free () =
   List.iter
     (fun (name, call) ->
-      let s, opened_s = source (upto 5)
-      and t, opened_t = source (upto 5) in
-      ignore (Sys.opaque_identity (call s t));
-      check_int
-        (Printf.sprintf "%s opens no cell until its result is forced" name)
-        ~expect:0
-        ~actual:(!opened_s + !opened_t);
-      (* The same claim with nowhere to hide: an argument that cannot be looked at. *)
-      check
-        (Printf.sprintf
-           "%s returns a suspension even when its arguments cannot be opened"
-           name)
-        (match call (poison ()) (poison ()) with
-         | _ -> true
-         | exception Opened -> false))
+       let s, opened_s = source (upto 5)
+       and t, opened_t = source (upto 5) in
+       ignore (Sys.opaque_identity (call s t));
+       check_int
+         (Printf.sprintf "%s opens no cell until its result is forced" name)
+         ~expect:0
+         ~actual:(!opened_s + !opened_t);
+       (* The same claim with nowhere to hide: an argument that cannot be looked at. *)
+       check
+         (Printf.sprintf
+            "%s returns a suspension even when its arguments cannot be opened"
+            name)
+         (match call (poison ()) (poison ()) with
+          | _ -> true
+          | exception Opened -> false))
     calls
 ;;
 
@@ -279,9 +279,9 @@ let test_incremental () =
   let bad = ref [] in
   List.iter
     (fun m ->
-      let s, opened = source (upto n) in
-      ignore (to_list (take m s));
-      if !opened <> m then bad := (m, !opened) :: !bad)
+       let s, opened = source (upto n) in
+       ignore (to_list (take m s));
+       if !opened <> m then bad := (m, !opened) :: !bad)
     [ 0; 1; 2; 5; n - 1 ];
   check
     (Printf.sprintf
@@ -311,17 +311,17 @@ let test_monolithic () =
   let bad = ref [] in
   List.iter
     (fun (n, len) ->
-      let s, opened = source (upto len) in
-      force_cells 1 (drop n s);
-      let expect = min n len + 1 in
-      if !opened <> expect then bad := (n, len, !opened, expect) :: !bad)
+       let s, opened = source (upto len) in
+       force_cells 1 (drop n s);
+       let expect = min n len + 1 in
+       if !opened <> expect then bad := (n, len, !opened, expect) :: !bad)
     [ 0, 5; 1, 5; 3, 5; 5, 5; 9, 5; 0, 0; 3, 0; 100, 1000; 1000, 100 ];
   check
     (Printf.sprintf
        "the first cell of drop n s opens min n |s| + 1 cells%s"
        (first_of
           (fun (n, len, a, e) ->
-            Printf.sprintf "drop %d of %d opened %d, expected %d" n len a e)
+             Printf.sprintf "drop %d of %d opened %d, expected %d" n len a e)
           !bad))
     (!bad = []);
   (* drop' (0, s) = s: what comes back is the suffix of s itself, the very same cells, not
@@ -335,16 +335,16 @@ let test_monolithic () =
   and bad_rest = ref [] in
   List.iter
     (fun len ->
-      let s, opened = source (upto len) in
-      let r = reverse s in
-      force_cells 1 r;
-      if !opened <> len + 1 then bad_first := (len, !opened) :: !bad_first;
-      (* ... and having paid, owes nothing more. What is left of the result is the `$Cons
+       let s, opened = source (upto len) in
+       let r = reverse s in
+       force_cells 1 r;
+       if !opened <> len + 1 then bad_first := (len, !opened) :: !bad_first;
+       (* ... and having paid, owes nothing more. What is left of the result is the `$Cons
          (x, r)` cells of reverse', which p.35 calls trivial: no function application
          inside, so nothing of the input left to look at. *)
-      let got = to_list r in
-      if !opened <> len + 1 || got <> List.rev (upto len)
-      then bad_rest := (len, !opened) :: !bad_rest)
+       let got = to_list r in
+       if !opened <> len + 1 || got <> List.rev (upto len)
+       then bad_rest := (len, !opened) :: !bad_rest)
     [ 0; 1; 2; 5; 100; 1000 ];
   check
     (Printf.sprintf
@@ -523,24 +523,24 @@ let test_sort () =
   and dearest = ref 0 in
   List.iter
     (fun (order, xs) ->
-      comparisons := 0;
-      let rec walk_counting k s =
-        match Lazy.force s with
-        | Nil -> ()
-        | Cons (_, rest) ->
-          let k = k + 1 in
-          if !comparisons > n * k then over := (order, k, !comparisons) :: !over;
-          walk_counting k rest
-      in
-      walk_counting 0 (sort counting_compare (of_list xs));
-      dearest := max !dearest !comparisons)
+       comparisons := 0;
+       let rec walk_counting k s =
+         match Lazy.force s with
+         | Nil -> ()
+         | Cons (_, rest) ->
+           let k = k + 1 in
+           if !comparisons > n * k then over := (order, k, !comparisons) :: !over;
+           walk_counting k rest
+       in
+       walk_counting 0 (sort counting_compare (of_list xs));
+       dearest := max !dearest !comparisons)
     (sort_orders n);
   check
     (Printf.sprintf
        "the first k elements cost at most n*k comparisons, for every k and every order%s"
        (first_of
           (fun (order, k, c) ->
-            Printf.sprintf "%s: first %d of %d cost %d, bound %d" order k n c (n * k))
+             Printf.sprintf "%s: first %d of %d cost %d, bound %d" order k n c (n * k))
           !over))
     (!over = []);
   (* And the saving is laziness, not a better algorithm. Taken all the way to the end this

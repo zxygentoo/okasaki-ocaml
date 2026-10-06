@@ -327,10 +327,10 @@ let test_complete () =
   (* Depth counts edges here: complete x 0 is a single node. *)
   List.iter
     (fun d ->
-      check_int
-        (Printf.sprintf "complete _ %d has 2^(d+1)-1 nodes" d)
-        ~expect:((1 lsl (d + 1)) - 1)
-        ~actual:(tree_size (complete 'x' d)))
+       check_int
+         (Printf.sprintf "complete _ %d has 2^(d+1)-1 nodes" d)
+         ~expect:((1 lsl (d + 1)) - 1)
+         ~actual:(tree_size (complete 'x' d)))
     [ 0; 1; 2; 3; 8 ];
   check_int "complete _ 5 height" ~expect:6 ~actual:(tree_height (complete 'x' 5));
   check_raises
@@ -357,11 +357,11 @@ let test_complete_sharing () =
   check "aliasing holds all the way down at depth 40" (all_levels_alias (complete 0 40));
   List.iter
     (fun d ->
-      let w = allocated (fun () -> complete 0 d) in
-      (* one node per level; a naive version would allocate 2^d of them *)
-      check
-        (Printf.sprintf "complete _ %d allocates O(d) words (got %.0f)" d w)
-        (w <= 20.0 *. float_of_int (d + 1)))
+       let w = allocated (fun () -> complete 0 d) in
+       (* one node per level; a naive version would allocate 2^d of them *)
+       check
+         (Printf.sprintf "complete _ %d allocates O(d) words (got %.0f)" d w)
+         (w <= 20.0 *. float_of_int (d + 1)))
     [ 4; 10; 22; 40 ];
   (* Representing 2^61 logical nodes has to stay instant. *)
   let w = allocated (fun () -> complete 0 60) in
@@ -457,11 +457,11 @@ let test_map () =
   let tally =
     List.fold_left
       (fun acc w ->
-        let n =
-          try M.lookup w acc with
-          | Not_found -> 0
-        in
-        M.bind w (n + 1) acc)
+         let n =
+           try M.lookup w acc with
+           | Not_found -> 0
+         in
+         M.bind w (n + 1) acc)
       M.empty
       [ 1; 2; 1; 1; 3; 2 ]
   in
@@ -470,9 +470,9 @@ let test_map () =
       " "
       (List.map
          (fun k ->
-           match lookup_opt k m with
-           | Some v -> Printf.sprintf "%d->%d" k v
-           | None -> Printf.sprintf "%d->_" k)
+            match lookup_opt k m with
+            | Some v -> Printf.sprintf "%d->%d" k v
+            | None -> Printf.sprintf "%d->_" k)
          [ 1; 2; 3; 4 ])
   in
   check_eq

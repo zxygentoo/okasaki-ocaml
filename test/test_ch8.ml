@@ -205,8 +205,8 @@ module Queue_tests (Q : QUEUE) = struct
     let versions = List.init 20 (fun i -> of_list (upto i)) in
     List.iter
       (fun v ->
-        ignore (Q.snoc v 99);
-        if not (Q.is_empty v) then ignore (Q.tail v))
+         ignore (Q.snoc v 99);
+         if not (Q.is_empty v) then ignore (Q.tail v))
       versions;
     let stale =
       List.mapi (fun i v -> if drain v = upto i then 0 else 1) versions
@@ -514,9 +514,9 @@ module Cons_tests (Q : QUEUE_WITH_CONS) = struct
     let versions = List.init 20 (fun i -> cons_list (upto i)) in
     List.iter
       (fun v ->
-        ignore (Q.cons 99 v);
-        ignore (Q.snoc v 99);
-        if not (Q.is_empty v) then ignore (Q.tail v))
+         ignore (Q.cons 99 v);
+         ignore (Q.snoc v 99);
+         if not (Q.is_empty v) then ignore (Q.tail v))
       versions;
     let stale =
       List.mapi (fun i v -> if drain v = List.rev (upto i) then 0 else 1) versions
@@ -551,23 +551,23 @@ module Cons_tests (Q : QUEUE_WITH_CONS) = struct
     let costs =
       Array.map
         (fun op ->
-          match op with
-          | Cons x ->
-            let q', c = cost (fun () -> Q.cons x !q) in
-            q := q';
-            c
-          | Snoc x ->
-            let q', c = cost (fun () -> Q.snoc !q x) in
-            q := q';
-            c
-          | Tail ->
-            let q', c = cost (fun () -> Q.tail !q) in
-            q := q';
-            c
-          | Head ->
-            let x, c = cost (fun () -> Q.head !q) in
-            sum := !sum + x;
-            c)
+           match op with
+           | Cons x ->
+             let q', c = cost (fun () -> Q.cons x !q) in
+             q := q';
+             c
+           | Snoc x ->
+             let q', c = cost (fun () -> Q.snoc !q x) in
+             q := q';
+             c
+           | Tail ->
+             let q', c = cost (fun () -> Q.tail !q) in
+             q := q';
+             c
+           | Head ->
+             let x, c = cost (fun () -> Q.head !q) in
+             sum := !sum + x;
+             c)
         ops
     in
     ignore (Sys.opaque_identity !q);
@@ -580,8 +580,8 @@ module Cons_tests (Q : QUEUE_WITH_CONS) = struct
     let dear = ref (0, Tail, -1.0) in
     Array.iteri
       (fun i c ->
-        let _, _, worst = !dear in
-        if among ops.(i) && c > worst then dear := i, ops.(i), c)
+         let _, _, worst = !dear in
+         if among ops.(i) && c > worst then dear := i, ops.(i), c)
       costs;
     !dear
   ;;
@@ -659,23 +659,23 @@ module Cons_tests (Q : QUEUE_WITH_CONS) = struct
     let t label = Printf.sprintf "%s: %s" name label in
     List.iter
       (fun (sequence, ops) ->
-        let within label n =
-          let ops = ops n in
-          let i, op, c = dearest any ops (costs ops) in
-          check
-            (t
-               (Printf.sprintf
-                  "%s, %s: dearest is #%d (%s) at %.0f words, n=%d"
-                  sequence
-                  label
-                  i
-                  (describe op)
-                  c
-                  n))
-            (c <= constant)
-        in
-        within "O(1) worst-case" 1_000;
-        within "still O(1) worst-case, a hundred times longer" 100_000)
+         let within label n =
+           let ops = ops n in
+           let i, op, c = dearest any ops (costs ops) in
+           check
+             (t
+                (Printf.sprintf
+                   "%s, %s: dearest is #%d (%s) at %.0f words, n=%d"
+                   sequence
+                   label
+                   i
+                   (describe op)
+                   c
+                   n))
+             (c <= constant)
+         in
+         within "O(1) worst-case" 1_000;
+         within "still O(1) worst-case, a hundred times longer" 100_000)
       sequences
   ;;
 
@@ -696,8 +696,8 @@ module Cons_tests (Q : QUEUE_WITH_CONS) = struct
       let dear = ref (0, 0.0) in
       Array.iteri
         (fun k q ->
-          let _, c = cost (fun () -> Q.cons 0 q) in
-          if c > snd !dear then dear := k, c)
+           let _, c = cost (fun () -> Q.cons 0 q) in
+           if c > snd !dear then dear := k, c)
         v;
       !dear
     in
@@ -714,7 +714,7 @@ module Cons_tests (Q : QUEUE_WITH_CONS) = struct
       !dear;
     List.iter
       (fun (run, k, c) ->
-        within (Printf.sprintf "%s from every version of a cons-build of %d" run n) (k, c))
+         within (Printf.sprintf "%s from every version of a cons-build of %d" run n) (k, c))
       (W.short_futures v ~size:Fun.id);
     let v, _ = W.build n in
     within
@@ -1029,13 +1029,13 @@ module Deque_tests (D : DEQUE) = struct
       and sum = ref 0 in
       Array.iteri
         (fun i op ->
-          match op with
-          | 0 -> q := D.cons i !q
-          | 1 -> q := D.snoc !q i
-          | 2 -> q := D.tail !q
-          | 3 -> q := D.init !q
-          | 4 -> sum := !sum + D.head !q
-          | _ -> sum := !sum + D.last !q)
+           match op with
+           | 0 -> q := D.cons i !q
+           | 1 -> q := D.snoc !q i
+           | 2 -> q := D.tail !q
+           | 3 -> q := D.init !q
+           | 4 -> sum := !sum + D.head !q
+           | _ -> sum := !sum + D.last !q)
         plan;
       opaque !q;
       opaque !sum;
@@ -1062,20 +1062,20 @@ module Deque_tests (D : DEQUE) = struct
     let t label = Printf.sprintf "%s: %s" name label in
     List.iter
       (fun (sequence, driver) ->
-        let within label n =
-          let ops, c = cost (driver n) in
-          check
-            (t
-               (Printf.sprintf
-                  "%s, %s: %s at n=%d"
-                  sequence
-                  label
-                  (per_operation ops c)
-                  n))
-            (c <= deque_budget ops)
-        in
-        within "amortised O(1)" 1_000;
-        within "still amortised O(1), a hundred times longer" 100_000)
+         let within label n =
+           let ops, c = cost (driver n) in
+           check
+             (t
+                (Printf.sprintf
+                   "%s, %s: %s at n=%d"
+                   sequence
+                   label
+                   (per_operation ops c)
+                   n))
+             (c <= deque_budget ops)
+         in
+         within "amortised O(1)" 1_000;
+         within "still amortised O(1), a hundred times longer" 100_000)
       sequences
   ;;
 
@@ -1214,21 +1214,21 @@ module Deque_tests (D : DEQUE) = struct
     in
     List.map
       (fun (run, f, per, needs) ->
-        let worst = ref (0, 0.0) in
-        Array.iteri
-          (fun k q ->
-            if size k >= needs
-            then (
-              f q;
-              let _, c =
-                cost (fun () ->
-                  for _ = 1 to d do
-                    f q
-                  done)
-              in
-              if c > snd !worst then worst := k, c))
-          v;
-        run, fst !worst, times d per, snd !worst)
+         let worst = ref (0, 0.0) in
+         Array.iteri
+           (fun k q ->
+              if size k >= needs
+              then (
+                f q;
+                let _, c =
+                  cost (fun () ->
+                    for _ = 1 to d do
+                      f q
+                    done)
+                in
+                if c > snd !worst then worst := k, c))
+           v;
+         run, fst !worst, times d per, snd !worst)
       runs
   ;;
 
@@ -1276,72 +1276,75 @@ module Deque_tests (D : DEQUE) = struct
     let n = 1_000 in
     List.iter
       (fun ({ direction; builder; build; remove; per; _ } as e) ->
-        (* The guard, at each end: a drain of a deque built from the other end has one
+         (* The guard, at each end: a drain of a deque built from the other end has one
            removal that runs a reverse, and the clock sees it. *)
-        let k, dear = dearest_removal words ~build ~remove n in
-        check
-          (t
-             (Printf.sprintf
-                "in a drain of %d %s the dearest removal is #%d, at %.0f words"
-                n
-                direction
-                k
-                dear))
-          (dear >= reverse_floor n);
-        (* p.65's branch point just after the rebalance: the version whose removal is the
+         let k, dear = dearest_removal words ~build ~remove n in
+         check
+           (t
+              (Printf.sprintf
+                 "in a drain of %d %s the dearest removal is #%d, at %.0f words"
+                 n
+                 direction
+                 k
+                 dear))
+           (dear >= reverse_floor n);
+         (* p.65's branch point just after the rebalance: the version whose removal is the
            dear one, taken d times. Every future forces the same suspension, so the
            reverse runs once. *)
-        let d = 10_000 in
-        let v = version_before ~build ~remove ~n ~k in
-        let _, first = cost (fun () -> remove v) in
-        let _, rest =
-          cost (fun () ->
-            for _ = 2 to d do
-              opaque (remove v)
-            done)
-        in
-        check
-          (t
-             (Printf.sprintf
-                "the first of %d removals of one version %s runs the reverse, %.0f words"
-                d
-                direction
-                first))
-          (first >= reverse_floor n);
-        within
-          (Printf.sprintf "and the other %d find it memoised" (d - 1))
-          (times (d - 1) per, rest);
-        (* p.65's branch point just before the rebalance: the whole drain, d times over.
+         let d = 10_000 in
+         let v = version_before ~build ~remove ~n ~k in
+         let _, first = cost (fun () -> remove v) in
+         let _, rest =
+           cost (fun () ->
+             for _ = 2 to d do
+               opaque (remove v)
+             done)
+         in
+         check
+           (t
+              (Printf.sprintf
+                 "the first of %d removals of one version %s runs the reverse, %.0f words"
+                 d
+                 direction
+                 first))
+           (first >= reverse_floor n);
+         within
+           (Printf.sprintf "and the other %d find it memoised" (d - 1))
+           (times (d - 1) per, rest);
+         (* p.65's branch point just before the rebalance: the whole drain, d times over.
            These are different suspensions, so memoisation does not help, and the budget
            holds anyway, because the operations were repeated along with the work. *)
-        within
-          (Printf.sprintf "the whole drain %s repeated 10 times from one deque" direction)
-          (cost (repeated_drain ~build ~remove ~per ~n ~d:10));
-        (* Every branch point of a drain from this end, with the shortest futures at both
+         within
+           (Printf.sprintf
+              "the whole drain %s repeated 10 times from one deque"
+              direction)
+           (cost (repeated_drain ~build ~remove ~per ~n ~d:10));
+         (* Every branch point of a drain from this end, with the shortest futures at both
            ends. *)
-        List.iter
-          (fun (run, k, ops, c) ->
-            within
-              (Printf.sprintf
-                 "%s, 50 times over from each version of a drain %s, dearest from #%d"
-                 run
-                 direction
-                 k)
-              (ops, c))
-          (short_runs (versions n e) ~size:(fun k -> n - k) ~d:50);
-        (* And every branch point of the build that drain empties: a drain only ever
+         List.iter
+           (fun (run, k, ops, c) ->
+              within
+                (Printf.sprintf
+                   "%s, 50 times over from each version of a drain %s, dearest from #%d"
+                   run
+                   direction
+                   k)
+                (ops, c))
+           (short_runs (versions n e) ~size:(fun k -> n - k) ~d:50);
+         (* And every branch point of the build that drain empties: a drain only ever
            shrinks, so its versions have all seen a rebalance some time ago; a build's are
            the ones on the brink of the next, and the ones just past it. *)
-        List.iter
-          (fun (run, k, ops, c) ->
-            within
-              (Printf.sprintf
-                 "%s, 20 times over from each version of a build by %s, dearest from #%d"
-                 run
-                 builder
-                 k)
-              (ops, c))
-          (short_runs (growth (2 * n) e) ~size:Fun.id ~d:20))
+         List.iter
+           (fun (run, k, ops, c) ->
+              within
+                (Printf.sprintf
+                   "%s, 20 times over from each version of a build by %s, dearest from \
+                    #%d"
+                   run
+                   builder
+                   k)
+                (ops, c))
+           (short_runs (growth (2 * n) e) ~size:Fun.id ~d:20))
       ends;
     within
       "a random trace of 100000 operations, each on a random earlier version"
@@ -1399,23 +1402,23 @@ let test_deque_unshared () =
   let n = 20_000 in
   List.iter
     (fun (what, w) ->
-      check
-        (Printf.sprintf
-           "BankersDeque: %s is O(1) worst-case, dearest of %d consecutive %.0f words"
-           what
-           n
-           w)
-        (w <= constant))
+       check
+         (Printf.sprintf
+            "BankersDeque: %s is O(1) worst-case, dearest of %d consecutive %.0f words"
+            what
+            n
+            w)
+         (w <= constant))
     (Unshared_words.run words n);
   List.iter
     (fun (what, s) ->
-      check
-        (Printf.sprintf
-           "BankersDeque, in steps: %s executes no step, dearest of %d consecutive %.0f"
-           what
-           n
-           s)
-        (s = 0.0))
+       check
+         (Printf.sprintf
+            "BankersDeque, in steps: %s executes no step, dearest of %d consecutive %.0f"
+            what
+            n
+            s)
+         (s = 0.0))
     (Unshared_steps.run stream_steps n)
 ;;
 
@@ -1428,41 +1431,41 @@ let test_deque_steps () =
   and d = 10_000 in
   List.iter
     (fun { T.direction; build; remove; _ } ->
-      let k, dear = T.dearest_removal stream_steps ~build ~remove n in
-      check
-        (t
-           (Printf.sprintf
-              "in a drain of %d %s the dearest removal is #%d, at %.0f steps"
-              n
-              direction
-              k
-              dear))
-        (dear >= reverse_floor n);
-      let v = T.version_before ~build ~remove ~n ~k in
-      let _, first = cost_on stream_steps (fun () -> remove v) in
-      let _, rest =
-        cost_on stream_steps (fun () ->
-          for _ = 2 to d do
-            T.opaque (remove v)
-          done)
-      in
-      check
-        (t
-           (Printf.sprintf
-              "the first of %d removals of one version %s executes the rebalance, %.0f \
-               steps"
-              d
-              direction
-              first))
-        (first >= reverse_floor n);
-      check
-        (t
-           (Printf.sprintf
-              "and the other %d removals %s execute no step at all (%.0f)"
-              (d - 1)
-              direction
-              rest))
-        (rest = 0.0))
+       let k, dear = T.dearest_removal stream_steps ~build ~remove n in
+       check
+         (t
+            (Printf.sprintf
+               "in a drain of %d %s the dearest removal is #%d, at %.0f steps"
+               n
+               direction
+               k
+               dear))
+         (dear >= reverse_floor n);
+       let v = T.version_before ~build ~remove ~n ~k in
+       let _, first = cost_on stream_steps (fun () -> remove v) in
+       let _, rest =
+         cost_on stream_steps (fun () ->
+           for _ = 2 to d do
+             T.opaque (remove v)
+           done)
+       in
+       check
+         (t
+            (Printf.sprintf
+               "the first of %d removals of one version %s executes the rebalance, %.0f \
+                steps"
+               d
+               direction
+               first))
+         (first >= reverse_floor n);
+       check
+         (t
+            (Printf.sprintf
+               "and the other %d removals %s execute no step at all (%.0f)"
+               (d - 1)
+               direction
+               rest))
+         (rest = 0.0))
     T.ends
 ;;
 
@@ -1677,9 +1680,9 @@ module Real_time_tests (D : DEQUE) = struct
     and dear = ref (0, 0.0) in
     Array.iteri
       (fun i op ->
-        let q', c = cost_on clock (fun () -> op !q) in
-        q := q';
-        if c > snd !dear then dear := i, c)
+         let q', c = cost_on clock (fun () -> op !q) in
+         q := q';
+         if c > snd !dear then dear := i, c)
       plan;
     opaque !q;
     !dear
@@ -1691,24 +1694,24 @@ module Real_time_tests (D : DEQUE) = struct
     let t label = Printf.sprintf "%s: %s" name label in
     List.iter
       (fun (plan, make) ->
-        let within label n =
-          let ops = make n in
-          let k, c = dearest clock ops in
-          check
-            (t
-               (Printf.sprintf
-                  "%s, %s: dearest of %d is #%d at %.0f %s, n=%d"
-                  plan
-                  label
-                  (Array.length ops)
-                  k
-                  c
-                  unit
-                  n))
-            (c <= budget)
-        in
-        within "O(1) worst-case" 1_000;
-        within "still, a hundred times longer" 100_000)
+         let within label n =
+           let ops = make n in
+           let k, c = dearest clock ops in
+           check
+             (t
+                (Printf.sprintf
+                   "%s, %s: dearest of %d is #%d at %.0f %s, n=%d"
+                   plan
+                   label
+                   (Array.length ops)
+                   k
+                   c
+                   unit
+                   n))
+             (c <= budget)
+         in
+         within "O(1) worst-case" 1_000;
+         within "still, a hundred times longer" 100_000)
       plans
   ;;
 
@@ -1737,10 +1740,10 @@ module Real_time_tests (D : DEQUE) = struct
     let dear = ref (0, 0.0) in
     Array.iteri
       (fun k q ->
-        if size k >= needs
-        then (
-          let _, c = cost_on clock (fun () -> f q) in
-          if c > snd !dear then dear := k, c))
+         if size k >= needs
+         then (
+           let _, c = cost_on clock (fun () -> f q) in
+           if c > snd !dear then dear := k, c))
       v;
     !dear
   ;;
@@ -1774,27 +1777,27 @@ module Real_time_tests (D : DEQUE) = struct
     let n = 1_000 in
     List.iter
       (fun ({ T.direction; builder; _ } as e) ->
-        List.iter
-          (fun (run, f, ops, needs) ->
-            let within label (k, c) =
-              check
-                (t
-                   (Printf.sprintf
-                      "%s, %s, dearest from #%d at %.0f %s"
-                      run
-                      label
-                      k
-                      c
-                      unit))
-                (c <= float_of_int ops *. budget)
-            in
-            within
-              (Printf.sprintf "first from every version of a drain %s" direction)
-              (dearest_from clock (T.versions n e) ~size:(fun k -> n - k) ~needs f);
-            within
-              (Printf.sprintf "first from every version of a build by %s" builder)
-              (dearest_from clock (T.growth (2 * n) e) ~size:Fun.id ~needs f))
-          short_runs)
+         List.iter
+           (fun (run, f, ops, needs) ->
+              let within label (k, c) =
+                check
+                  (t
+                     (Printf.sprintf
+                        "%s, %s, dearest from #%d at %.0f %s"
+                        run
+                        label
+                        k
+                        c
+                        unit))
+                  (c <= float_of_int ops *. budget)
+              in
+              within
+                (Printf.sprintf "first from every version of a drain %s" direction)
+                (dearest_from clock (T.versions n e) ~size:(fun k -> n - k) ~needs f);
+              within
+                (Printf.sprintf "first from every version of a build by %s" builder)
+                (dearest_from clock (T.growth (2 * n) e) ~size:Fun.id ~needs f))
+           short_runs)
       T.ends;
     let k, c = random_versions clock 100_000 in
     check
@@ -1986,11 +1989,11 @@ module Set_tests (S : SET with type elem = int) = struct
     let over = ref [] in
     List.iter
       (fun n ->
-        List.iter
-          (fun (order, xs) ->
-            let d = max_path n (of_list xs) in
-            if d > depth_bound n then over := (order, n, d) :: !over)
-          (orders n))
+         List.iter
+           (fun (order, xs) ->
+              let d = max_path n (of_list xs) in
+              if d > depth_bound n then over := (order, n, d) :: !over)
+           (orders n))
       set_sizes;
     check
       (t
@@ -2006,11 +2009,11 @@ module Set_tests (S : SET with type elem = int) = struct
     let costly = ref 0 in
     List.iter
       (fun n ->
-        let s = of_list (evens n) in
-        if count_only (fun () -> S.member ((2 * n) - 1) s) > 2 * depth_bound n
-        then incr costly;
-        if count_only (fun () -> S.insert ((2 * n) + 1) s) > 2 * depth_bound n
-        then incr costly)
+         let s = of_list (evens n) in
+         if count_only (fun () -> S.member ((2 * n) - 1) s) > 2 * depth_bound n
+         then incr costly;
+         if count_only (fun () -> S.insert ((2 * n) + 1) s) > 2 * depth_bound n
+         then incr costly)
       set_sizes;
     check_int (t "member and insert stay O(log n) comparisons") ~expect:0 ~actual:!costly
   ;;
@@ -2028,8 +2031,8 @@ module Set_tests (S : SET with type elem = int) = struct
       evens 40
       |> List.fold_left
            (fun (acc, s) x ->
-             let s = S.insert x s in
-             s :: acc, s)
+              let s = S.insert x s in
+              s :: acc, s)
            ([], S.empty)
       |> fst
       |> List.rev
@@ -2037,9 +2040,9 @@ module Set_tests (S : SET with type elem = int) = struct
     let stale = ref 0 in
     List.iteri
       (fun i v ->
-        (* version i was built from evens (i+1), so it holds those and nothing beyond *)
-        if not (List.for_all (fun x -> S.member x v) (evens (i + 1))) then incr stale;
-        if S.member (2 * (i + 1)) v then incr stale)
+         (* version i was built from evens (i+1), so it holds those and nothing beyond *)
+         if not (List.for_all (fun x -> S.member x v) (evens (i + 1))) then incr stale;
+         if S.member (2 * (i + 1)) v then incr stale)
       versions;
     check_int (t "every intermediate version stays correct") ~expect:0 ~actual:!stale;
     (* member only follows pointers, so it must allocate nothing whatsoever, whether the
@@ -2047,11 +2050,11 @@ module Set_tests (S : SET with type elem = int) = struct
     let searching = ref [] in
     List.iter
       (fun n ->
-        let s = of_list (evens n) in
-        let miss = allocated (fun () -> S.member ((2 * n) + 1) s)
-        and hit = allocated (fun () -> S.member (2 * (n - 1)) s) in
-        if miss <> 0.0 then searching := (n, miss) :: !searching;
-        if hit <> 0.0 then searching := (n, hit) :: !searching)
+         let s = of_list (evens n) in
+         let miss = allocated (fun () -> S.member ((2 * n) + 1) s)
+         and hit = allocated (fun () -> S.member (2 * (n - 1)) s) in
+         if miss <> 0.0 then searching := (n, miss) :: !searching;
+         if hit <> 0.0 then searching := (n, hit) :: !searching)
       [ 10; 100; 1000; 10_000 ];
     check
       (t
@@ -2171,8 +2174,8 @@ module Delete_tests (S : SET_WITH_DELETE with type elem = int) = struct
     let versions =
       List.fold_left
         (fun (acc, s) x ->
-          let s = S.delete x s in
-          s :: acc, s)
+           let s = S.delete x s in
+           s :: acc, s)
         ([], Base.of_list xs)
         order
       |> fst
@@ -2181,10 +2184,10 @@ module Delete_tests (S : SET_WITH_DELETE with type elem = int) = struct
     let stale = ref 0 in
     List.iteri
       (fun i v ->
-        (* version i is after i + 1 deletions: the first i + 1 of [order] are gone *)
-        let gone = List.take (i + 1) order in
-        if not (List.for_all (fun x -> S.member x v = not (List.mem x gone)) xs)
-        then incr stale)
+         (* version i is after i + 1 deletions: the first i + 1 of [order] are gone *)
+         let gone = List.take (i + 1) order in
+         if not (List.for_all (fun x -> S.member x v = not (List.mem x gone)) xs)
+         then incr stale)
       versions;
     check_int
       (t "every version of a drain stays correct, across rebuilds")
@@ -2262,12 +2265,12 @@ module Delete_tests (S : SET_WITH_DELETE with type elem = int) = struct
     and rebuilds = ref [] in
     List.iteri
       (fun i x ->
-        comparisons := 0;
-        let s', w = cost (fun () -> S.delete x !s) in
-        dear_cmp := max !dear_cmp !comparisons;
-        total := !total +. w;
-        if w > path_words n then rebuilds := (i + 1, n - i - 1) :: !rebuilds;
-        s := s')
+         comparisons := 0;
+         let s', w = cost (fun () -> S.delete x !s) in
+         dear_cmp := max !dear_cmp !comparisons;
+         total := !total +. w;
+         if w > path_words n then rebuilds := (i + 1, n - i - 1) :: !rebuilds;
+         s := s')
       order;
     ignore (Sys.opaque_identity !s);
     let rebuilds = List.rev !rebuilds in
@@ -2363,12 +2366,12 @@ let test_redblack_shape () =
   let differs = ref [] in
   List.iter
     (fun n ->
-      List.iter
-        (fun (order, xs) ->
-          let here = Rb_tests.gap_profile n (Rb_tests.of_list xs)
-          and there = Original_tests.gap_profile n (Original_tests.of_list xs) in
-          if here <> there then differs := (order, n) :: !differs)
-        (orders n))
+       List.iter
+         (fun (order, xs) ->
+            let here = Rb_tests.gap_profile n (Rb_tests.of_list xs)
+            and there = Original_tests.gap_profile n (Original_tests.of_list xs) in
+            if here <> there then differs := (order, n) :: !differs)
+         (orders n))
     set_sizes;
   check
     (Printf.sprintf

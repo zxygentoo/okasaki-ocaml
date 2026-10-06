@@ -433,21 +433,21 @@ module Heap_tests (H : HEAP with type Element.t = int) = struct
     and query = ref no_dear in
     Array.iteri
       (fun i op ->
-        match op with
-        | Insert x ->
-          let h', cw = spent (fun () -> H.insert x !h) in
-          h := h';
-          insert := dearer !insert ~at:i ~op:"insert" ~size:!size cw;
-          incr size
-        | Delete_min ->
-          let h', cw = spent (fun () -> H.delete_min !h) in
-          h := h';
-          query := dearer !query ~at:i ~op:"delete_min" ~size:!size cw;
-          decr size
-        | Find_min ->
-          let x, cw = spent (fun () -> H.find_min !h) in
-          sum := !sum + x;
-          query := dearer !query ~at:i ~op:"find_min" ~size:!size cw)
+         match op with
+         | Insert x ->
+           let h', cw = spent (fun () -> H.insert x !h) in
+           h := h';
+           insert := dearer !insert ~at:i ~op:"insert" ~size:!size cw;
+           incr size
+         | Delete_min ->
+           let h', cw = spent (fun () -> H.delete_min !h) in
+           h := h';
+           query := dearer !query ~at:i ~op:"delete_min" ~size:!size cw;
+           decr size
+         | Find_min ->
+           let x, cw = spent (fun () -> H.find_min !h) in
+           sum := !sum + x;
+           query := dearer !query ~at:i ~op:"find_min" ~size:!size cw)
       ops;
     ignore (Sys.opaque_identity !h);
     ignore (Sys.opaque_identity !sum);
@@ -480,7 +480,7 @@ module Heap_tests (H : HEAP with type Element.t = int) = struct
           Array.init
             (1000 + (2 * n))
             (fun i ->
-              if i < 1000 then Insert i else if i mod 2 = 0 then Insert i else Delete_min)
+               if i < 1000 then Insert i else if i mod 2 = 0 then Insert i else Delete_min)
       )
     ]
   ;;
@@ -491,18 +491,18 @@ module Heap_tests (H : HEAP with type Element.t = int) = struct
     let t label = Printf.sprintf "%s: %s" name label in
     List.iter
       (fun (sequence, ops) ->
-        let within label n =
-          let insert, query = dearest (ops n) in
-          let fine d = d.ratio <= 1.0 in
-          check
-            (t (Printf.sprintf "%s, %s at n=%d: %s" sequence label n (show_dear insert)))
-            (fine insert);
-          check
-            (t (Printf.sprintf "%s, %s at n=%d: %s" sequence label n (show_dear query)))
-            (fine query)
-        in
-        within "O(1) and O(log n) worst-case" 1_000;
-        within "still so, a hundred times longer" 100_000)
+         let within label n =
+           let insert, query = dearest (ops n) in
+           let fine d = d.ratio <= 1.0 in
+           check
+             (t (Printf.sprintf "%s, %s at n=%d: %s" sequence label n (show_dear insert)))
+             (fine insert);
+           check
+             (t (Printf.sprintf "%s, %s at n=%d: %s" sequence label n (show_dear query)))
+             (fine query)
+         in
+         within "O(1) and O(log n) worst-case" 1_000;
+         within "still so, a hundred times longer" 100_000)
       sequences
   ;;
 
@@ -552,17 +552,18 @@ module Heap_tests (H : HEAP with type Element.t = int) = struct
     let sweep label v ~size =
       List.iter
         (fun (op, f, needs) ->
-          let d = ref no_dear in
-          Array.iteri
-            (fun k h ->
-              if size k >= needs
-              then (
-                let (), cw = spent (fun () -> f h) in
-                d := dearer !d ~at:k ~op ~size:(size k) cw))
-            v;
-          check
-            (t (Printf.sprintf "%s from every version of %s, %s" op label (show_dear !d)))
-            (!d.ratio <= 1.0))
+           let d = ref no_dear in
+           Array.iteri
+             (fun k h ->
+                if size k >= needs
+                then (
+                  let (), cw = spent (fun () -> f h) in
+                  d := dearer !d ~at:k ~op ~size:(size k) cw))
+             v;
+           check
+             (t
+                (Printf.sprintf "%s from every version of %s, %s" op label (show_dear !d)))
+             (!d.ratio <= 1.0))
         [ "insert", (fun h -> opaque (H.insert 0 h)), 0
         ; "find_min", (fun h -> opaque (H.find_min h)), 1
         ; "delete_min", (fun h -> opaque (H.delete_min h)), 1
@@ -731,16 +732,16 @@ module Sortable_tests (S : SORTABLE with type Element.t = int) = struct
     and sort = ref no_dear in
     Array.iteri
       (fun i op ->
-        match op with
-        | Add x ->
-          let s', cw = spent (fun () -> S.add x !s) in
-          s := s';
-          add := dearer_sortable !add ~at:i ~op:"add" ~size:!size cw;
-          incr size
-        | Sort ->
-          let l, cw = spent (fun () -> S.sort !s) in
-          sum := !sum + List.length l;
-          sort := dearer_sortable !sort ~at:i ~op:"sort" ~size:!size cw)
+         match op with
+         | Add x ->
+           let s', cw = spent (fun () -> S.add x !s) in
+           s := s';
+           add := dearer_sortable !add ~at:i ~op:"add" ~size:!size cw;
+           incr size
+         | Sort ->
+           let l, cw = spent (fun () -> S.sort !s) in
+           sum := !sum + List.length l;
+           sort := dearer_sortable !sort ~at:i ~op:"sort" ~size:!size cw)
       ops;
     ignore (Sys.opaque_identity !s);
     ignore (Sys.opaque_identity !sum);
@@ -785,18 +786,18 @@ module Sortable_tests (S : SORTABLE with type Element.t = int) = struct
     let t label = Printf.sprintf "%s: %s" name label in
     List.iter
       (fun (sequence, (small, large), ops) ->
-        let within label n =
-          let add, sort = dearest (ops n) in
-          let fine d = d.ratio <= 1.0 in
-          check
-            (t (Printf.sprintf "%s, %s at n=%d: %s" sequence label n (show_dear add)))
-            (fine add);
-          check
-            (t (Printf.sprintf "%s, %s at n=%d: %s" sequence label n (show_dear sort)))
-            (fine sort)
-        in
-        within "O(log n) adds and O(n) sorts, worst-case" small;
-        within "still so, longer" large)
+         let within label n =
+           let add, sort = dearest (ops n) in
+           let fine d = d.ratio <= 1.0 in
+           check
+             (t (Printf.sprintf "%s, %s at n=%d: %s" sequence label n (show_dear add)))
+             (fine add);
+           check
+             (t (Printf.sprintf "%s, %s at n=%d: %s" sequence label n (show_dear sort)))
+             (fine sort)
+         in
+         within "O(log n) adds and O(n) sorts, worst-case" small;
+         within "still so, longer" large)
       sequences
   ;;
 
@@ -821,17 +822,17 @@ module Sortable_tests (S : SORTABLE with type Element.t = int) = struct
     let d = ref no_dear in
     Array.iteri
       (fun k s ->
-        let _, cw = spent (fun () -> S.add 0 s) in
-        d := dearer_sortable !d ~at:k ~op:"add" ~size:k cw)
+         let _, cw = spent (fun () -> S.add 0 s) in
+         d := dearer_sortable !d ~at:k ~op:"add" ~size:k cw)
       v;
     within (Printf.sprintf "add from every version of a build of %d" n) !d;
     let first = Array.make (n + 1) (0.0, 0.0)
     and d = ref no_dear in
     Array.iteri
       (fun k s ->
-        let _, cw = spent (fun () -> S.sort s) in
-        first.(k) <- cw;
-        d := dearer_sortable !d ~at:k ~op:"sort" ~size:k cw)
+         let _, cw = spent (fun () -> S.sort s) in
+         first.(k) <- cw;
+         d := dearer_sortable !d ~at:k ~op:"sort" ~size:k cw)
       v;
     within (Printf.sprintf "the first sort of every version of a build of %d" n) !d;
     (* And the second sort of every version: memoisation can only make it cheaper, and the
@@ -840,9 +841,9 @@ module Sortable_tests (S : SORTABLE with type Element.t = int) = struct
     and dearer_than_first = ref 0 in
     Array.iteri
       (fun k s ->
-        let _, ((c, _) as cw) = spent (fun () -> S.sort s) in
-        if c > fst first.(k) then incr dearer_than_first;
-        d := dearer_sortable !d ~at:k ~op:"sort" ~size:k cw)
+         let _, ((c, _) as cw) = spent (fun () -> S.sort s) in
+         if c > fst first.(k) then incr dearer_than_first;
+         d := dearer_sortable !d ~at:k ~op:"sort" ~size:k cw)
       v;
     within (Printf.sprintf "the second sort of every version of a build of %d" n) !d;
     check_int

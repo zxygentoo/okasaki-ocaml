@@ -93,8 +93,8 @@ module Contract (Q : Okasaki.Ch5.QUEUE) = struct
     let versions = List.init 20 (fun i -> of_list (upto i)) in
     List.iter
       (fun v ->
-        ignore (Q.snoc v 99);
-        if not (Q.is_empty v) then ignore (Q.tail v))
+         ignore (Q.snoc v 99);
+         if not (Q.is_empty v) then ignore (Q.tail v))
       versions;
     let stale =
       List.mapi (fun i v -> if drain v = upto i then 0 else 1) versions
@@ -228,13 +228,14 @@ struct
       let xs = upto n in
       List.iter
         (fun (build, make) ->
-          List.iter
-            (fun (drain, take) ->
-              match take (make xs) with
-              | got when got = xs -> ()
-              | got -> bad := (build, drain, n, string_of_int_list got) :: !bad
-              | exception Failure why -> bad := (build, drain, n, "raised " ^ why) :: !bad)
-            drains)
+           List.iter
+             (fun (drain, take) ->
+                match take (make xs) with
+                | got when got = xs -> ()
+                | got -> bad := (build, drain, n, string_of_int_list got) :: !bad
+                | exception Failure why ->
+                  bad := (build, drain, n, "raised " ^ why) :: !bad)
+             drains)
         builds
     done;
     check
@@ -297,12 +298,12 @@ struct
     let versions = List.init 20 (fun i -> snocs (upto i)) in
     List.iter
       (fun v ->
-        ignore (D.snoc v 99);
-        ignore (D.cons 99 v);
-        if not (D.is_empty v)
-        then (
-          ignore (D.tail v);
-          ignore (D.init v)))
+         ignore (D.snoc v 99);
+         ignore (D.cons 99 v);
+         if not (D.is_empty v)
+         then (
+           ignore (D.tail v);
+           ignore (D.init v)))
       versions;
     let stale =
       List.mapi (fun i v -> if drain_both_ends v = upto i then 0 else 1) versions
@@ -350,23 +351,23 @@ struct
     and dear = ref (0, Tail, 0.0) in
     Array.iteri
       (fun i op ->
-        let c =
-          match op with
-          | Snoc x ->
-            let q', c = cost (fun () -> Q.snoc !q x) in
-            q := q';
-            c
-          | Tail ->
-            let q', c = cost (fun () -> Q.tail !q) in
-            q := q';
-            c
-          | Head ->
-            let x, c = cost (fun () -> Q.head !q) in
-            sum := !sum + x;
-            c
-        in
-        let _, _, worst = !dear in
-        if c > worst then dear := i, op, c)
+         let c =
+           match op with
+           | Snoc x ->
+             let q', c = cost (fun () -> Q.snoc !q x) in
+             q := q';
+             c
+           | Tail ->
+             let q', c = cost (fun () -> Q.tail !q) in
+             q := q';
+             c
+           | Head ->
+             let x, c = cost (fun () -> Q.head !q) in
+             sum := !sum + x;
+             c
+         in
+         let _, _, worst = !dear in
+         if c > worst then dear := i, op, c)
       ops;
     ignore (Sys.opaque_identity !q);
     ignore (Sys.opaque_identity !sum);
@@ -426,22 +427,22 @@ struct
     let t label = Printf.sprintf "%s: %s" name label in
     List.iter
       (fun (sequence, ops) ->
-        let within label n =
-          let i, op, c = dearest (ops n) in
-          check
-            (t
-               (Printf.sprintf
-                  "%s, %s: dearest is #%d (%s) at %.0f words, n=%d"
-                  sequence
-                  label
-                  i
-                  (describe op)
-                  c
-                  n))
-            (c <= P.constant)
-        in
-        within "O(1) worst-case" 1_000;
-        within "still O(1) worst-case, a hundred times longer" 100_000)
+         let within label n =
+           let i, op, c = dearest (ops n) in
+           check
+             (t
+                (Printf.sprintf
+                   "%s, %s: dearest is #%d (%s) at %.0f words, n=%d"
+                   sequence
+                   label
+                   i
+                   (describe op)
+                   c
+                   n))
+             (c <= P.constant)
+         in
+         within "O(1) worst-case" 1_000;
+         within "still O(1) worst-case, a hundred times longer" 100_000)
       sequences
   ;;
 
@@ -489,15 +490,15 @@ struct
     in
     List.map
       (fun (run, f, needs) ->
-        let worst = ref (0, 0.0) in
-        Array.iteri
-          (fun k q ->
-            if size k >= needs
-            then (
-              let _, c = cost (fun () -> f q) in
-              if c > snd !worst then worst := k, c))
-          v;
-        run, fst !worst, snd !worst)
+         let worst = ref (0, 0.0) in
+         Array.iteri
+           (fun k q ->
+              if size k >= needs
+              then (
+                let _, c = cost (fun () -> f q) in
+                if c > snd !worst then worst := k, c))
+           v;
+         run, fst !worst, snd !worst)
       runs
   ;;
 
@@ -556,14 +557,14 @@ struct
     within (Printf.sprintf "the snoc that makes each version of a build of %d" n) dear;
     List.iter
       (fun (run, k, c) ->
-        within (Printf.sprintf "%s from every version of a build of %d" run n) (k, c))
+         within (Printf.sprintf "%s from every version of a build of %d" run n) (k, c))
       (short_futures v ~size:Fun.id);
     let n = 1_000 in
     let v, dear = drain n in
     within (Printf.sprintf "the tail that makes each version of a drain of %d" n) dear;
     List.iter
       (fun (run, k, c) ->
-        within (Printf.sprintf "%s from every version of a drain of %d" run n) (k, c))
+         within (Printf.sprintf "%s from every version of a drain of %d" run n) (k, c))
       (short_futures v ~size:(fun k -> n - k));
     within
       (Printf.sprintf

@@ -94,7 +94,8 @@ let theorem_6_1 =
   ; clock = stream_steps
   ; budget = (fun ops -> float_of_int (ops.snocs + (2 * ops.tails)))
   ; show =
-      (fun ops c -> Printf.sprintf "%.0f steps, budget %d" c (ops.snocs + (2 * ops.tails)))
+      (fun ops c ->
+        Printf.sprintf "%.0f steps, budget %d" c (ops.snocs + (2 * ops.tails)))
   ; reverse_floor = (fun n -> float_of_int n /. 6.)
   }
 ;;
@@ -195,14 +196,14 @@ module Queue_tests (Q : QUEUE) = struct
     let t label = Printf.sprintf "%s: %s" name label in
     List.iter
       (fun (sequence, driver) ->
-        let within label n =
-          let ops, c = cost_on bound.clock (driver n) in
-          check
-            (t (Printf.sprintf "%s, %s: %s at n=%d" sequence label (bound.show ops c) n))
-            (c <= bound.budget ops)
-        in
-        within bound.claim 1_000;
-        within (bound.claim ^ ", a hundred times longer") 100_000)
+         let within label n =
+           let ops, c = cost_on bound.clock (driver n) in
+           check
+             (t (Printf.sprintf "%s, %s: %s at n=%d" sequence label (bound.show ops c) n))
+             (c <= bound.budget ops)
+         in
+         within bound.claim 1_000;
+         within (bound.claim ^ ", a hundred times longer") 100_000)
       sequences
   ;;
 
@@ -281,22 +282,24 @@ module Queue_tests (Q : QUEUE) = struct
     in
     List.map
       (fun (run, f, per, needs) ->
-        let ops = { snocs = d * per.snocs; tails = d * per.tails; heads = d * per.heads } in
-        let worst = ref (0, 0.0) in
-        Array.iteri
-          (fun k q ->
-            if size k >= needs
-            then (
-              f q;
-              let _, c =
-                cost_on bound.clock (fun () ->
-                  for _ = 1 to d do
-                    f q
-                  done)
-              in
-              if c > snd !worst then worst := k, c))
-          v;
-        run, fst !worst, ops, snd !worst)
+         let ops =
+           { snocs = d * per.snocs; tails = d * per.tails; heads = d * per.heads }
+         in
+         let worst = ref (0, 0.0) in
+         Array.iteri
+           (fun k q ->
+              if size k >= needs
+              then (
+                f q;
+                let _, c =
+                  cost_on bound.clock (fun () ->
+                    for _ = 1 to d do
+                      f q
+                    done)
+                in
+                if c > snd !worst then worst := k, c))
+           v;
+         run, fst !worst, ops, snd !worst)
       runs
   ;;
 
@@ -359,7 +362,9 @@ module Queue_tests (Q : QUEUE) = struct
             first
             bound.units))
       (first >= bound.reverse_floor n);
-    within (Printf.sprintf "and the other %d find it memoised" (d - 1)) (tails (d - 1), rest);
+    within
+      (Printf.sprintf "and the other %d find it memoised" (d - 1))
+      (tails (d - 1), rest);
     (* p.65, the branch point just before the rotation: the whole drain, d times over.
        "Because these are different suspensions, memoization does not help at all", and
        the bound holds anyway, because the operations were repeated along with the work. *)
@@ -371,12 +376,12 @@ module Queue_tests (Q : QUEUE) = struct
        was tiny. *)
     List.iter
       (fun (run, k, ops, c) ->
-        within
-          (Printf.sprintf
-             "%s, 50 times over from each version of a drain, dearest from #%d"
-             run
-             k)
-          (ops, c))
+         within
+           (Printf.sprintf
+              "%s, 50 times over from each version of a drain, dearest from #%d"
+              run
+              k)
+           (ops, c))
       (short_runs bound (versions n) ~size:(fun k -> n - k) ~d:50);
     (* And every branch point of a build: the queue after k snocs, for every k. A drain
        only ever shrinks, so its versions have all seen a rotation some time ago; a
@@ -388,12 +393,12 @@ module Queue_tests (Q : QUEUE) = struct
     done;
     List.iter
       (fun (run, k, ops, c) ->
-        within
-          (Printf.sprintf
-             "%s, 20 times over from each version of a build, dearest from #%d"
-             run
-             k)
-          (ops, c))
+         within
+           (Printf.sprintf
+              "%s, 20 times over from each version of a build, dearest from #%d"
+              run
+              k)
+           (ops, c))
       (short_runs bound build ~size:Fun.id ~d:20);
     within
       "a random trace of 100000 operations, each on a random earlier version"
@@ -544,10 +549,10 @@ module Heap_tests (H : HEAP with type Element.t = int) = struct
     let bad_ins = ref 0 in
     List.iter
       (fun n ->
-        let h = of_list (upto n) in
-        force h;
-        if count_only (fun () -> force (H.insert max_int h)) <> trailing_ones n
-        then incr bad_ins)
+         let h = of_list (upto n) in
+         force h;
+         if count_only (fun () -> force (H.insert max_int h)) <> trailing_ones n
+         then incr bad_ins)
       [ 1; 2; 3; 7; 8; 15; 31; 100; 255; 1000 ];
     check_int
       (t "insert, once forced, links once per trailing 1 bit of n")
@@ -556,12 +561,12 @@ module Heap_tests (H : HEAP with type Element.t = int) = struct
     let bad_merge = ref 0 in
     List.iter
       (fun (n1, n2) ->
-        let a = of_list (upto n1)
-        and b = of_list (List.init n2 (fun i -> i + n1)) in
-        force a;
-        force b;
-        if count_only (fun () -> force (H.merge a b)) > floor_log2 (n1 + n2 + 1) + 1
-        then incr bad_merge)
+         let a = of_list (upto n1)
+         and b = of_list (List.init n2 (fun i -> i + n1)) in
+         force a;
+         force b;
+         if count_only (fun () -> force (H.merge a b)) > floor_log2 (n1 + n2 + 1) + 1
+         then incr bad_merge)
       [ 1, 1; 7, 9; 63, 64; 100, 1000; 1023, 1023 ];
     check_int (t "merge, once forced, links O(log n) times") ~expect:0 ~actual:!bad_merge
   ;;
@@ -585,7 +590,10 @@ module Heap_tests (H : HEAP with type Element.t = int) = struct
       ~expect:0
       ~actual:(int_of_float insert_c);
     check
-      (t (Printf.sprintf "and allocates a suspension and nothing more (%.0f words)" insert_w))
+      (t
+         (Printf.sprintf
+            "and allocates a suspension and nothing more (%.0f words)"
+            insert_w))
       (insert_w <= 32.0);
     let merge_c, merge_w = spent_only (fun () -> H.merge h h) in
     check_int
@@ -593,7 +601,10 @@ module Heap_tests (H : HEAP with type Element.t = int) = struct
       ~expect:0
       ~actual:(int_of_float merge_c);
     check
-      (t (Printf.sprintf "and allocates a suspension and nothing more (%.0f words)" merge_w))
+      (t
+         (Printf.sprintf
+            "and allocates a suspension and nothing more (%.0f words)"
+            merge_w))
       (merge_w <= 32.0);
     (* The work is still there, once, at the first look. *)
     let s = H.insert 0 h in
@@ -601,7 +612,10 @@ module Heap_tests (H : HEAP with type Element.t = int) = struct
       (t (Printf.sprintf "forcing the insert links once per tree, %d times" k))
       ~expect:k
       ~actual:(count_only (fun () -> force s));
-    check_int (t "forcing it again compares nothing") ~expect:0 ~actual:(count_only (fun () -> force s))
+    check_int
+      (t "forcing it again compares nothing")
+      ~expect:0
+      ~actual:(count_only (fun () -> force s))
   ;;
 
   (* ---------------------------------------- sequences: one thread, from empty *)
@@ -680,13 +694,13 @@ module Heap_tests (H : HEAP with type Element.t = int) = struct
     let t label = Printf.sprintf "%s: %s" name label in
     List.iter
       (fun (sequence, driver) ->
-        let within label n =
-          within_budget
-            (t (Printf.sprintf "%s, %s at n=%d" sequence label n))
-            (spent (driver n))
-        in
-        within "amortised, within budget" 1_000;
-        within "still within budget a hundred times longer" 100_000)
+         let within label n =
+           within_budget
+             (t (Printf.sprintf "%s, %s at n=%d" sequence label n))
+             (spent (driver n))
+         in
+         within "amortised, within budget" 1_000;
+         within "still within budget a hundred times longer" 100_000)
       sequences
   ;;
 
@@ -731,11 +745,8 @@ module Heap_tests (H : HEAP with type Element.t = int) = struct
       H.find_min (H.insert 1 (H.insert 0 h)));
     trace "delete_min of one heap, each looked at" ~inserts:0 ~queries:2 (fun () ->
       H.find_min (H.delete_min h));
-    trace
-      "merge of one heap with itself, each looked at"
-      ~inserts:0
-      ~queries:2
-      (fun () -> H.find_min (H.merge h h));
+    trace "merge of one heap with itself, each looked at" ~inserts:0 ~queries:2 (fun () ->
+      H.find_min (H.merge h h));
     (* The shortest futures there are, d times over from every version of a drain, all
        of them forced so that what the runs pay is their own. *)
     let n = 1_000 in
@@ -750,26 +761,26 @@ module Heap_tests (H : HEAP with type Element.t = int) = struct
     let opaque x = ignore (Sys.opaque_identity x) in
     List.iter
       (fun (run, f, (inserts, queries), last) ->
-        let ops = { inserts = d * inserts; queries = d * queries; largest = n } in
-        let worst = ref (0, (0.0, 0.0)) in
-        for k = 0 to last do
-          let (), cw =
-            spent (fun () ->
-              for _ = 1 to d do
-                f v.(k)
-              done)
-          in
-          if over_budget (ops, cw) > over_budget (ops, snd !worst) then worst := k, cw
-        done;
-        let k, cw = !worst in
-        within_budget
-          (t
-             (Printf.sprintf
-                "%s, %d times over from each version of a drain, dearest from #%d"
-                run
-                d
-                k))
-          (ops, cw))
+         let ops = { inserts = d * inserts; queries = d * queries; largest = n } in
+         let worst = ref (0, (0.0, 0.0)) in
+         for k = 0 to last do
+           let (), cw =
+             spent (fun () ->
+               for _ = 1 to d do
+                 f v.(k)
+               done)
+           in
+           if over_budget (ops, cw) > over_budget (ops, snd !worst) then worst := k, cw
+         done;
+         let k, cw = !worst in
+         within_budget
+           (t
+              (Printf.sprintf
+                 "%s, %d times over from each version of a drain, dearest from #%d"
+                 run
+                 d
+                 k))
+           (ops, cw))
       [ "insert", (fun q -> opaque (H.insert 0 q)), (1, 0), n
       ; "find_min of an insert", (fun q -> opaque (H.find_min (H.insert 0 q))), (1, 1), n
       ; ( "find_min of a delete_min"
@@ -877,8 +888,8 @@ let test_physicists_worst_case () =
   done;
   check
     (Printf.sprintf
-       "PhysicistsQueue: head allocates nothing, on every version of a drain of %d (dearest \
-        %.0f words)"
+       "PhysicistsQueue: head allocates nothing, on every version of a drain of %d \
+        (dearest %.0f words)"
        n
        !dearest_head)
     (!dearest_head = 0.0);
@@ -897,8 +908,8 @@ let test_physicists_worst_case () =
   done;
   check
     (Printf.sprintf
-       "PhysicistsQueue: the snoc that rotates pays for the front it forces, linear (%.0f \
-        words at n=%d)"
+       "PhysicistsQueue: the snoc that rotates pays for the front it forces, linear \
+        (%.0f words at n=%d)"
        !dearest_snoc
        n)
     (!dearest_snoc >= float_of_int n /. 2.)
@@ -1032,7 +1043,9 @@ struct
       (merged >= float_of_int n /. 2.);
     let again, again_w = spent_only (fun () -> force c') in
     check_int
-      (t "a second sort of that collection compares nothing: one segment, nothing to merge")
+      (t
+         "a second sort of that collection compares nothing: one segment, nothing to \
+          merge")
       ~expect:0
       ~actual:(int_of_float again);
     check
@@ -1095,13 +1108,14 @@ struct
     let t label = Printf.sprintf "%s: %s" name label in
     List.iter
       (fun (sequence, driver) ->
-        let within label n =
-          sortable_within C.costs
-            (t (Printf.sprintf "%s, %s at n=%d" sequence label n))
-            (spent (driver n))
-        in
-        within "amortised, within budget" 1_000;
-        within "still within budget a hundred times longer" 100_000)
+         let within label n =
+           sortable_within
+             C.costs
+             (t (Printf.sprintf "%s, %s at n=%d" sequence label n))
+             (spent (driver n))
+         in
+         within "amortised, within budget" 1_000;
+         within "still within budget a hundred times longer" 100_000)
       sequences
   ;;
 
@@ -1135,20 +1149,14 @@ struct
       (fun () -> S.add 0 c);
     trace "sort of each of them" ~adds:1 ~sorts:1 (fun () -> S.sort (S.add 0 c));
     (* The trace an add that forced its argument at once would fail. *)
-    trace
-      "an add on top of each of them, nothing forced"
-      ~adds:2
-      ~sorts:0
-      (fun () -> S.add 1 (S.add 0 c));
+    trace "an add on top of each of them, nothing forced" ~adds:2 ~sorts:0 (fun () ->
+      S.add 1 (S.add 0 c));
     trace "sort of each of those" ~adds:2 ~sorts:1 (fun () ->
       S.sort (S.add 1 (S.add 0 c)));
     (* The cleanup phase, again and again: one segment per bit, merged smallest to
        largest, and nothing else left to do. *)
-    trace
-      "sort of the one collection, again and again"
-      ~adds:0
-      ~sorts:1
-      (fun () -> S.sort c);
+    trace "sort of the one collection, again and again" ~adds:0 ~sorts:1 (fun () ->
+      S.sort c);
     (* The shortest futures from every version of a build, one run from each unmeasured
        first, since the version's own history is due for the merges it put off. After that
        every run from a version does the same work, so the runs are repeated d times only
@@ -1161,30 +1169,32 @@ struct
     let opaque x = ignore (Sys.opaque_identity x) in
     List.iter
       (fun (run, f, per, d) ->
-        let ops = { adds = d * per.adds; sorts = d * per.sorts; elements = n } in
-        let worst = ref (0, (0.0, 0.0)) in
-        Array.iteri
-          (fun k q ->
-            f q;
-            let (), cw =
-              spent (fun () ->
-                for _ = 1 to d do
-                  f q
-                done)
-            in
-            if sortable_over_budget C.costs (ops, cw) > sortable_over_budget C.costs (ops, snd !worst)
-            then worst := k, cw)
-          v;
-        let k, cw = !worst in
-        sortable_within
-          C.costs
-          (t
-             (Printf.sprintf
-                "%s, %d times over from each version of a build, dearest from #%d"
-                run
-                d
-                k))
-          (ops, cw))
+         let ops = { adds = d * per.adds; sorts = d * per.sorts; elements = n } in
+         let worst = ref (0, (0.0, 0.0)) in
+         Array.iteri
+           (fun k q ->
+              f q;
+              let (), cw =
+                spent (fun () ->
+                  for _ = 1 to d do
+                    f q
+                  done)
+              in
+              if
+                sortable_over_budget C.costs (ops, cw)
+                > sortable_over_budget C.costs (ops, snd !worst)
+              then worst := k, cw)
+           v;
+         let k, cw = !worst in
+         sortable_within
+           C.costs
+           (t
+              (Printf.sprintf
+                 "%s, %d times over from each version of a build, dearest from #%d"
+                 run
+                 d
+                 k))
+           (ops, cw))
       [ "sort", (fun q -> opaque (S.sort q)), { adds = 0; sorts = 1; elements = 0 }, 2
       ; ( "sort of an add"
         , (fun q -> opaque (S.sort (S.add 0 q)))
@@ -1313,8 +1323,8 @@ module Pairing_tests (H : HEAP with type Element.t = int) = struct
     let bad =
       List.filter
         (fun (_, f) ->
-          let c, w = spent_only f in
-          c <> 1.0 || w > 32.0)
+           let c, w = spent_only f in
+           c <> 1.0 || w > 32.0)
         inserts
     in
     check
@@ -1335,8 +1345,8 @@ module Pairing_tests (H : HEAP with type Element.t = int) = struct
     let bad =
       List.filter
         (fun (_, f) ->
-          let c, w = spent_only f in
-          c <> 1.0 || w > 32.0)
+           let c, w = spent_only f in
+           c <> 1.0 || w > 32.0)
         merges
     in
     check
@@ -1436,41 +1446,41 @@ module Pairing_tests (H : HEAP with type Element.t = int) = struct
     let t label = Printf.sprintf "%s: %s" name label in
     List.iter
       (fun (sequence, per_n, driver) ->
-        let measure n =
-          let f = driver n in
-          let ops = float_of_int (per_n * n) in
-          let c, w = spent_only f in
-          let c = c /. ops
-          and w = w /. ops in
-          check
-            (t
-               (Printf.sprintf
-                  "%s, amortised O(log n): %.2f comparisons and %.1f words per operation \
-                   at n=%d, budget %.2f and %.1f"
-                  sequence
-                  c
-                  w
-                  n
-                  (pairing_comparisons n)
-                  (pairing_words n)))
-            (c <= pairing_comparisons n && w <= pairing_words n);
-          c, w
-        in
-        let c0, w0 = measure 1_000 in
-        let c, w = measure 100_000 in
-        let per_log v n = v /. log2 (n + 1) in
-        let flat v0 v = per_log v 100_000 <= (1.5 *. per_log v0 1_000) +. 0.5 in
-        check
-          (t
-             (Printf.sprintf
-                "%s, the cost per operation grows no faster than log n (%.2f -> %.2f \
-                 comparisons, %.1f -> %.1f words, per log2 n)"
-                sequence
-                (per_log c0 1_000)
-                (per_log c 100_000)
-                (per_log w0 1_000)
-                (per_log w 100_000)))
-          (flat c0 c && flat w0 w))
+         let measure n =
+           let f = driver n in
+           let ops = float_of_int (per_n * n) in
+           let c, w = spent_only f in
+           let c = c /. ops
+           and w = w /. ops in
+           check
+             (t
+                (Printf.sprintf
+                   "%s, amortised O(log n): %.2f comparisons and %.1f words per \
+                    operation at n=%d, budget %.2f and %.1f"
+                   sequence
+                   c
+                   w
+                   n
+                   (pairing_comparisons n)
+                   (pairing_words n)))
+             (c <= pairing_comparisons n && w <= pairing_words n);
+           c, w
+         in
+         let c0, w0 = measure 1_000 in
+         let c, w = measure 100_000 in
+         let per_log v n = v /. log2 (n + 1) in
+         let flat v0 v = per_log v 100_000 <= (1.5 *. per_log v0 1_000) +. 0.5 in
+         check
+           (t
+              (Printf.sprintf
+                 "%s, the cost per operation grows no faster than log n (%.2f -> %.2f \
+                  comparisons, %.1f -> %.1f words, per log2 n)"
+                 sequence
+                 (per_log c0 1_000)
+                 (per_log c 100_000)
+                 (per_log w0 1_000)
+                 (per_log w 100_000)))
+           (flat c0 c && flat w0 w))
       sequences
   ;;
 
@@ -1570,34 +1580,34 @@ module Pairing_tests (H : HEAP with type Element.t = int) = struct
     in
     List.iter
       (fun (versions, size, what) ->
-        List.iter
-          (fun (run, f, per, needs) ->
-            let worst = ref (0, (0.0, 0.0)) in
-            Array.iteri
-              (fun k q ->
-                if size k >= needs
-                then (
-                  f q;
-                  let cw =
-                    spent_only (fun () ->
-                      for _ = 1 to d do
-                        f q
-                      done)
-                  in
-                  if fst cw > fst (snd !worst) then worst := k, cw))
-              versions;
-            let k, cw = !worst in
-            within
-              (Printf.sprintf
-                 "%s, %d times over from each version of a %s, dearest from #%d"
-                 run
-                 d
-                 what
-                 k)
-              ~ops:(d * per)
-              ~n
-              cw)
-          runs)
+         List.iter
+           (fun (run, f, per, needs) ->
+              let worst = ref (0, (0.0, 0.0)) in
+              Array.iteri
+                (fun k q ->
+                   if size k >= needs
+                   then (
+                     f q;
+                     let cw =
+                       spent_only (fun () ->
+                         for _ = 1 to d do
+                           f q
+                         done)
+                     in
+                     if fst cw > fst (snd !worst) then worst := k, cw))
+                versions;
+              let k, cw = !worst in
+              within
+                (Printf.sprintf
+                   "%s, %d times over from each version of a %s, dearest from #%d"
+                   run
+                   d
+                   what
+                   k)
+                ~ops:(d * per)
+                ~n
+                cw)
+           runs)
       [ build, Fun.id, "build"; drain, (fun k -> n - k), "drain" ];
     (* n operations, each on a version chosen at random among all built so far, and the
        minimum of every version deleted at the end. *)
@@ -1635,10 +1645,10 @@ module Pairing_tests (H : HEAP with type Element.t = int) = struct
         done;
         Array.iteri
           (fun i q ->
-            if size.(i) > 0
-            then (
-              incr ops;
-              opaque (H.delete_min q)))
+             if size.(i) > 0
+             then (
+               incr ops;
+               opaque (H.delete_min q)))
           v)
     in
     within
@@ -1733,31 +1743,27 @@ struct
     ignore (W.find_min hw);
     List.iter
       (fun (op, u, w) ->
-        let cu, wu = spent_only u
-        and cw, ww = spent_only w in
-        check
-          (t
-             (Printf.sprintf
-                "%s costs the same comparisons through the wrapper (%.0f and %.0f) and \
-                 at most 8 words more (%.0f and %.0f)"
-                op
-                cu
-                cw
-                wu
-                ww))
-          (cu = cw && ww <= wu +. 8.))
-      [ ( "insert"
-        , (fun () -> ignore (U.insert 0 hu))
-        , (fun () -> ignore (W.insert 0 hw)) )
+         let cu, wu = spent_only u
+         and cw, ww = spent_only w in
+         check
+           (t
+              (Printf.sprintf
+                 "%s costs the same comparisons through the wrapper (%.0f and %.0f) and \
+                  at most 8 words more (%.0f and %.0f)"
+                 op
+                 cu
+                 cw
+                 wu
+                 ww))
+           (cu = cw && ww <= wu +. 8.))
+      [ ("insert", (fun () -> ignore (U.insert 0 hu)), fun () -> ignore (W.insert 0 hw))
       ; ( "merge with itself"
         , (fun () -> ignore (U.merge hu hu))
-        , (fun () -> ignore (W.merge hw hw)) )
-      ; ( "find_min"
-        , (fun () -> ignore (U.find_min hu))
-        , (fun () -> ignore (W.find_min hw)) )
+        , fun () -> ignore (W.merge hw hw) )
+      ; ("find_min", (fun () -> ignore (U.find_min hu)), fun () -> ignore (W.find_min hw))
       ; ( "delete_min"
         , (fun () -> ignore (U.delete_min hu))
-        , (fun () -> ignore (W.delete_min hw)) )
+        , fun () -> ignore (W.delete_min hw) )
       ]
   ;;
 end
@@ -1818,8 +1824,9 @@ let test_sized_heap () =
 let stream_costs =
   { words_per_step = 16.
   ; add_words = (fun n -> 32. +. (12. *. log2 (n + 1)))
-  ; second_sort_words = (fun n -> 32. +. (8. *. float_of_int n))
-    (* the list, and the accumulator it was reversed from *)
+  ; second_sort_words =
+      (fun n -> 32. +. (8. *. float_of_int n))
+      (* the list, and the accumulator it was reversed from *)
   }
 ;;
 
@@ -1867,19 +1874,19 @@ module Extract_tests (S : SORTABLE_WITH_EXTRACT with type Element.t = int) = str
        segment, so a cost that grows like log n. *)
     List.iter
       (fun j ->
-        let n = (1 lsl j) - 1 in
-        let c = of_list (upto n) in
-        ignore (Sys.opaque_identity (S.sort c));
-        let one, _ = spent_only (fun () -> S.extract 1 c) in
-        check
-          (t
-             (Printf.sprintf
-                "extract 1 of %d after a sort costs one step per segment (%.0f \
-                 comparisons, budget %.0f)"
-                n
-                one
-                (extract_budget 1 n)))
-          (one <= extract_budget 1 n))
+         let n = (1 lsl j) - 1 in
+         let c = of_list (upto n) in
+         ignore (Sys.opaque_identity (S.sort c));
+         let one, _ = spent_only (fun () -> S.extract 1 c) in
+         check
+           (t
+              (Printf.sprintf
+                 "extract 1 of %d after a sort costs one step per segment (%.0f \
+                  comparisons, budget %.0f)"
+                 n
+                 one
+                 (extract_budget 1 n)))
+           (one <= extract_budget 1 n))
       [ 10; 14; 18 ];
     (* Across k at a fixed size. *)
     let n = (1 lsl 16) - 1 in
@@ -1887,16 +1894,16 @@ module Extract_tests (S : SORTABLE_WITH_EXTRACT with type Element.t = int) = str
     ignore (Sys.opaque_identity (S.sort c));
     List.iter
       (fun k ->
-        let e, _ = spent_only (fun () -> S.extract k c) in
-        check
-          (t
-             (Printf.sprintf
-                "extract %d of %d after a sort (%.0f comparisons, budget %.0f)"
-                k
-                n
-                e
-                (extract_budget k n)))
-          (e <= extract_budget k n))
+         let e, _ = spent_only (fun () -> S.extract k c) in
+         check
+           (t
+              (Printf.sprintf
+                 "extract %d of %d after a sort (%.0f comparisons, budget %.0f)"
+                 k
+                 n
+                 e
+                 (extract_budget k n)))
+           (e <= extract_budget k n))
       [ 1; 2; 16; 256; 4096 ];
     (* The first extract from a fresh collection pays for the adds' merges, at most n;
        the one after it does not. *)

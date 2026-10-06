@@ -48,20 +48,20 @@ let run_sequences name sequences =
   let t label = Printf.sprintf "%s: %s" name label in
   List.iter
     (fun (sequence, per_n, driver) ->
-      let within label n =
-        let w = allocated (driver n) /. float_of_int (per_n * n) in
-        check
-          (t
-             (Printf.sprintf
-                "%s, %s: %.2f words per operation at n=%d"
-                sequence
-                label
-                w
-                n))
-          (w <= constant)
-      in
-      within "amortised O(1)" 1_000;
-      within "still O(1) a hundred times longer" 100_000)
+       let within label n =
+         let w = allocated (driver n) /. float_of_int (per_n * n) in
+         check
+           (t
+              (Printf.sprintf
+                 "%s, %s: %.2f words per operation at n=%d"
+                 sequence
+                 label
+                 w
+                 n))
+           (w <= constant)
+       in
+       within "amortised O(1)" 1_000;
+       within "still O(1) a hundred times longer" 100_000)
     sequences
 ;;
 
@@ -152,8 +152,8 @@ let test_batched_worst_case () =
   let bad = ref [] in
   List.iter
     (fun (n, q) ->
-      let w = allocated (fun () -> BatchedQueue.head q) in
-      if w <> 0.0 then bad := (n, w) :: !bad)
+       let w = allocated (fun () -> BatchedQueue.head q) in
+       if w <> 0.0 then bad := (n, w) :: !bad)
     built;
   check
     (Printf.sprintf
@@ -317,50 +317,50 @@ module Deque_tests (D : DEQUE) = struct
     let n = 100_000 in
     List.iter
       (fun (side, build, remove, remove_other) ->
-        let t label = Printf.sprintf "%s: %s, %s" name side label in
-        let q = build (upto n) in
-        (* What the invariant is for: both ends readable without going looking. *)
-        let looking q =
-          allocated (fun () -> D.head q) +. allocated (fun () -> D.last q)
-        in
-        check (t "head and last allocate nothing before the rebalance") (looking q = 0.0);
-        let expensive = allocated (fun () -> remove q) in
-        (* Linear, because it moves half: at least a cons for each element that crosses.
+         let t label = Printf.sprintf "%s: %s, %s" name side label in
+         let q = build (upto n) in
+         (* What the invariant is for: both ends readable without going looking. *)
+         let looking q =
+           allocated (fun () -> D.head q) +. allocated (fun () -> D.last q)
+         in
+         check (t "head and last allocate nothing before the rebalance") (looking q = 0.0);
+         let expensive = allocated (fun () -> remove q) in
+         (* Linear, because it moves half: at least a cons for each element that crosses.
            It is also the guard on the amortised checks, which would pass unmeasured if
            the probe could not see a rebalance at all. *)
-        check
-          (t
-             (Printf.sprintf
-                "the removal that runs a side dry is linear (%.0f words at n=%d)"
-                expensive
-                n))
-          (expensive >= 1.5 *. float_of_int (n - 2));
-        let after = remove q in
-        check (t "head and last allocate nothing after it") (looking after = 0.0);
-        let near = allocated (fun () -> remove after)
-        and far = allocated (fun () -> remove_other after) in
-        check
-          (t
-             (Printf.sprintf
-                "BOTH ends are cheap after it (%.0f and %.0f words)"
-                near
-                far))
-          (near <= constant && far <= constant);
-        (* In half: the side that ran dry now holds n/2, so that is how many removals it
+         check
+           (t
+              (Printf.sprintf
+                 "the removal that runs a side dry is linear (%.0f words at n=%d)"
+                 expensive
+                 n))
+           (expensive >= 1.5 *. float_of_int (n - 2));
+         let after = remove q in
+         check (t "head and last allocate nothing after it") (looking after = 0.0);
+         let near = allocated (fun () -> remove after)
+         and far = allocated (fun () -> remove_other after) in
+         check
+           (t
+              (Printf.sprintf
+                 "BOTH ends are cheap after it (%.0f and %.0f words)"
+                 near
+                 far))
+           (near <= constant && far <= constant);
+         (* In half: the side that ran dry now holds n/2, so that is how many removals it
            takes to run it dry again. Carrying one element across gives 0 here. *)
-        let rec cheap_run count q =
-          if count > n || allocated (fun () -> remove q) > constant
-          then count
-          else cheap_run (count + 1) (remove q)
-        in
-        let cheap = cheap_run 0 after in
-        check
-          (t
-             (Printf.sprintf
-                "the next rebalance is n/2 removals away (%d cheap ones, n=%d)"
-                cheap
-                n))
-          (cheap >= (n / 2) - 2 && cheap <= (n / 2) + 2))
+         let rec cheap_run count q =
+           if count > n || allocated (fun () -> remove q) > constant
+           then count
+           else cheap_run (count + 1) (remove q)
+         in
+         let cheap = cheap_run 0 after in
+         check
+           (t
+              (Printf.sprintf
+                 "the next rebalance is n/2 removals away (%d cheap ones, n=%d)"
+                 cheap
+                 n))
+           (cheap >= (n / 2) - 2 && cheap <= (n / 2) + 2))
       [ "front", snocs, D.tail, D.init; "rear", conses, D.init, D.tail ]
   ;;
 end
@@ -428,49 +428,49 @@ let run_log_sequences name sequences =
   let t label = Printf.sprintf "%s: %s" name label in
   List.iter
     (fun (sequence, per_n, driver) ->
-      let within n =
-        let f = driver n in
-        let ops = float_of_int (per_n * n) in
-        let _, (c, w) = spent f in
-        let c = c /. ops
-        and w = w /. ops in
-        check
-          (t
-             (Printf.sprintf
-                "%s, amortised O(log n): %.1f comparisons and %.0f words per operation \
-                 at n=%d"
-                sequence
-                c
-                w
-                n))
-          (c <= comparison_bound n && w <= word_bound n);
-        c, w
-      in
-      let rec climb first = function
-        | [] -> ()
-        | n :: larger ->
-          let c, w = within n in
-          (match first with
-           | None -> climb (Some (n, c, w)) larger
-           | Some (n0, c0, w0) when larger = [] ->
-             (* Per operation per log2 n, a hundred times longer: the same or less, within
+       let within n =
+         let f = driver n in
+         let ops = float_of_int (per_n * n) in
+         let _, (c, w) = spent f in
+         let c = c /. ops
+         and w = w /. ops in
+         check
+           (t
+              (Printf.sprintf
+                 "%s, amortised O(log n): %.1f comparisons and %.0f words per operation \
+                  at n=%d"
+                 sequence
+                 c
+                 w
+                 n))
+           (c <= comparison_bound n && w <= word_bound n);
+         c, w
+       in
+       let rec climb first = function
+         | [] -> ()
+         | n :: larger ->
+           let c, w = within n in
+           (match first with
+            | None -> climb (Some (n, c, w)) larger
+            | Some (n0, c0, w0) when larger = [] ->
+              (* Per operation per log2 n, a hundred times longer: the same or less, within
                 noise. That is the shape of the claim whatever the constant. *)
-             let per_log v n = v /. log2 (n + 1) in
-             let flat v0 v = per_log v n <= (1.5 *. per_log v0 n0) +. 0.5 in
-             check
-               (t
-                  (Printf.sprintf
-                     "%s, the cost per operation grows no faster than log n (%.2f -> \
-                      %.2f comparisons, %.1f -> %.1f words, per log2 n)"
-                     sequence
-                     (per_log c0 n0)
-                     (per_log c n)
-                     (per_log w0 n0)
-                     (per_log w n)))
-               (flat c0 c && flat w0 w)
-           | first -> climb first larger)
-      in
-      climb None [ 1_000; 10_000; 100_000 ])
+              let per_log v n = v /. log2 (n + 1) in
+              let flat v0 v = per_log v n <= (1.5 *. per_log v0 n0) +. 0.5 in
+              check
+                (t
+                   (Printf.sprintf
+                      "%s, the cost per operation grows no faster than log n (%.2f -> \
+                       %.2f comparisons, %.1f -> %.1f words, per log2 n)"
+                      sequence
+                      (per_log c0 n0)
+                      (per_log c n)
+                      (per_log w0 n0)
+                      (per_log w n)))
+                (flat c0 c && flat w0 w)
+            | first -> climb first larger)
+       in
+       climb None [ 1_000; 10_000; 100_000 ])
     sequences
 ;;
 
@@ -835,11 +835,11 @@ module Pairing_tests (H : HEAP with type Element.t = int) = struct
             n
             (first_of
                (fun (how, f) ->
-                 Printf.sprintf
-                   "%s: %d comparisons, %.0f words"
-                   how
-                   (count_only f)
-                   (allocated f))
+                  Printf.sprintf
+                    "%s: %d comparisons, %.0f words"
+                    how
+                    (count_only f)
+                    (allocated f))
                bad)))
       (bad = []);
     (* merge is one comparison, whatever the two sizes. *)
@@ -862,11 +862,11 @@ module Pairing_tests (H : HEAP with type Element.t = int) = struct
             n
             (first_of
                (fun (how, f) ->
-                 Printf.sprintf
-                   "%s: %d comparisons, %.0f words"
-                   how
-                   (count_only f)
-                   (allocated f))
+                  Printf.sprintf
+                    "%s: %d comparisons, %.0f words"
+                    how
+                    (count_only f)
+                    (allocated f))
                bad)))
       (bad = []);
     (* --------------------------------------------------- delete_min is O(n) at worst *)
@@ -958,8 +958,9 @@ let test_pairing () =
   let disagree = ref 0 in
   for _ = 0 to 299 do
     let xs = List.init (Random.int 60) (fun _ -> Random.int 30) in
-    if Pairing_contract.drain (Pairing_contract.of_list xs)
-       <> Splay_checks.drain (Splay_checks.of_list xs)
+    if
+      Pairing_contract.drain (Pairing_contract.of_list xs)
+      <> Splay_checks.drain (Splay_checks.of_list xs)
     then incr disagree
   done;
   check_int
@@ -1062,8 +1063,9 @@ let test_to_binary () =
   for _ = 0 to 299 do
     let h = random_tree 0 (Random.int 5) in
     let b = to_binary h in
-    if try from_binary b <> h with
-       | Invalid_argument _ -> true
+    if
+      try from_binary b <> h with
+      | Invalid_argument _ -> true
     then incr not_bijective;
     if List.sort compare (elements2 b) <> List.sort compare (elements1 h) then incr lost;
     if not (root_right_empty b) then incr sibling_root;
@@ -1085,23 +1087,23 @@ let test_to_binary () =
   in
   List.iter
     (fun (name, shape) ->
-      let small = per_node shape 1_000 in
-      (* A node is a few words. A conversion that copies chains is thousands per node
+       let small = per_node shape 1_000 in
+       (* A node is a few words. A conversion that copies chains is thousands per node
          already at n=1000, and minutes of work at n=100000, so the large size is guarded. *)
-      if small > 32.0
-      then
-        Alcotest.failf
-          "to_binary is linear on %s (%.1f words per node at n=1000)"
-          name
-          small;
-      let large = per_node shape 100_000 in
-      check
-        (Printf.sprintf
-           "to_binary is linear on %s (%.1f words per node at n=1000, %.1f at n=100000)"
+       if small > 32.0
+       then
+         Alcotest.failf
+           "to_binary is linear on %s (%.1f words per node at n=1000)"
            name
-           small
-           large)
-        (large <= small +. 0.5))
+           small;
+       let large = per_node shape 100_000 in
+       check
+         (Printf.sprintf
+            "to_binary is linear on %s (%.1f words per node at n=1000, %.1f at n=100000)"
+            name
+            small
+            large)
+         (large <= small +. 0.5))
     [ "a star", star; ("a chain", fun n -> T1 (0, chain n)) ]
 ;;
 
@@ -1154,10 +1156,10 @@ let test_binary_pairing_merges () =
   let bad =
     List.filter_map
       (fun ((name, _, multiway), (_, _, binary)) ->
-        match count_only (multiway 1_000), count_only (binary 1_000) with
-        | m, b when m = b -> None
-        | m, b -> Some (name, m, b)
-        | exception Failure _ -> Some (name, 0, -1))
+         match count_only (multiway 1_000), count_only (binary 1_000) with
+         | m, b when m = b -> None
+         | m, b -> Some (name, m, b)
+         | exception Failure _ -> Some (name, 0, -1))
       (List.combine Pairing_checks.sequences Binary_pairing_checks.sequences)
   in
   check
@@ -1166,9 +1168,9 @@ let test_binary_pairing_merges () =
         by sequence%s"
        (first_of
           (fun (name, m, b) ->
-            if b < 0
-            then Printf.sprintf "%s: raised" name
-            else Printf.sprintf "%s: %d against %d" name b m)
+             if b < 0
+             then Printf.sprintf "%s: raised" name
+             else Printf.sprintf "%s: %d against %d" name b m)
           bad))
     (bad = [])
 ;;

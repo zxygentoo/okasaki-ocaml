@@ -137,15 +137,15 @@ module Heap_tests (H : HEAP with type Element.t = int) = struct
     let over = ref [] in
     List.iter
       (fun n ->
-        List.iter
-          (fun (how, xs) ->
-            let r = rank_of (of_list xs) in
-            if r > spine_bound n
-            then
-              over
-              := Printf.sprintf "%s/insert n=%d rank=%d>%d" how n r (spine_bound n)
-                 :: !over)
-          (orders n))
+         List.iter
+           (fun (how, xs) ->
+              let r = rank_of (of_list xs) in
+              if r > spine_bound n
+              then
+                over
+                := Printf.sprintf "%s/insert n=%d rank=%d>%d" how n r (spine_bound n)
+                   :: !over)
+           (orders n))
       [ 1; 2; 3; 4; 7; 8; 15; 16; 17; 100; 511; 512; 1000 ];
     check
       (t
@@ -174,10 +174,10 @@ module Heap_tests (H : HEAP with type Element.t = int) = struct
       ~actual:
         (List.fold_left
            (fun acc n ->
-             List.fold_left
-               (fun acc (_, xs) -> acc + shrink (of_list xs) n 0)
-               acc
-               (orders n))
+              List.fold_left
+                (fun acc (_, xs) -> acc + shrink (of_list xs) n 0)
+                acc
+                (orders n))
            0
            [ 33; 300 ]);
     (* -------------------------------------- O(log n) for merge, insert, delete *)
@@ -193,13 +193,13 @@ module Heap_tests (H : HEAP with type Element.t = int) = struct
     and bad_log = ref 0 in
     List.iter
       (fun (n1, n2) ->
-        let h1 = of_list (upto n1)
-        and h2 = of_list (upto n2) in
-        let r1 = rank_of h1
-        and r2 = rank_of h2 in
-        let c = count_only (fun () -> H.merge h1 h2) in
-        if c > r1 + r2 then incr bad_sum;
-        if c > spine_bound n1 + spine_bound n2 then incr bad_log)
+         let h1 = of_list (upto n1)
+         and h2 = of_list (upto n2) in
+         let r1 = rank_of h1
+         and r2 = rank_of h2 in
+         let c = count_only (fun () -> H.merge h1 h2) in
+         if c > r1 + r2 then incr bad_sum;
+         if c > spine_bound n1 + spine_bound n2 then incr bad_log)
       pairs;
     check_int (t "merge costs at most rank h1 + rank h2") ~expect:0 ~actual:!bad_sum;
     check_int (t "merge is O(log n)") ~expect:0 ~actual:!bad_log;
@@ -208,27 +208,27 @@ module Heap_tests (H : HEAP with type Element.t = int) = struct
     let bad_insert_cost = ref 0 in
     List.iter
       (fun n ->
-        let h = of_list (upto n) in
-        let c = count_only (fun () -> H.insert max_int h) in
-        if c > spine_bound n then incr bad_insert_cost)
+         let h = of_list (upto n) in
+         let c = count_only (fun () -> H.insert max_int h) in
+         if c > spine_bound n then incr bad_insert_cost)
       [ 1; 7; 8; 100; 1000; 10_000 ];
     check_int (t "insert is O(log n), worst case") ~expect:0 ~actual:!bad_insert_cost;
     (* delete_min merges the two children, each with a spine bounded by the parent's. *)
     let bad_delete = ref 0 in
     List.iter
       (fun n ->
-        let h = of_list (upto n) in
-        let c = count_only (fun () -> H.delete_min h) in
-        if c > 2 * spine_bound n then incr bad_delete)
+         let h = of_list (upto n) in
+         let c = count_only (fun () -> H.delete_min h) in
+         if c > 2 * spine_bound n then incr bad_delete)
       [ 1; 7; 8; 100; 1000; 10_000 ];
     check_int (t "delete_min is O(log n)") ~expect:0 ~actual:!bad_delete;
     (* find_min reads the root: no comparison and no allocation, at any size. *)
     let bad_find = ref 0 in
     List.iter
       (fun n ->
-        let h = of_list (upto n) in
-        if count_only (fun () -> H.find_min h) <> 0 then incr bad_find;
-        if allocated (fun () -> H.find_min h) > 4.0 then incr bad_find)
+         let h = of_list (upto n) in
+         if count_only (fun () -> H.find_min h) <> 0 then incr bad_find;
+         if allocated (fun () -> H.find_min h) > 4.0 then incr bad_find)
       [ 1; 100; 100_000 ];
     check_int (t "find_min is O(1)") ~expect:0 ~actual:!bad_find
   ;;
@@ -350,17 +350,17 @@ module Binomial_tests (H : HEAP with type Element.t = int) = struct
     let bad_ins = ref 0 in
     List.iter
       (fun n ->
-        let h = of_list (upto n) in
-        if count_only (fun () -> H.insert max_int h) <> trailing_ones n then incr bad_ins)
+         let h = of_list (upto n) in
+         if count_only (fun () -> H.insert max_int h) <> trailing_ones n then incr bad_ins)
       [ 1; 2; 3; 7; 8; 15; 31; 100; 255; 1000 ];
     check_int (t "insert links once per trailing 1 bit of n") ~expect:0 ~actual:!bad_ins;
     let bad_merge = ref 0 in
     List.iter
       (fun (n1, n2) ->
-        let a = of_list (upto n1)
-        and b = of_list (List.init n2 (fun i -> i + n1)) in
-        if count_only (fun () -> H.merge a b) > spine_bound (n1 + n2) + 1
-        then incr bad_merge)
+         let a = of_list (upto n1)
+         and b = of_list (List.init n2 (fun i -> i + n1)) in
+         if count_only (fun () -> H.merge a b) > spine_bound (n1 + n2) + 1
+         then incr bad_merge)
       [ 1, 1; 7, 9; 63, 64; 100, 1000; 1023, 1023 ];
     check_int (t "merge is O(log n)") ~expect:0 ~actual:!bad_merge
   ;;
@@ -428,8 +428,8 @@ let test_find_min_direct () =
   let worst =
     List.fold_left
       (fun acc n ->
-        let h = heap_of n in
-        Float.max acc (allocated (fun () -> B.find_min h)))
+         let h = heap_of n in
+         Float.max acc (allocated (fun () -> B.find_min h)))
       0.0
       [ 1; 7; 255; 4095; 65_535 ]
   in
@@ -453,11 +453,11 @@ let test_explicit_min () =
   and base_paid = ref 0 in
   List.iter
     (fun n ->
-      let xs = List.init n (fun _ -> Random.int 1_000_000) in
-      let hx = Explicit.of_list xs
-      and hb = Binom.of_list xs in
-      if count_only (fun () -> X.find_min hx) <> 0 then incr bad;
-      base_paid := !base_paid + count_only (fun () -> B.find_min hb))
+       let xs = List.init n (fun _ -> Random.int 1_000_000) in
+       let hx = Explicit.of_list xs
+       and hb = Binom.of_list xs in
+       if count_only (fun () -> X.find_min hx) <> 0 then incr bad;
+       base_paid := !base_paid + count_only (fun () -> B.find_min hb))
     [ 1; 7; 15; 255; 4095; 65_535 ];
   check_int
     "ExplicitMin: find_min costs no comparisons at any size"
@@ -472,9 +472,9 @@ let test_explicit_min () =
   let over = ref 0 in
   List.iter
     (fun n ->
-      let h = Explicit.of_list (upto n) in
-      if count_only (fun () -> X.insert max_int h) > spine_bound n + 1 then incr over;
-      if count_only (fun () -> X.delete_min h) > (2 * spine_bound n) + 2 then incr over)
+       let h = Explicit.of_list (upto n) in
+       if count_only (fun () -> X.insert max_int h) > spine_bound n + 1 then incr over;
+       if count_only (fun () -> X.delete_min h) > (2 * spine_bound n) + 2 then incr over)
     [ 1; 7; 8; 100; 1000; 10_000 ];
   check_int "ExplicitMin: insert and delete_min stay O(log n)" ~expect:0 ~actual:!over
 ;;
@@ -622,13 +622,13 @@ let test_redblack () =
   let over = ref [] in
   List.iter
     (fun n ->
-      [ "ascending", evens n
-      ; "descending", List.rev (evens n)
-      ; "random", shuffle 20260918 (evens n)
-      ]
-      |> List.iter (fun (order, xs) ->
-        let d = max_path n (rb_of_list xs) in
-        if d > depth_bound n then over := (order, n, d) :: !over))
+       [ "ascending", evens n
+       ; "descending", List.rev (evens n)
+       ; "random", shuffle 20260918 (evens n)
+       ]
+       |> List.iter (fun (order, xs) ->
+         let d = max_path n (rb_of_list xs) in
+         if d > depth_bound n then over := (order, n, d) :: !over))
     rb_sizes;
   check
     (Printf.sprintf
@@ -643,11 +643,11 @@ let test_redblack () =
   let costly = ref 0 in
   List.iter
     (fun n ->
-      let s = rb_of_list (evens n) in
-      if count_only (fun () -> Rb.member ((2 * n) - 1) s) > 2 * depth_bound n
-      then incr costly;
-      if count_only (fun () -> Rb.insert ((2 * n) + 1) s) > 2 * depth_bound n
-      then incr costly)
+       let s = rb_of_list (evens n) in
+       if count_only (fun () -> Rb.member ((2 * n) - 1) s) > 2 * depth_bound n
+       then incr costly;
+       if count_only (fun () -> Rb.insert ((2 * n) + 1) s) > 2 * depth_bound n
+       then incr costly)
     rb_sizes;
   check_int "member and insert stay O(log n)" ~expect:0 ~actual:!costly
 ;;
@@ -659,11 +659,11 @@ let test_from_ord_list () =
   let wrong = ref 0 in
   List.iter
     (fun n ->
-      let xs = evens n in
-      let s = Rb.from_ord_list xs in
-      if not (List.for_all (fun x -> Rb.member x s) xs) then incr wrong;
-      if List.init (n + 1) (fun i -> (2 * i) - 1) |> List.exists (fun x -> Rb.member x s)
-      then incr wrong)
+       let xs = evens n in
+       let s = Rb.from_ord_list xs in
+       if not (List.for_all (fun x -> Rb.member x s) xs) then incr wrong;
+       if List.init (n + 1) (fun i -> (2 * i) - 1) |> List.exists (fun x -> Rb.member x s)
+       then incr wrong)
     rb_sizes;
   check_int
     "from_ord_list holds exactly the elements it was given"
@@ -673,12 +673,12 @@ let test_from_ord_list () =
   let disagree = ref 0 in
   List.iter
     (fun n ->
-      let xs = evens n in
-      let built = Rb.from_ord_list xs
-      and folded = rb_of_list xs in
-      List.init ((2 * n) + 3) (fun i -> i - 1)
-      |> List.iter (fun x ->
-        if Rb.member x built <> Rb.member x folded then incr disagree))
+       let xs = evens n in
+       let built = Rb.from_ord_list xs
+       and folded = rb_of_list xs in
+       List.init ((2 * n) + 3) (fun i -> i - 1)
+       |> List.iter (fun x ->
+         if Rb.member x built <> Rb.member x folded then incr disagree))
     rb_sizes;
   check_int "from_ord_list agrees with a fold of insert" ~expect:0 ~actual:!disagree;
   (* Stronger than Exercise 3.8: from_ord_list does not merely respect the red-black
@@ -687,8 +687,8 @@ let test_from_ord_list () =
   let unbalanced = ref [] in
   List.iter
     (fun n ->
-      let d = max_path n (Rb.from_ord_list (evens n)) in
-      if d <> perfect_depth n then unbalanced := (n, d) :: !unbalanced)
+       let d = max_path n (Rb.from_ord_list (evens n)) in
+       if d <> perfect_depth n then unbalanced := (n, d) :: !unbalanced)
     rb_sizes;
   check
     (Printf.sprintf
@@ -704,9 +704,9 @@ let test_from_ord_list () =
   let compared = ref [] in
   List.iter
     (fun n ->
-      let xs = evens n in
-      let c = count_only (fun () -> Rb.from_ord_list xs) in
-      if c <> 0 then compared := (n, c) :: !compared)
+       let xs = evens n in
+       let c = count_only (fun () -> Rb.from_ord_list xs) in
+       if c <> 0 then compared := (n, c) :: !compared)
     (rb_sizes @ [ 10_000 ]);
   check
     (Printf.sprintf
@@ -742,13 +742,13 @@ let test_from_ord_list () =
   let arbitrary = ref 0 in
   List.iter
     (fun n ->
-      let xs =
-        List.sort_uniq compare (List.init n (fun _ -> Random.int 100_000 - 50_000))
-      in
-      let s = Rb.from_ord_list xs in
-      let probes = List.init 400 (fun i -> i - 200) in
-      if List.exists (fun q -> Rb.member q s <> List.mem q xs) (xs @ probes)
-      then incr arbitrary)
+       let xs =
+         List.sort_uniq compare (List.init n (fun _ -> Random.int 100_000 - 50_000))
+       in
+       let s = Rb.from_ord_list xs in
+       let probes = List.init 400 (fun i -> i - 200) in
+       if List.exists (fun q -> Rb.member q s <> List.mem q xs) (xs @ probes)
+       then incr arbitrary)
     [ 1; 2; 5; 50; 500 ];
   check_int
     "from_ord_list handles sparse and negative sorted lists"
@@ -760,13 +760,13 @@ let test_from_ord_list () =
   let grown = ref [] in
   List.iter
     (fun (seed, extra) ->
-      let s =
-        List.init extra (fun i -> 2 * (seed + i))
-        |> List.fold_left (fun s x -> Rb.insert x s) (Rb.from_ord_list (evens seed))
-      in
-      let total = seed + extra in
-      let d = max_path total s in
-      if d > depth_bound total then grown := (seed, extra, d) :: !grown)
+       let s =
+         List.init extra (fun i -> 2 * (seed + i))
+         |> List.fold_left (fun s x -> Rb.insert x s) (Rb.from_ord_list (evens seed))
+       in
+       let total = seed + extra in
+       let d = max_path total s in
+       if d > depth_bound total then grown := (seed, extra, d) :: !grown)
     [ 1, 50; 10, 100; 100, 100; 100, 1000; 1000, 1000 ];
   check
     (Printf.sprintf
@@ -806,8 +806,8 @@ let test_redblack_cost () =
     evens 40
     |> List.fold_left
          (fun (acc, s) x ->
-           let s = Rb.insert x s in
-           s :: acc, s)
+            let s = Rb.insert x s in
+            s :: acc, s)
          ([], Rb.empty)
     |> fst
     |> List.rev
@@ -815,18 +815,18 @@ let test_redblack_cost () =
   let stale = ref 0 in
   List.iteri
     (fun i v ->
-      (* version i was built from evens (i+1), so it holds those and nothing beyond *)
-      if not (List.for_all (fun x -> Rb.member x v) (evens (i + 1))) then incr stale;
-      if Rb.member (2 * (i + 1)) v then incr stale)
+       (* version i was built from evens (i+1), so it holds those and nothing beyond *)
+       if not (List.for_all (fun x -> Rb.member x v) (evens (i + 1))) then incr stale;
+       if Rb.member (2 * (i + 1)) v then incr stale)
     versions;
   check_int "every intermediate version stays correct" ~expect:0 ~actual:!stale;
   (* member only follows pointers, so it must allocate nothing whatsoever. *)
   let searching = ref [] in
   List.iter
     (fun n ->
-      let s = rb_of_list (evens n) in
-      let w = allocated (fun () -> Rb.member ((2 * n) + 1) s) in
-      if w <> 0.0 then searching := (n, w) :: !searching)
+       let s = rb_of_list (evens n) in
+       let w = allocated (fun () -> Rb.member ((2 * n) + 1) s) in
+       if w <> 0.0 then searching := (n, w) :: !searching)
     [ 10; 100; 1000; 10_000 ];
   check
     (Printf.sprintf

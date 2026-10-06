@@ -249,11 +249,11 @@ module Rlist_tests (R : RANDOM_ACCESS_LIST) = struct
     let versions = List.init 40 (fun i -> of_list (upto i)) in
     List.iter
       (fun v ->
-        ignore (R.cons 99 v);
-        if not (R.is_empty v)
-        then (
-          ignore (R.tail v);
-          ignore (R.update 0 99 v)))
+         ignore (R.cons 99 v);
+         if not (R.is_empty v)
+         then (
+           ignore (R.tail v);
+           ignore (R.update 0 99 v)))
       versions;
     let stale =
       List.mapi
@@ -643,9 +643,9 @@ module Drop_tests (R : WITH_DROP) = struct
       "as can the dropped version"
       (99 :: List.drop 3 (upto 10))
       (fun () ->
-        let w = R.drop 3 v in
-        ignore (R.cons 42 v);
-        R.cons 99 w)
+         let w = R.drop 3 v in
+         ignore (R.cons 42 v);
+         R.cons 99 w)
   ;;
 
   (* ------------------------------------------------ every drop on its own clock *)
@@ -992,9 +992,10 @@ module Create_tests (R : WITH_CREATE) = struct
               then over "the update of the last" cu
               else if ct > budget n
               then over "tail" ct
-              else if R.lookup (n - 1) r' <> 1
-                      || R.lookup (n - 2) r' <> 0
-                      || R.lookup (n - 1) r <> 0
+              else if
+                R.lookup (n - 1) r' <> 1
+                || R.lookup (n - 2) r' <> 0
+                || R.lookup (n - 1) r <> 0
               then Some "the update of the last does not read back"
               else if R.head r'' <> 0 || not (R.is_empty (R.drop (n - 1) r''))
               then Some "the tail does not read back"
@@ -1224,32 +1225,32 @@ let test_zeroless_long () =
   all_of (t "dec undoes inc, and inc undoes dec") (fun note ->
     List.iteri
       (fun i x ->
-        guarded note (Printf.sprintf "dec (inc x) for sample %d" i) (fun () ->
-          Z.dec (Z.inc x) = x);
-        guarded note (Printf.sprintf "inc (dec x) for sample %d" i) (fun () ->
-          Z.inc (Z.dec x) = x))
+         guarded note (Printf.sprintf "dec (inc x) for sample %d" i) (fun () ->
+           Z.dec (Z.inc x) = x);
+         guarded note (Printf.sprintf "inc (dec x) for sample %d" i) (fun () ->
+           Z.inc (Z.dec x) = x))
       samples);
   all_of (t "add commutes and associates") (fun note ->
     List.iteri
       (fun i x ->
-        let y = List.nth samples ((i + 1) mod List.length samples)
-        and w = List.nth samples ((i + 2) mod List.length samples) in
-        guarded note (Printf.sprintf "add x y = add y x for sample %d" i) (fun () ->
-          Z.add x y = Z.add y x);
-        guarded
-          note
-          (Printf.sprintf "add (add x y) w = add x (add y w) for sample %d" i)
-          (fun () -> Z.add (Z.add x y) w = Z.add x (Z.add y w)))
+         let y = List.nth samples ((i + 1) mod List.length samples)
+         and w = List.nth samples ((i + 2) mod List.length samples) in
+         guarded note (Printf.sprintf "add x y = add y x for sample %d" i) (fun () ->
+           Z.add x y = Z.add y x);
+         guarded
+           note
+           (Printf.sprintf "add (add x y) w = add x (add y w) for sample %d" i)
+           (fun () -> Z.add (Z.add x y) w = Z.add x (Z.add y w)))
       samples);
   all_of (t "adding k, on either side, is k increments, for k up to 40") (fun note ->
     List.iteri
       (fun i x ->
-        let r = ref x in
-        for k = 0 to 40 do
-          guarded note (Printf.sprintf "add of %d to sample %d" k i) (fun () ->
-            Z.add x (z_of_int k) = !r && Z.add (z_of_int k) x = !r);
-          r := Z.inc !r
-        done)
+         let r = ref x in
+         for k = 0 to 40 do
+           guarded note (Printf.sprintf "add of %d to sample %d" k i) (fun () ->
+             Z.add x (z_of_int k) = !r && Z.add (z_of_int k) x = !r);
+           r := Z.inc !r
+         done)
       samples)
 ;;
 
@@ -1269,19 +1270,20 @@ let test_zeroless_short_costs () =
       let see what c = if c > fst !dearest then dearest := c, what in
       List.iter
         (fun a ->
-          (match cost (fun () -> Z.dec a) with
-           | _, c -> see ("dec " ^ string_of_z a) c
-           | exception _ -> ());
-          List.iter
-            (fun b ->
-              (match cost (fun () -> Z.add a b) with
-               | _, c ->
-                 see (Printf.sprintf "add %s %s" (string_of_z a) (string_of_z b)) c
-               | exception _ -> ());
-              match cost (fun () -> Z.add b a) with
-              | _, c -> see (Printf.sprintf "add %s %s" (string_of_z b) (string_of_z a)) c
-              | exception _ -> ())
-            within)
+           (match cost (fun () -> Z.dec a) with
+            | _, c -> see ("dec " ^ string_of_z a) c
+            | exception _ -> ());
+           List.iter
+             (fun b ->
+                (match cost (fun () -> Z.add a b) with
+                 | _, c ->
+                   see (Printf.sprintf "add %s %s" (string_of_z a) (string_of_z b)) c
+                 | exception _ -> ());
+                match cost (fun () -> Z.add b a) with
+                | _, c ->
+                  see (Printf.sprintf "add %s %s" (string_of_z b) (string_of_z a)) c
+                | exception _ -> ())
+             within)
         exact;
       if fst !dearest > digit_budget k then Some (k, !dearest) else sweep (k + 1))
   in
@@ -1307,9 +1309,9 @@ let dearest_call calls =
   let dearest = ref (0.0, "") in
   List.iter
     (fun (what, f) ->
-      match cost f with
-      | _, c -> if c > fst !dearest then dearest := c, what
-      | exception e -> dearest := infinity, what ^ " raised " ^ Printexc.to_string e)
+       match cost f with
+       | _, c -> if c > fst !dearest then dearest := c, what
+       | exception e -> dearest := infinity, what ^ " raised " ^ Printexc.to_string e)
     calls;
   !dearest
 ;;
@@ -1540,42 +1542,42 @@ module Lite_tests (R : RANDOM_ACCESS_LIST_LITE) = struct
          for n = 0 to 70 do
            List.iter
              (fun (how, r) ->
-               List.iter
-                 (fun cons_first ->
-                   let what =
-                     Printf.sprintf
-                       "n=%d %s, %s first"
-                       n
-                       how
-                       (if cons_first then "cons" else "tail")
-                   in
-                   try
-                     let r = ref (r ())
-                     and model = ref (from 0 n) in
-                     for i = 1 to 40 do
-                       if i mod 2 = 1 = cons_first
-                       then (
-                         r := R.cons (-i) !r;
-                         model := -i :: !model)
-                       else (
-                         r := R.tail !r;
-                         model := List.tl !model);
-                       match !model with
-                       | x :: _ when R.head !r <> x ->
-                         note
-                           (Printf.sprintf
-                              "%s, step %d: head %d, want %d"
-                              what
-                              i
-                              (R.head !r)
-                              x)
-                       | _ -> ()
-                     done;
-                     reads note what !model (fun () -> !r)
-                   with
-                   | e ->
-                     note (Printf.sprintf "%s: raised %s" what (Printexc.to_string e)))
-                 (if n = 0 then [ true ] else [ true; false ]))
+                List.iter
+                  (fun cons_first ->
+                     let what =
+                       Printf.sprintf
+                         "n=%d %s, %s first"
+                         n
+                         how
+                         (if cons_first then "cons" else "tail")
+                     in
+                     try
+                       let r = ref (r ())
+                       and model = ref (from 0 n) in
+                       for i = 1 to 40 do
+                         if i mod 2 = 1 = cons_first
+                         then (
+                           r := R.cons (-i) !r;
+                           model := -i :: !model)
+                         else (
+                           r := R.tail !r;
+                           model := List.tl !model);
+                         match !model with
+                         | x :: _ when R.head !r <> x ->
+                           note
+                             (Printf.sprintf
+                                "%s, step %d: head %d, want %d"
+                                what
+                                i
+                                (R.head !r)
+                                x)
+                         | _ -> ()
+                       done;
+                       reads note what !model (fun () -> !r)
+                     with
+                     | e ->
+                       note (Printf.sprintf "%s: raised %s" what (Printexc.to_string e)))
+                  (if n = 0 then [ true ] else [ true; false ]))
              (versions n)
          done);
     (* Twenty thousand elements: the build read back, then a random walk of as many conses
@@ -1639,7 +1641,7 @@ module Lite_tests (R : RANDOM_ACCESS_LIST_LITE) = struct
          done;
          Array.iteri
            (fun j (r, model) ->
-             reads note (Printf.sprintf "pool version %d" j) model (fun () -> r))
+              reads note (Printf.sprintf "pool version %d" j) model (fun () -> r))
            pool);
     (* Persistence, plainly: every version of a build of 40, and of the drain after it,
        reads as it did once all of them have been cons'ed onto and tailed. *)
@@ -1663,19 +1665,19 @@ module Lite_tests (R : RANDOM_ACCESS_LIST_LITE) = struct
            Array.iter use drained;
            Array.iteri
              (fun i v ->
-               reads
-                 note
-                 (Printf.sprintf "build version %d" i)
-                 (from (40 - i) i)
-                 (fun () -> v))
+                reads
+                  note
+                  (Printf.sprintf "build version %d" i)
+                  (from (40 - i) i)
+                  (fun () -> v))
              built;
            Array.iteri
              (fun i v ->
-               reads
-                 note
-                 (Printf.sprintf "drain version %d" i)
-                 (from i (40 - i))
-                 (fun () -> v))
+                reads
+                  note
+                  (Printf.sprintf "drain version %d" i)
+                  (from i (40 - i))
+                  (fun () -> v))
              drained
          with
          | e -> note ("raised " ^ Printexc.to_string e))
@@ -1775,15 +1777,15 @@ module Lite_tests (R : RANDOM_ACCESS_LIST_LITE) = struct
   let run_costs_at name k =
     List.iter
       (fun (what, f) ->
-        let label = Printf.sprintf "%s: %s" name what in
-        let c = mean f in
-        check
-          (Printf.sprintf
-             "%s, %.1f words a cons or tail, budget %.0f"
-             label
-             c
-             amortised_budget)
-          (c <= amortised_budget))
+         let label = Printf.sprintf "%s: %s" name what in
+         let c = mean f in
+         check
+           (Printf.sprintf
+              "%s, %.1f words a cons or tail, budget %.0f"
+              label
+              c
+              amortised_budget)
+           (c <= amortised_budget))
       (sequences k)
   ;;
 
@@ -1902,26 +1904,26 @@ module Lite_tests (R : RANDOM_ACCESS_LIST_LITE) = struct
   let run_worst_costs_at name k =
     List.iter
       (fun (what, f) ->
-        dearest := 0.0;
-        dearest_at := "", 0;
-        steps := 0;
-        match f () with
-        | () ->
-          let op, i = !dearest_at in
-          check
-            (Printf.sprintf
-               "%s: %s, the dearest is the %s at step %d, %.0f words, budget %.0f"
-               name
-               what
-               op
-               i
-               !dearest
-               worst_case_budget)
-            (!dearest <= worst_case_budget)
-        | exception e ->
-          check
-            (Printf.sprintf "%s: %s: raised %s" name what (Printexc.to_string e))
-            false)
+         dearest := 0.0;
+         dearest_at := "", 0;
+         steps := 0;
+         match f () with
+         | () ->
+           let op, i = !dearest_at in
+           check
+             (Printf.sprintf
+                "%s: %s, the dearest is the %s at step %d, %.0f words, budget %.0f"
+                name
+                what
+                op
+                i
+                !dearest
+                worst_case_budget)
+             (!dearest <= worst_case_budget)
+         | exception e ->
+           check
+             (Printf.sprintf "%s: %s: raised %s" name what (Printexc.to_string e))
+             false)
       (worst_sequences k)
   ;;
 
@@ -2121,27 +2123,27 @@ let test_seg1_long () =
     (fun note ->
        List.iter
          (fun (what, x) ->
-           let rec go step x bits =
-             if step < 300
-             then (
-               let op, f, model =
-                 if step < 100 then "inc", S1.inc, inc_bits else "dec", S1.dec, dec_bits
-               in
-               let want_bits = model bits in
-               let want = blocks_of_bits want_bits in
-               match f x with
-               | r when r = want -> go (step + 1) r want_bits
-               | _ -> note (Printf.sprintf "%s, step %d, %s: wrong blocks" what step op)
-               | exception e ->
-                 note
-                   (Printf.sprintf
-                      "%s, step %d, %s raised %s"
-                      what
-                      step
-                      op
-                      (Printexc.to_string e)))
-           in
-           go 0 x (bits_of_blocks x))
+            let rec go step x bits =
+              if step < 300
+              then (
+                let op, f, model =
+                  if step < 100 then "inc", S1.inc, inc_bits else "dec", S1.dec, dec_bits
+                in
+                let want_bits = model bits in
+                let want = blocks_of_bits want_bits in
+                match f x with
+                | r when r = want -> go (step + 1) r want_bits
+                | _ -> note (Printf.sprintf "%s, step %d, %s: wrong blocks" what step op)
+                | exception e ->
+                  note
+                    (Printf.sprintf
+                       "%s, step %d, %s raised %s"
+                       what
+                       step
+                       op
+                       (Printexc.to_string e)))
+            in
+            go 0 x (bits_of_blocks x))
          samples)
 ;;
 
@@ -2213,11 +2215,11 @@ let s2_fault ds =
 let s2_length ds =
   List.fold_left
     (fun n d ->
-      n
-      +
-      match d with
-      | S2.Ones i -> i
-      | _ -> 1)
+       n
+       +
+       match d with
+       | S2.Ones i -> i
+       | _ -> 1)
     0
     ds
 ;;
@@ -2243,11 +2245,11 @@ let bits_of_s2 ds =
 let s2_of_digits ds =
   List.fold_right
     (fun d acc ->
-      match d, acc with
-      | 0, _ -> S2.Zero :: acc
-      | 2, _ -> S2.Two :: acc
-      | _, S2.Ones i :: acc -> S2.Ones (i + 1) :: acc
-      | _, _ -> S2.Ones 1 :: acc)
+       match d, acc with
+       | 0, _ -> S2.Zero :: acc
+       | 2, _ -> S2.Two :: acc
+       | _, S2.Ones i :: acc -> S2.Ones (i + 1) :: acc
+       | _, _ -> S2.Ones 1 :: acc)
     ds
     []
 ;;
@@ -2290,8 +2292,8 @@ let rec digit_strings k =
 let regular_numerals k =
   List.filter_map
     (fun ds ->
-      let x = s2_of_digits ds in
-      if s2_fault x = None then Some x else None)
+       let x = s2_of_digits ds in
+       if s2_fault x = None then Some x else None)
     (digit_strings k)
 ;;
 
@@ -2470,7 +2472,6 @@ let test_seg2 () =
 
 module SH = SegmentedBinomialHeap (Counting_int)
 
-
 (* Trees in [h]: find_min compares every root but the first once. *)
 let sh_trees h = if SH.is_empty h then 0 else count_only (fun () -> SH.find_min h) + 1
 
@@ -2515,11 +2516,11 @@ struct
          for n = 0 to 64 do
            List.iter
              (fun (kind, xs) ->
-               drains_to
-                 note
-                 (Printf.sprintf "%d %s inserts" n kind)
-                 (List.sort compare xs)
-                 (of_list xs))
+                drains_to
+                  note
+                  (Printf.sprintf "%d %s inserts" n kind)
+                  (List.sort compare xs)
+                  (of_list xs))
              [ "ascending", upto n
              ; "descending", List.rev (upto n)
              ; "random", List.init n (fun _ -> Random.int 16)
@@ -2573,7 +2574,10 @@ struct
                "delete_min", H.delete_min v.(p), List.tl model.(p), size.(p) - 1
              | _ ->
                let x = Random.int 1000 in
-               "insert", H.insert x v.(p), List.merge compare [ x ] model.(p), size.(p) + 1
+               ( "insert"
+               , H.insert x v.(p)
+               , List.merge compare [ x ] model.(p)
+               , size.(p) + 1 )
            in
            v.(i) <- h;
            model.(i) <- m;
@@ -2602,17 +2606,17 @@ struct
            and rest = List.drop (n / 2) xs in
            List.iter
              (fun (how, h) ->
-               match
-                 drain_with ~is_empty:K.is_empty ~head:K.find_min ~tail:K.delete_min h
-               with
-               | out ->
-                 let keys = List.map fst out in
-                 if List.sort compare out <> List.sort compare xs
-                 then note (Printf.sprintf "%d %s: not every element once" n how)
-                 else if keys <> List.sort compare keys
-                 then note (Printf.sprintf "%d %s: out of order" n how)
-               | exception e ->
-                 note (Printf.sprintf "%d %s raised %s" n how (Printexc.to_string e)))
+                match
+                  drain_with ~is_empty:K.is_empty ~head:K.find_min ~tail:K.delete_min h
+                with
+                | out ->
+                  let keys = List.map fst out in
+                  if List.sort compare out <> List.sort compare xs
+                  then note (Printf.sprintf "%d %s: not every element once" n how)
+                  else if keys <> List.sort compare keys
+                  then note (Printf.sprintf "%d %s: out of order" n how)
+                | exception e ->
+                  note (Printf.sprintf "%d %s raised %s" n how (Printexc.to_string e)))
              [ "inserts", sk_of_list xs
              ; "merged halves", K.merge (sk_of_list half) (sk_of_list rest)
              ]
@@ -2631,9 +2635,9 @@ let test_sh_shape () =
   let units =
     List.fold_left
       (fun s -> function
-        | N.Zero -> s
-        | N.Two -> s + 2
-        | N.Ones i -> s + i)
+         | N.Zero -> s
+         | N.Two -> s + 2
+         | N.Ones i -> s + i)
       0
   in
   all_of
@@ -2748,21 +2752,21 @@ module Heap_clocks (H : HEAP with type Element.t = int) (B : HEAP_BUDGETS) = str
     and query = ref (0.0, "nothing") in
     Array.iteri
       (fun i op ->
-        match op with
-        | Insert x ->
-          let h', cw = spent (fun () -> H.insert x !h) in
-          ins := dearer !ins ~at:i ~op:"insert" ~size:!size cw;
-          h := h';
-          incr size
-        | Find_min ->
-          let x, cw = spent (fun () -> H.find_min !h) in
-          query := dearer !query ~at:i ~op:"find_min" ~size:!size cw;
-          sum := !sum + x
-        | Delete_min ->
-          let h', cw = spent (fun () -> H.delete_min !h) in
-          query := dearer !query ~at:i ~op:"delete_min" ~size:!size cw;
-          h := h';
-          decr size)
+         match op with
+         | Insert x ->
+           let h', cw = spent (fun () -> H.insert x !h) in
+           ins := dearer !ins ~at:i ~op:"insert" ~size:!size cw;
+           h := h';
+           incr size
+         | Find_min ->
+           let x, cw = spent (fun () -> H.find_min !h) in
+           query := dearer !query ~at:i ~op:"find_min" ~size:!size cw;
+           sum := !sum + x
+         | Delete_min ->
+           let h', cw = spent (fun () -> H.delete_min !h) in
+           query := dearer !query ~at:i ~op:"delete_min" ~size:!size cw;
+           h := h';
+           decr size)
       ops;
     ignore (Sys.opaque_identity !sum);
     !ins, !query
@@ -2772,7 +2776,9 @@ module Heap_clocks (H : HEAP with type Element.t = int) (B : HEAP_BUDGETS) = str
   let build_then_drain xs =
     let n = Array.length xs in
     Array.init (3 * n) (fun i ->
-      if i < 2 * n then if i mod 2 = 0 then Insert xs.(i / 2) else Find_min else Delete_min)
+      if i < 2 * n
+      then if i mod 2 = 0 then Insert xs.(i / 2) else Find_min
+      else Delete_min)
   ;;
 
   let sequences n =
@@ -2787,7 +2793,8 @@ module Heap_clocks (H : HEAP with type Element.t = int) (B : HEAP_BUDGETS) = str
       , Array.init
           (1000 + (2 * n))
           (fun i ->
-            if i < 1000 then Insert i else if i mod 2 = 0 then Insert i else Delete_min) )
+             if i < 1000 then Insert i else if i mod 2 = 0 then Insert i else Delete_min)
+      )
     ]
   ;;
 
@@ -2795,10 +2802,10 @@ module Heap_clocks (H : HEAP with type Element.t = int) (B : HEAP_BUDGETS) = str
   let test_sequences name n =
     List.iter
       (fun (what, ops) ->
-        let ins, query = run ops in
-        let name = Printf.sprintf "%s, n=%d, %s" name n what in
-        within (name ^ ", insert") ins;
-        within (name ^ ", queries") query)
+         let ins, query = run ops in
+         let name = Printf.sprintf "%s, n=%d, %s" name n what in
+         within (name ^ ", insert") ins;
+         within (name ^ ", queries") query)
       (sequences n)
   ;;
 
@@ -2811,7 +2818,9 @@ module Heap_clocks (H : HEAP with type Element.t = int) (B : HEAP_BUDGETS) = str
       let _, cw = spent (fun () -> H.insert (-2) h) in
       d := dearer !d ~at:k ~op:"insert" ~size:((1 lsl k) - 1) cw
     done;
-    within (name ^ ": insert into the heap of 2^k - 1 elements a merge leaves, k = 1..17") !d
+    within
+      (name ^ ": insert into the heap of 2^k - 1 elements a merge leaves, k = 1..17")
+      !d
   ;;
 
   (* n singletons merged pairwise, every merge on the clocks against the heap it makes, and
@@ -3117,12 +3126,12 @@ module Five_segmented : FIVE with type nat = FS.nat = struct
   let of_digits ds =
     List.fold_right
       (fun d acc ->
-        match d, acc with
-        | 0, _ -> FS.Zero :: acc
-        | 2, _ -> FS.Two :: acc
-        | 4, _ -> FS.Four :: acc
-        | _, FS.Yellows ys :: acc -> FS.Yellows (yellow d :: ys) :: acc
-        | _, _ -> FS.Yellows [ yellow d ] :: acc)
+         match d, acc with
+         | 0, _ -> FS.Zero :: acc
+         | 2, _ -> FS.Two :: acc
+         | 4, _ -> FS.Four :: acc
+         | _, FS.Yellows ys :: acc -> FS.Yellows (yellow d :: ys) :: acc
+         | _, _ -> FS.Yellows [ yellow d ] :: acc)
       ds
       []
   ;;
@@ -3229,9 +3238,9 @@ module Five_tests (N : FIVE) = struct
     all_of (t "inc and dec of every regular numeral of up to 8 digits") (fun note ->
       List.iter
         (fun ds ->
-          let x = numbered (N.of_digits ds) in
-          ignore (step note (fun () -> "") `Inc x);
-          if ds <> [] then ignore (step note (fun () -> "") `Dec x))
+           let x = numbered (N.of_digits ds) in
+           ignore (step note (fun () -> "") `Inc x);
+           if ds <> [] then ignore (step note (fun () -> "") `Dec x))
         (Lazy.force five_short));
     all_of (t "counting up to 2^16 from zero, then back down to zero") (fun note ->
       let n = 1 lsl 16 in
@@ -3262,7 +3271,9 @@ module Five_tests (N : FIVE) = struct
     in
     let ops = List.init 300 (fun i -> if i < 100 then `Inc else `Dec) in
     all_of
-      (t "a hundred incs, then two hundred decs, from numerals over a thousand digits long")
+      (t
+         "a hundred incs, then two hundred decs, from numerals over a thousand digits \
+          long")
       (fun note ->
          List.iter (fun (what, ds) -> chain note what ops (N.of_digits ds)) samples)
   ;;
@@ -3286,8 +3297,8 @@ let five_calls k =
   Random.init k;
   List.concat_map
     (fun (what, ds) ->
-      let x = Five_segmented.of_digits ds in
-      [ ("inc of " ^ what, fun () -> FS.inc x); ("dec of " ^ what, fun () -> FS.dec x) ])
+       let x = Five_segmented.of_digits ds in
+       [ ("inc of " ^ what, fun () -> FS.inc x); ("dec of " ^ what, fun () -> FS.dec x) ])
     (five_families k @ [ "k random groups", five_random k 8 ])
 ;;
 
@@ -3310,13 +3321,13 @@ let test_five_stopwatch k calls =
   (try
      List.iter
        (fun (what, f) ->
-         let started = Sys.time () in
-         for _ = 1 to five_reps do
-           ignore (Sys.opaque_identity (f ()))
-         done;
-         let took = Sys.time () -. started in
-         if took > fst !slowest then slowest := took, what;
-         if took > five_cpu_limit then raise Exit)
+          let started = Sys.time () in
+          for _ = 1 to five_reps do
+            ignore (Sys.opaque_identity (f ()))
+          done;
+          let took = Sys.time () -. started in
+          if took > fst !slowest then slowest := took, what;
+          if took > five_cpu_limit then raise Exit)
        calls
    with
    | Exit -> ()
@@ -3351,8 +3362,9 @@ let test_five_counting_cost () =
       match cost (fun () -> f x) with
       | r, c ->
         if c > fst !dearest then dearest := c, Printf.sprintf "%s of %d" name v;
-        if Five_segmented.block_fault r = None
-           && five_fault (Five_segmented.to_digits r) = None
+        if
+          Five_segmented.block_fault r = None
+          && five_fault (Five_segmented.to_digits r) = None
         then go (i + 1) v' r
         else dearest := infinity, Printf.sprintf "%s of %d, a malformed result" name v
       | exception e ->
@@ -3437,21 +3449,21 @@ let test_seg_list_lookup name =
     for n = 0 to 300 do
       List.iter
         (fun (how, r) ->
-          let r = r () in
-          List.iter
-            (fun i ->
-              match SL.lookup i r with
-              | _ -> note (Printf.sprintf "n=%d %s: lookup %d returned" n how i)
-              | exception Failure m when m = "lookup: not found" -> ()
-              | exception e ->
-                note
-                  (Printf.sprintf
-                     "n=%d %s: lookup %d raised %s"
-                     n
-                     how
-                     i
-                     (Printexc.to_string e)))
-            [ -1; n ])
+           let r = r () in
+           List.iter
+             (fun i ->
+                match SL.lookup i r with
+                | _ -> note (Printf.sprintf "n=%d %s: lookup %d returned" n how i)
+                | exception Failure m when m = "lookup: not found" -> ()
+                | exception e ->
+                  note
+                    (Printf.sprintf
+                       "n=%d %s: lookup %d raised %s"
+                       n
+                       how
+                       i
+                       (Printexc.to_string e)))
+             [ -1; n ])
         (Seg_list.versions n)
     done);
   all_of
@@ -3474,16 +3486,16 @@ let test_seg_list_lookup name =
          then
            List.iteri
              (fun i v ->
-               match SL.lookup i !r with
-               | w when w = v -> ()
-               | w -> note (Printf.sprintf "step %d: lookup %d = %d, want %d" step i w v)
-               | exception e ->
-                 note
-                   (Printf.sprintf
-                      "step %d: lookup %d raised %s"
-                      step
-                      i
-                      (Printexc.to_string e)))
+                match SL.lookup i !r with
+                | w when w = v -> ()
+                | w -> note (Printf.sprintf "step %d: lookup %d = %d, want %d" step i w v)
+                | exception e ->
+                  note
+                    (Printf.sprintf
+                       "step %d: lookup %d raised %s"
+                       step
+                       i
+                       (Printexc.to_string e)))
              !model
        done);
   all_of
@@ -3504,7 +3516,11 @@ let test_seg_list_lookup name =
              (match SL.lookup 0 r with
               | v when v = -j -> ()
               | v -> note (Printf.sprintf "cons %d onto it: lookup 0 = %d" (-j) v));
-             seg_looks note (Printf.sprintf "cons %d onto it, tail again" (-j)) n (SL.tail r)
+             seg_looks
+               note
+               (Printf.sprintf "cons %d onto it, tail again" (-j))
+               n
+               (SL.tail r)
            | `Tailed (k, r) ->
              for i = 0 to n - k - 1 do
                match SL.lookup i r with
@@ -3527,15 +3543,15 @@ let test_seg_list_lookup_costs name n =
   let worst = ref (0.0, "", 0, 0.0) in
   List.iter
     (fun (how, r) ->
-      let r = r () in
-      for i = 0 to n - 1 do
-        match cost (fun () -> SL.lookup i r) with
-        | _, c ->
-          let ratio, _, _, _ = !worst in
-          if c /. lookup_budget i > ratio then worst := c /. lookup_budget i, how, i, c
-        | exception e ->
-          worst := infinity, how ^ " raised " ^ Printexc.to_string e, i, infinity
-      done)
+       let r = r () in
+       for i = 0 to n - 1 do
+         match cost (fun () -> SL.lookup i r) with
+         | _, c ->
+           let ratio, _, _, _ = !worst in
+           if c /. lookup_budget i > ratio then worst := c /. lookup_budget i, how, i, c
+         | exception e ->
+           worst := infinity, how ^ " raised " ^ Printexc.to_string e, i, infinity
+       done)
     (Seg_list.versions n);
   let ratio, how, i, c = !worst in
   check
@@ -3668,8 +3684,8 @@ let test_skew_update_by_index name n =
   let ratio, i, c = !worst in
   check
     (Printf.sprintf
-       "%s: update at every index against its index, n=%d, the dearest against its budget \
-        is update %d, %.0f words, budget %.0f"
+       "%s: update at every index against its index, n=%d, the dearest against its \
+        budget is update %d, %.0f words, budget %.0f"
        name
        n
        i
@@ -3769,8 +3785,8 @@ let test_skew_heap_shape () =
   let t label = "SkewBinomialHeap, shape: " ^ label in
   all_of
     (t
-       "after n inserts from empty, one tree per non-zero digit of n in skew binary, a two \
-        counting twice, n up to 2000")
+       "after n inserts from empty, one tree per non-zero digit of n in skew binary, a \
+        two counting twice, n up to 2000")
     (fun note ->
        let h = ref SBH.empty
        and ws = ref [] in
@@ -3783,8 +3799,8 @@ let test_skew_heap_shape () =
        done);
   all_of
     (t
-       "after the merge of the heaps of a and b inserts, a and b up to 40, one tree per 1 \
-        bit of the sum of their rank weights")
+       "after the merge of the heaps of a and b inserts, a and b up to 40, one tree per \
+        1 bit of the sum of their rank weights")
     (fun note ->
        let heaps = Array.init 41 (fun n -> Skew_heap_contract.of_list (upto n))
        and weights = Array.init 41 (fun n -> rank_weight (skew_weights n)) in
