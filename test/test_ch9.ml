@@ -3,9 +3,10 @@
    its own drop and create, the zeroless numbers and list of Exercises 9.4 and 9.5, and
    the zeroless redundant list of Exercise 9.9 and its scheduled form of Exercise 9.10,
    the segmented binary numbers of section 9.2.4, the segmented binomial heap of Exercise
-   9.11, the segmented numbers with digits 0 to 4 of Exercise 9.12 and the random-access
-   list over them of Exercise 9.13, each with its own preamble further down. Alcotest
-   cases written in the checks of harness.ml, as in the earlier chapters.
+   9.11, the segmented numbers with digits 0 to 4 of Exercise 9.12, the random-access
+   list over them of Exercise 9.13, and the skew binary random-access list of Figure 9.7
+   (section 9.3.1), each with its own preamble further down. Alcotest cases written in the
+   checks of harness.ml, as in the earlier chapters.
 
    Section 9.2.1 builds a list out of a binary number. A list of n elements holds one
    complete binary leaf tree for every one in the binary representation of n, in
@@ -267,10 +268,11 @@ module Rlist_tests (R : RANDOM_ACCESS_LIST) = struct
 
   (* Every version of a build by cons, each cons on the clock; then head from every
      version, tail down the whole drain, and lookup and update at every index of the full
-     list. The dearest of each is what the bound is about. *)
-  let run_costs_at name n =
+     list. The dearest of each is what the bound is about. [stack] is the budget for cons,
+     head and tail: a constant per digit, unless a list promises better. *)
+  let run_costs_at ?(stack = budget) name n =
     let t label = Printf.sprintf "%s: %s" name label in
-    let within label (k, c) =
+    let within budget label (k, c) =
       check
         (t
            (Printf.sprintf
@@ -289,7 +291,7 @@ module Rlist_tests (R : RANDOM_ACCESS_LIST) = struct
       v.(i) <- r;
       if c > snd !dear then dear := i, c
     done;
-    within "cons, at every size of a build" !dear;
+    within stack "cons, at every size of a build" !dear;
     let dear = ref (0, 0.0)
     and sum = ref 0 in
     for k = 1 to n do
@@ -297,7 +299,7 @@ module Rlist_tests (R : RANDOM_ACCESS_LIST) = struct
       sum := !sum + x;
       if c > snd !dear then dear := k, c
     done;
-    within "head, at every size of a build" !dear;
+    within stack "head, at every size of a build" !dear;
     let r = ref v.(n)
     and dear = ref (0, 0.0) in
     for i = 1 to n do
@@ -306,7 +308,7 @@ module Rlist_tests (R : RANDOM_ACCESS_LIST) = struct
       if c > snd !dear then dear := i, c
     done;
     ignore (Sys.opaque_identity !r);
-    within "tail, at every size of a drain" !dear;
+    within stack "tail, at every size of a drain" !dear;
     let full = v.(n) in
     let dear = ref (0, 0.0) in
     for i = 0 to n - 1 do
@@ -315,23 +317,23 @@ module Rlist_tests (R : RANDOM_ACCESS_LIST) = struct
       if c > snd !dear then dear := i, c
     done;
     ignore (Sys.opaque_identity !sum);
-    within "lookup, at every index" !dear;
+    within budget "lookup, at every index" !dear;
     let dear = ref (0, 0.0) in
     for i = 0 to n - 1 do
       let r', c = cost (fun () -> R.update i 0 full) in
       ignore (Sys.opaque_identity r');
       if c > snd !dear then dear := i, c
     done;
-    within "update, at every index" !dear
+    within budget "update, at every index" !dear
   ;;
 
   (* O(log n) worst-case, at two sizes a hundred times apart. The small size comes first
      and guards the large one, as everywhere in these files: an operation that is secretly
      linear makes the large run quadratic, and that is not a failure but a hang. A check
      that fails at n=1000 ends the case instead. *)
-  let run_costs name =
-    run_costs_at name 1_000;
-    run_costs_at name 100_000
+  let run_costs ?stack name =
+    run_costs_at ?stack name 1_000;
+    run_costs_at ?stack name 100_000
   ;;
 end
 
@@ -3538,8 +3540,8 @@ let lookup_stopwatch f =
   min (once ()) (min (once ()) (once ()))
 ;;
 
-(* lookup 0 in a list of 8 and in a list of 2^20, each built by cons: the time of the
-   second over the first. *)
+(* lookup 0 in a list of 8 and in a list of 2^20 elements, or of [large], each built by
+   cons: the time of the second over the first. *)
 module Lookup_growth (R : sig
     type 'a rlist
 
@@ -3548,10 +3550,10 @@ module Lookup_growth (R : sig
     val lookup : int -> 'a rlist -> 'a
   end) =
 struct
-  let ratio () =
+  let ratio ?(large = 1 lsl 20) () =
     let build n = List.fold_left (fun r i -> R.cons i r) R.empty (List.rev (upto n)) in
     let small = build 8
-    and large = build (1 lsl 20) in
+    and large = build large in
     let s = lookup_stopwatch (fun () -> R.lookup 0 small)
     and l = lookup_stopwatch (fun () -> R.lookup 0 large) in
     l /. s
@@ -3592,6 +3594,94 @@ let test_seg_list () =
   test_seg_list_lookup_stopwatch name
 ;;
 
+(* ------------------------------ SkewBinaryRandomAccessList (Figure 9.7, 9.3.1) *)
+
+(* Section 9.3.1 builds the list out of a skew binary number: digit i weighs 2^(i+1) - 1,
+   the digits are 0, 1 and 2, and only the lowest non-zero digit may be a 2, which leaves
+   every number one form (Theorem 9.1) and makes an increment a matter of the lowest
+   digit alone. The list holds a complete binary tree of 2^(i+1) - 1 elements for each one
+   in digit i and two of them for a two, smallest first, each with its weight beside it,
+   so the lowest non-zero digit is right at the front. cons links the first two trees under
+   the new element when their weights agree and puts down a leaf when they do not; tail
+   hands the root's two children back to the front; head reads the root. p.133: "cons,
+   head, and tail run in O(1) worst-case time", and lookup and update, which find the
+   tree by the weights and the element by halving, "run in O(log n) worst-case time. In
+   fact, every unsuccessful step of lookup or update discards at least one element, so
+   this bound can be reduced slightly to O(min(i, log n))".
+
+   Behaviour is the contract above, unchanged. It looks up every index of every size to
+   70, which is where the halving goes wrong: in a tree of weight w the root is index 0 and
+   the left child holds the next w div 2, so index w div 2 still belongs on the left; the
+   figure as printed sends it right, where it is index -1, and lookup 1 of three elements
+   is refused. The clock above holds every operation to a constant per digit, which is the
+   O(log n) of lookup and update; cons, head and tail are held to one digit's budget
+   instead, the same at a thousand elements and at a hundred thousand, which a cons or a
+   tail that copies the spine is over by the time the spine has seven trees. update is
+   held to its index too: a constant for each element of the index when that is less than
+   the per-digit budget, so an update of index 0 that copies the spine is seen. The clock
+   sees nothing of lookup, which allocates nothing, so the stopwatch of Exercise 9.13 is
+   used again, with care over the size: a million is a poor choice here, as 2^20 is a one
+   and a 2^20 - 1 in skew binary, two trees, and a lookup that walked the spine first would
+   never show. 2^20 - 21 is nineteen ones, a tree for each, the most trees a million
+   elements can have, and lookup 0 in that list may take no more than twice what it takes
+   in a list of eight. *)
+
+module Skew = Rlist_tests (SkewBinaryRandomAccessList)
+
+(* update at every index of a list of n: each on the clock against the smaller of the
+   per-digit budget and a constant per element of the index. The dearest against its own
+   budget is what is reported. *)
+let test_skew_update_by_index name n =
+  let module R = SkewBinaryRandomAccessList in
+  let index_budget i = Float.min (budget n) (per_digit *. float_of_int (i + 1)) in
+  let full = Skew.of_list (upto n) in
+  let worst = ref (0.0, 0, 0.0) in
+  for i = 0 to n - 1 do
+    let r', c = cost (fun () -> R.update i 0 full) in
+    ignore (Sys.opaque_identity r');
+    let ratio, _, _ = !worst in
+    if c /. index_budget i > ratio then worst := c /. index_budget i, i, c
+  done;
+  let ratio, i, c = !worst in
+  check
+    (Printf.sprintf
+       "%s: update at every index against its index, n=%d, the dearest against its budget \
+        is update %d, %.0f words, budget %.0f"
+       name
+       n
+       i
+       c
+       (index_budget i))
+    (ratio <= 1.0)
+;;
+
+module Skew_growth = Lookup_growth (SkewBinaryRandomAccessList)
+
+(* 2^20 - 21 = 1 + 3 + 7 + ... + (2^19 - 1): nineteen trees. *)
+let skew_all_ones = (1 lsl 20) - 21
+
+let test_skew_lookup_stopwatch name =
+  let r = Skew_growth.ratio ~large:skew_all_ones () in
+  check
+    (Printf.sprintf
+       "%s: lookup 0 takes %.1f times as long at %d elements, nineteen trees, as at 8, \
+        limit %.1f"
+       name
+       r
+       skew_all_ones
+       lookup_growth_limit)
+    (r <= lookup_growth_limit)
+;;
+
+let test_skew () =
+  let name = "SkewBinaryRandomAccessList" in
+  Skew.run_contract name;
+  Skew.run_costs ~stack:(fun _ -> per_digit) name;
+  test_skew_update_by_index name 1_000;
+  test_skew_update_by_index name 100_000;
+  test_skew_lookup_stopwatch name
+;;
+
 (* -------------------------------------------------------------------- cases *)
 
 let tests =
@@ -3611,5 +3701,6 @@ let tests =
   ; case "[Exercise 9.12] DenseRepresentation, digits 0 to 4" test_five_dense
   ; case "[Exercise 9.12] SegmentedRepresentation, digits 0 to 4" test_five_segmented
   ; case "[Exercise 9.13] SegmentedRandomAccessList" test_seg_list
+  ; case "[Figure 9.7] SkewBinaryRandomAccessList" test_skew
   ]
 ;;
