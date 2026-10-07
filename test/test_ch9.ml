@@ -4,9 +4,10 @@
    the zeroless redundant list of Exercise 9.9 and its scheduled form of Exercise 9.10,
    the segmented binary numbers of section 9.2.4, the segmented binomial heap of Exercise
    9.11, the segmented numbers with digits 0 to 4 of Exercise 9.12, the random-access
-   list over them of Exercise 9.13, and the skew binary random-access list and skew
-   binomial heap of Figures 9.7 and 9.8 (section 9.3), each with its own preamble further
-   down. Alcotest cases written in the checks of harness.ml, as in the earlier chapters.
+   list over them of Exercise 9.13, the skew binary random-access list of Figure 9.7, the
+   Hood-Melville queue over it of Exercise 9.14 and the skew binomial heap of Figure 9.8
+   (section 9.3), each with its own preamble further down. Alcotest cases written in
+   the checks of harness.ml, as in the earlier chapters.
 
    Section 9.2.1 builds a list out of a binary number. A list of n elements holds one
    complete binary leaf tree for every one in the binary representation of n, in
@@ -3721,6 +3722,269 @@ let test_skew () =
   test_skew_lookup_stopwatch name
 ;;
 
+(* ---------------------------------- SkewHoodMelvilleQueue (Exercise 9.14) *)
+
+(* Exercise 9.14 asks for the Hood-Melville queue of Figure 8.1 over skew binary
+   random-access lists instead of lists, "and lookup and update functions on these
+   queues". The queue is the figure's, lenf and lenr and all, with the list patterns of
+   exec and invalidate turned into the skew list's head, tail and cons, so it keeps
+   Chapter 8's O(1) worst case at a larger constant: a skew cons is 10 words where a list
+   cell is 3, and a skew tail allocates 12 where a list pattern allocates nothing, so an
+   operation that steps the rotation costs about twice what it did. The contract and the
+   clocks for snoc, head and tail are Chapter 8's, from queues.ml, with the constant
+   doubled.
+
+   lookup and update are the exercise. Idle, the queue is f ++ reverse r and the split is
+   at lenf, the rear read from its far end. During a rotation lenf counts the front under
+   construction, f ++ reverse (old r), of which the physical f holds only the first part;
+   the rest is in the state, split between the unreversed remainder of the old rear and
+   the reversed part while reversing, or at the end of r' while appending. So the state
+   carries the two lengths the figure did not need, and the old rear's size through the
+   appending phase, and lookup is one skew lookup in whichever list holds the index:
+   O(log n). update has one thing more to get right. An element of the old front is in the
+   physical f, which head and lookup read now, and in the copy the state is building,
+   which commit will install, and a change to one copy only is lost, or arrives after the
+   rotation ends. So every update is read back two ways: by lookup at once, and by a drain
+   through head and tail, which crosses the rotation's end.
+
+   The contract: every index of every queue reachable by n snocs and t tails, n up to 80,
+   which passes through every phase of many rotations, looked up, refused one past either
+   end, updated and read back both ways; a random walk of all five operations against a
+   list; old versions after newer ones. The clocks: Chapter 8's sequences and versions for
+   snoc, head and tail; then lookup and update at every index of versions in every phase,
+   each held to a constant per digit of n, at a thousand and a hundred thousand
+   elements. *)
+
+module SQ = SkewHoodMelvilleQueue
+module Skew_queue = Queues.Contract (SQ)
+
+(* Twice Chapter 8's 96: measured, the dearest snoc is 118 words and the dearest tail 98,
+   the rotation step's two skew conses and two skew tails on top of the records. A tail
+   that reversed the rear in one go is three cells of ten words each per element, out by
+   a factor of a hundred at the smaller size. *)
+let skew_queue_constant = 192.0
+
+module Skew_queue_costs =
+  Queues.Worst_case
+    (SQ)
+    (struct
+      let constant = skew_queue_constant
+      let mix_seed = 20261007
+      let trace_seed = 20261008
+    end)
+
+let sq_of_list xs = List.fold_left SQ.snoc SQ.empty xs
+let sq_drain q = drain_with ~is_empty:SQ.is_empty ~head:SQ.head ~tail:SQ.tail q
+
+(* [f what q contents] on every queue of n snocs then t tails, n up to [n_max]. *)
+let sq_reachable n_max f =
+  for n = 0 to n_max do
+    let q = ref (sq_of_list (upto n)) in
+    for t = 0 to n do
+      f (Printf.sprintf "n=%d t=%d" n t) !q (List.init (n - t) (fun i -> i + t));
+      if t < n then q := SQ.tail !q
+    done
+  done
+;;
+
+(* [q] holds [m]: every index looked up. *)
+let sq_looks note what q m =
+  List.iteri
+    (fun i x ->
+      match SQ.lookup i q with
+      | v when v = x -> ()
+      | v -> note (Printf.sprintf "%s: lookup %d = %d, want %d" what i v x)
+      | exception e ->
+        note (Printf.sprintf "%s: lookup %d raised %s" what i (Printexc.to_string e)))
+    m
+;;
+
+let sq_refused note what msg i f =
+  match f () with
+  | _ -> note (Printf.sprintf "%s: index %d was not refused" what i)
+  | exception Failure m when m = msg -> ()
+  | exception e ->
+    note (Printf.sprintf "%s: index %d raised %s" what i (Printexc.to_string e))
+;;
+
+let test_skew_queue_lookup name =
+  let t label = Printf.sprintf "%s: %s" name label in
+  all_of
+    (t "lookup of every index of every queue of n snocs and t tails, n up to 80")
+    (fun note -> sq_reachable 80 (fun what q m -> sq_looks note what q m));
+  all_of
+    (t "lookup and update refuse -1 and one past the end, on the same queues")
+    (fun note ->
+       sq_reachable 80 (fun what q m ->
+         List.iter
+           (fun i ->
+             sq_refused note what "lookup: not found" i (fun () -> SQ.lookup i q);
+             sq_refused note what "update: not found" i (fun () ->
+               SQ.is_empty (SQ.update i 0 q)))
+           [ -1; List.length m ]))
+;;
+
+let test_skew_queue_update name =
+  let t label = Printf.sprintf "%s: %s" name label in
+  all_of
+    (t
+       "update at every index of the same queues reads back by lookup, and by a drain \
+        through head and tail")
+    (fun note ->
+       sq_reachable 80 (fun what q m ->
+         List.iteri
+           (fun i _ ->
+             let what = Printf.sprintf "%s update %d" what i in
+             let want = List.mapi (fun j x -> if j = i then 1000 + i else x) m in
+             match SQ.update i (1000 + i) q with
+             | q' ->
+               sq_looks note what q' want;
+               (match sq_drain q' with
+                | got when got = want -> ()
+                | got ->
+                  note (Printf.sprintf "%s: drains to %s" what (string_of_int_list got))
+                | exception e ->
+                  note (Printf.sprintf "%s: drain raised %s" what (Printexc.to_string e)))
+             | exception e -> note (Printf.sprintf "%s raised %s" what (Printexc.to_string e)))
+           m))
+;;
+
+let test_skew_queue_walk name =
+  let t label = Printf.sprintf "%s: %s" name label in
+  all_of
+    (t
+       "a random walk of 100000 snocs, tails, updates and lookups against a list, head \
+        and is_empty at every step, read back and drained every 997 steps")
+    (fun note ->
+       Random.init 20261007;
+       (* The model: the elements ever snoc'ed, in an array, and the index of the front. *)
+       let q = ref SQ.empty
+       and all = Dynarray.create ()
+       and front = ref 0
+       and versions = ref [] in
+       let n () = Dynarray.length all - !front in
+       let at i = Dynarray.get all (!front + i) in
+       let contents () = List.init (n ()) at in
+       for step = 1 to 100_000 do
+         (match Random.int 6 with
+          | 0 | 1 ->
+            q := SQ.snoc !q step;
+            Dynarray.add_last all step
+          | 2 when n () > 0 ->
+            q := SQ.tail !q;
+            incr front
+          | 3 when n () > 0 ->
+            let i = Random.int (n ()) in
+            q := SQ.update i (-step) !q;
+            Dynarray.set all (!front + i) (-step)
+          | 4 when n () > 0 ->
+            let i = Random.int (n ()) in
+            (match SQ.lookup i !q with
+             | v when v = at i -> ()
+             | v -> note (Printf.sprintf "step %d: lookup %d = %d" step i v)
+             | exception e ->
+               note (Printf.sprintf "step %d: lookup %d raised %s" step i (Printexc.to_string e)))
+          | _ -> ());
+         if SQ.is_empty !q <> (n () = 0) then note (Printf.sprintf "step %d: is_empty" step);
+         if n () > 0 && SQ.head !q <> at 0 then note (Printf.sprintf "step %d: head" step);
+         if step mod 997 = 0
+         then (
+           let m = contents () in
+           sq_looks note (Printf.sprintf "step %d" step) !q m;
+           if sq_drain !q <> m then note (Printf.sprintf "step %d: drain" step);
+           versions := (step, !q, m) :: !versions)
+       done;
+       (* Every saved version still reads as it did, and an update of one makes a new
+          version and leaves it alone. *)
+       List.iter
+         (fun (step, q, m) ->
+           let what = Printf.sprintf "version of step %d, at the end" step in
+           sq_looks note what q m;
+           if sq_drain q <> m then note (what ^ ": drains differently");
+           if m <> []
+           then (
+             let q' = SQ.update 0 (-1) q in
+             if SQ.head q' <> -1 || SQ.lookup 0 q' <> -1
+             then note (what ^ ": update 0 not visible in the new version");
+             if SQ.head q <> List.hd m || sq_drain q <> m
+             then note (what ^ ": update 0 changed the version it came from")))
+         !versions)
+;;
+
+(* lookup and update at every index of [q], a queue of [size], each on its own clock. *)
+let sq_sweep q size =
+  let dl = ref (0, 0.0)
+  and du = ref (0, 0.0)
+  and sum = ref 0 in
+  for i = 0 to size - 1 do
+    let x, c = cost (fun () -> SQ.lookup i q) in
+    sum := !sum + x;
+    if c > snd !dl then dl := i, c;
+    let q', c = cost (fun () -> SQ.update i 0 q) in
+    ignore (Sys.opaque_identity q');
+    if c > snd !du then du := i, c
+  done;
+  ignore (Sys.opaque_identity !sum);
+  !dl, !du
+;;
+
+(* A constant per digit of n, twice what the lists get: an update during a rotation is
+   two skew updates and the state's record on top of the queue's, some 15 words a digit
+   measured; a lookup allocates nothing, and the budget is there for a lookup that walks
+   the queue by tails, which costs the whole rotation step per element passed. *)
+let sq_budget n = 2.0 *. budget n
+
+(* A build of n by snocs ends inside a rotation, and so do the [versions] tails that
+   follow it, which keep the rotation stepping: every index of each of those versions. *)
+let test_skew_queue_access_costs name n versions =
+  let t label = Printf.sprintf "%s: %s" name label in
+  let q = ref (sq_of_list (upto n))
+  and dl = ref (0, 0, 0.0)
+  and du = ref (0, 0, 0.0) in
+  for k = 0 to versions do
+    let (il, cl), (iu, cu) = sq_sweep !q (n - k) in
+    (let _, _, c = !dl in
+     if cl > c then dl := k, il, cl);
+    (let _, _, c = !du in
+     if cu > c then du := k, iu, cu);
+    if k < versions then q := SQ.tail !q
+  done;
+  let within op (k, i, c) =
+    check
+      (t
+         (Printf.sprintf
+            "%s at every index of a build of %d and of the %d versions a tail at a time \
+             after it, dearest is index %d after %d tails at %.0f words, budget %.0f"
+            op
+            n
+            versions
+            i
+            k
+            c
+            (sq_budget n)))
+      (c <= sq_budget n)
+  in
+  within "lookup" !dl;
+  within "update" !du
+;;
+
+(* The queue first, then lookup on the small queues, then lookup and update on the clock
+   at a thousand: that one stands guard, as everywhere in these files, because a lookup
+   that walks the queue by tails makes the update read-backs and the random walk after
+   it quadratic, a hang rather than a failure, and at a thousand it is a failure. Then the
+   rest, the large size after the small. *)
+let test_skew_queue () =
+  let name = "SkewHoodMelvilleQueue" in
+  Skew_queue.run_contract name;
+  test_skew_queue_lookup name;
+  test_skew_queue_access_costs name 1_000 200;
+  test_skew_queue_update name;
+  test_skew_queue_walk name;
+  Skew_queue_costs.run_sequences name;
+  Skew_queue_costs.run_versions (name ^ ", persistently");
+  test_skew_queue_access_costs name 100_000 20
+;;
+
 (* ------------------------------------------ SkewBinomialHeap (Figure 9.8, 9.3.2) *)
 
 (* Section 9.3.2 is a hybrid: insert follows the skew binary increment, merge the ordinary
@@ -3880,6 +4144,7 @@ let tests =
   ; case "[Exercise 9.12] SegmentedRepresentation, digits 0 to 4" test_five_segmented
   ; case "[Exercise 9.13] SegmentedRandomAccessList" test_seg_list
   ; case "[Figure 9.7] SkewBinaryRandomAccessList" test_skew
+  ; case "[Exercise 9.14] SkewHoodMelvilleQueue" test_skew_queue
   ; case "[Figure 9.8] SkewBinomialHeap" test_skew_heap
   ]
 ;;

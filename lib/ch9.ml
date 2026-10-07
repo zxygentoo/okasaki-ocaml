@@ -1336,6 +1336,188 @@ module SkewBinaryRandomAccessList : RANDOM_ACCESS_LIST = struct
   ;;
 end
 
+(* Exercise 9.14 Rewrite the HoodMelvilleQueue structure from Section 8.2.1 to use skew
+  binary random-access lists instead of regular lists. Implement lookup and update
+  functions on these queues. *)
+
+module type QUEUE = sig
+  type 'a queue
+
+  val empty : 'a queue
+  val is_empty : 'a queue -> bool
+  val snoc : 'a queue -> 'a -> 'a queue
+  val head : 'a queue -> 'a
+  val tail : 'a queue -> 'a queue
+end
+
+module type QUEUE_WITH_LOOKUP_AND_UPDATE = sig
+  include QUEUE
+
+  val lookup : int -> 'a queue -> 'a
+  val update : int -> 'a -> 'a queue -> 'a queue
+end
+
+module SkewHoodMelvilleQueue : QUEUE_WITH_LOOKUP_AND_UPDATE = struct
+  module A = SkewBinaryRandomAccessList
+
+  type 'a rotation_state =
+    (* Idle *)
+    | I
+    (* Reversing *)
+    | R of
+        { k : int (* valid element count *)
+        ; f : 'a A.rlist
+        ; f' : 'a A.rlist
+        ; r : 'a A.rlist
+        ; lenr : int
+        ; r' : 'a A.rlist
+        ; lenr' : int
+        }
+    (* Append *)
+    | A of
+        { k : int (* valid element count *)
+        ; f' : 'a A.rlist
+        ; r' : 'a A.rlist
+        ; n : int
+        }
+    (* Done *)
+    | D of 'a A.rlist
+
+  type 'a queue =
+    { f : 'a A.rlist
+    ; lenf : int
+    ; r : 'a A.rlist
+    ; lenr : int
+    ; state : 'a rotation_state
+    }
+
+  let noemp xs = not (A.is_empty xs)
+
+  let invalidate = function
+    | R st -> R { st with k = st.k - 1 }
+    | A { k = 0; r' } when noemp r' -> D (A.tail r')
+    | A st -> A { st with k = st.k - 1 }
+    | st -> st
+  ;;
+
+  let conshd a b = A.cons (A.head a) b
+
+  let step = function
+    | R { k; f; f'; r; lenr; r'; lenr' } when noemp f && lenr > 0 ->
+      R
+        { k = k + 1
+        ; f = A.tail f
+        ; f' = conshd f f'
+        ; r = A.tail r
+        ; lenr = lenr - 1
+        ; r' = conshd r r'
+        ; lenr' = lenr' + 1
+        }
+    | R { k; f; f'; r; lenr; r'; lenr' } when A.is_empty f && lenr = 1 ->
+      A { k; f'; r' = conshd r r'; n = lenr + lenr' }
+    | A { k = 0; r' } -> D r'
+    | A { k; f'; r'; n } when noemp f' ->
+      A { k = k - 1; f' = A.tail f'; r' = conshd f' r'; n }
+    | st -> st
+  ;;
+
+  let commit q = function
+    | D newf -> { q with f = newf; state = I }
+    | newstate -> { q with state = newstate }
+  ;;
+
+  let step_up q = q.state |> step |> commit q
+
+  let start_rebuild { f; lenf; r; lenr } =
+    let state = R { k = 0; f; f' = A.empty; r; lenr; r' = A.empty; lenr' = 0 } in
+    let q = { f; lenf = lenf + lenr; r = A.empty; lenr = 0; state } in
+    q.state |> step |> step |> commit q
+  ;;
+
+  let check q = if q.lenr <= q.lenf then step_up q else start_rebuild q
+  let empty = { f = A.empty; lenf = 0; r = A.empty; lenr = 0; state = I }
+  let is_empty q = A.is_empty q.f
+  let snoc q x = check { q with r = A.cons x q.r; lenr = q.lenr + 1 }
+  let head q = if is_empty q then raise (Failure "head: empty queue") else A.head q.f
+
+  let tail q =
+    if is_empty q
+    then raise (Failure "tail: empty queue")
+    else check { q with f = A.tail q.f; lenf = q.lenf - 1; state = invalidate q.state }
+  ;;
+
+  let lookup i q =
+    let notfound () = raise (Failure "lookup: not found") in
+    let lookup_r_exn () =
+      if i < q.lenf + q.lenr then A.lookup (q.lenf + q.lenr - i - 1) q.r else notfound ()
+    in
+    if is_empty q
+    then notfound ()
+    else (
+      match q.state with
+      | I -> if i < q.lenf then A.lookup i q.f else lookup_r_exn ()
+      | R { r; lenr; r'; lenr' } ->
+        if i < q.lenf - lenr - lenr'
+        then A.lookup i q.f
+        else if i < q.lenf - lenr'
+        then A.lookup (q.lenf - lenr' - i - 1) r
+        else if i < q.lenf
+        then A.lookup (i - q.lenf + lenr') r'
+        else lookup_r_exn ()
+      | A { k; r' } ->
+        if i < k
+        then A.lookup i q.f
+        else if i < q.lenf
+        then A.lookup (i - k) r'
+        else lookup_r_exn ()
+      | _ -> assert false)
+  ;;
+
+  let update i x q =
+    let notfound () = raise (Failure "update: not found") in
+    let update_r_exn () =
+      if i < q.lenf + q.lenr
+      then { q with r = A.update (q.lenf + q.lenr - i - 1) x q.r }
+      else notfound ()
+    in
+    if is_empty q
+    then notfound ()
+    else (
+      match q.state with
+      | I -> if i < q.lenf then { q with f = A.update i x q.f } else update_r_exn ()
+      | R ({ k; f; f'; r; lenr; r'; lenr' } as st) ->
+        if i < q.lenf - lenr - lenr'
+        then
+          { q with
+            f = A.update i x q.f
+          ; state =
+              (if i < k
+               then R { st with f' = A.update (k - i - 1) x f' }
+               else R { st with f = A.update (i - k) x f })
+          }
+        else if i < q.lenf - lenr'
+        then { q with state = R { st with r = A.update (q.lenf - lenr' - i - 1) x r } }
+        else if i < q.lenf
+        then { q with state = R { st with r' = A.update (i - q.lenf + lenr') x r' } }
+        else update_r_exn ()
+      | A ({ k; f'; r'; n } as st) ->
+        if i < k
+        then
+          { q with
+            f = A.update i x q.f
+          ; state = A { st with f' = A.update (k - i - 1) x f' }
+          }
+        else if i < q.lenf
+        then
+          { q with
+            f = (if i < q.lenf - n then A.update i x q.f else q.f)
+          ; state = A { st with r' = A.update (i - k) x r' }
+          }
+        else update_r_exn ()
+      | _ -> assert false)
+  ;;
+end
+
 (* Figure 9.8 *)
 
 module SkewBinomialHeap (E : ORDERED) : HEAP with module Element = E = struct
