@@ -136,7 +136,7 @@ end
 
 (* Figure 8.1 *)
 
-module HoodMelvilleQueue = struct
+module HoodMelvilleQueueFigure = struct
   type 'a rotation_state =
     (* Idle *)
     | I
@@ -157,9 +157,89 @@ module HoodMelvilleQueue = struct
     (* Done *)
     | D of 'a list
 
-  (* Exercise 8.3 Replace the lent and lenr fields with a single diff field that maintains
-     the difference between the lengths of f and r. diff may be inaccurate during
-     rebuilding, but must be accurate by the time rebuilding is finished. *)
+  type 'a queue =
+    { f : 'a list
+    ; lenf : int
+    ; r : 'a list
+    ; lenr : int
+    ; state : 'a rotation_state
+    }
+
+  let invalidate = function
+    | R st -> R { st with k = st.k - 1 }
+    | A { k = 0; r' = _ :: r' } -> D r'
+    | A st -> A { st with k = st.k - 1 }
+    | st -> st
+  ;;
+
+  let step = function
+    | R ({ f = x :: xs; r = y :: ys } as st) ->
+      R { k = st.k + 1; f = xs; f' = x :: st.f'; r = ys; r' = y :: st.r' }
+    | R ({ f = []; r = [ y ] } as st) -> A { k = st.k; f' = st.f'; r' = y :: st.r' }
+    | A { k = 0; r' } -> D r'
+    | A ({ f' = x :: xs } as st) -> A { k = st.k - 1; f' = xs; r' = x :: st.r' }
+    | st -> st
+  ;;
+
+  let commit q = function
+    | D newf -> { q with f = newf; state = I }
+    | newstate -> { q with state = newstate }
+  ;;
+
+  let step_up q = q.state |> step |> commit q
+
+  let start_rebuild { f; lenf; r; lenr } =
+    let state = R { k = 0; f; f' = []; r; r' = [] } in
+    let q = { f; lenf = lenf + lenr; r = []; lenr = 0; state } in
+    q.state |> step |> step |> commit q
+  ;;
+
+  let check q = if q.lenr <= q.lenf then step_up q else start_rebuild q
+  let empty = { f = []; lenf = 0; r = []; lenr = 0; state = I }
+  let is_empty q = q.f = []
+  let snoc q x = check { q with r = x :: q.r; lenr = q.lenr + 1 }
+
+  let head q =
+    match q.f with
+    | [] -> raise (Failure "head: empty queue")
+    | x :: _ -> x
+  ;;
+
+  let tail q =
+    match q.f with
+    | [] -> raise (Failure "tail: empty queue")
+    | _ :: f -> check { q with f; lenf = q.lenf - 1; state = invalidate q.state }
+  ;;
+end
+
+(* Exercise 8.3 Replace the lent and lenr fields with a single diff field that maintains
+   the difference between the lengths of f and r. diff may be inaccurate during
+   rebuilding, but must be accurate by the time rebuilding is finished. *)
+
+(* Exercise 8.2 Prove that calling exec twice at the beginning of each rotation, and
+   once for every remaining insertion or deletion is enough to finish the rotation on
+   time. Modify the code accordingly. *)
+
+module HoodMelvilleQueue = struct
+  type 'a rotation_state =
+    (* Idle *)
+    | I
+    (* Reversing *)
+    | R of
+        { k : int (* valid element count *)
+        ; f : 'a list
+        ; f' : 'a list
+        ; r : 'a list
+        ; r' : 'a list
+        }
+    (* Append *)
+    | A of
+        { k : int (* valid element count *)
+        ; f' : 'a list
+        ; r' : 'a list
+        }
+    (* Done *)
+    | D of 'a list
 
   type 'a queue =
     { f : 'a list
@@ -185,10 +265,6 @@ module HoodMelvilleQueue = struct
     | A ({ f' = x :: xs } as st) -> A { k = st.k - 1; f' = xs; r' = x :: st.r' }, d
     | _ -> st, d
   ;;
-
-  (* Exercise 8.2 Prove that calling exec twice at the beginning of each rotation, and
-     once for every remaining insertion or deletion is enough to finish the rotation on
-     time. Modify the code accordingly. *)
 
   let commit q = function
     | D newf, d -> { q with f = newf; state = I; diff = d }

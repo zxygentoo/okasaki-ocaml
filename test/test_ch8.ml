@@ -289,6 +289,18 @@ let test_hood_melville () =
   Costs.run_versions "HoodMelvilleQueue, persistently"
 ;;
 
+(* The figure's own record, lenf and lenr, kept beside the diff version as the base of
+   Exercise 9.14, which needs the lengths; the schedule stays Exercise 8.2's. Same
+   contract, same clocks. *)
+module Figure_contract = Queue_tests (HoodMelvilleQueueFigure)
+module Figure_costs = Worst_case (HoodMelvilleQueueFigure)
+
+let test_hood_melville_figure () =
+  Figure_contract.run_contract "HoodMelvilleQueueFigure";
+  Figure_costs.run_sequences "HoodMelvilleQueueFigure";
+  Figure_costs.run_versions "HoodMelvilleQueueFigure, persistently"
+;;
+
 (* ------------------------------------- ConstantTimeConsQueue (Exercise 8.4) *)
 
 (* Section 8.4 turns to deques, and 8.4.1 remarks that giving a queue cons, insertion at
@@ -2396,6 +2408,7 @@ let tests =
   ; case "[Exercise 8.1] RedBlackSet: Chapter 3's shape, gap for gap" test_redblack_shape
   ; case "[Exercise 8.1] RedBlackSet delete" test_redblack_delete
   ; case "[Exercise 8.2, 8.3] HoodMelvilleQueue" test_hood_melville
+  ; case "[Figure 8.1] HoodMelvilleQueueFigure, with lenf and lenr" test_hood_melville_figure
   ; case "[Exercise 8.4] ConstantTimeConsQueue" test_cons_queue
   ; case "[Figure 8.3] BankersDeque, c = 2" test_bankers_deque
   ; case "[Figure 8.3] BankersDeque, c = 3" test_bankers_deque_3
