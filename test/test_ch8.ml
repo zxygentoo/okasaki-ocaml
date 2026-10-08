@@ -2408,7 +2408,9 @@ let tests =
   ; case "[Exercise 8.1] RedBlackSet: Chapter 3's shape, gap for gap" test_redblack_shape
   ; case "[Exercise 8.1] RedBlackSet delete" test_redblack_delete
   ; case "[Exercise 8.2, 8.3] HoodMelvilleQueue" test_hood_melville
-  ; case "[Figure 8.1] HoodMelvilleQueueFigure, with lenf and lenr" test_hood_melville_figure
+  ; case
+      "[Figure 8.1] HoodMelvilleQueueFigure, with lenf and lenr"
+      test_hood_melville_figure
   ; case "[Exercise 8.4] ConstantTimeConsQueue" test_cons_queue
   ; case "[Figure 8.3] BankersDeque, c = 2" test_bankers_deque
   ; case "[Figure 8.3] BankersDeque, c = 3" test_bankers_deque_3
