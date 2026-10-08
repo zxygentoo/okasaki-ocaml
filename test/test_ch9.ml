@@ -5,9 +5,10 @@
    the segmented binary numbers of section 9.2.4, the segmented binomial heap of Exercise
    9.11, the segmented numbers with digits 0 to 4 of Exercise 9.12, the random-access
    list over them of Exercise 9.13, the skew binary random-access list of Figure 9.7, the
-   Hood-Melville queue over it of Exercise 9.14 and the skew binomial heap of Figure 9.8
-   (section 9.3), each with its own preamble further down. Alcotest cases written in
-   the checks of harness.ml, as in the earlier chapters.
+   Hood-Melville queue over it of Exercise 9.14, the skew binomial heap of Figure 9.8
+   (section 9.3) and the heap with delete of Exercise 9.16 over it, each with its own
+   preamble further down. Alcotest cases written in the checks of harness.ml, as in the
+   earlier chapters.
 
    Section 9.2.1 builds a list out of a binary number. A list of n elements holds one
    complete binary leaf tree for every one in the binary representation of n, in
@@ -3791,11 +3792,11 @@ let sq_reachable n_max f =
 let sq_looks note what q m =
   List.iteri
     (fun i x ->
-      match SQ.lookup i q with
-      | v when v = x -> ()
-      | v -> note (Printf.sprintf "%s: lookup %d = %d, want %d" what i v x)
-      | exception e ->
-        note (Printf.sprintf "%s: lookup %d raised %s" what i (Printexc.to_string e)))
+       match SQ.lookup i q with
+       | v when v = x -> ()
+       | v -> note (Printf.sprintf "%s: lookup %d = %d, want %d" what i v x)
+       | exception e ->
+         note (Printf.sprintf "%s: lookup %d raised %s" what i (Printexc.to_string e)))
     m
 ;;
 
@@ -3818,9 +3819,9 @@ let test_skew_queue_lookup name =
        sq_reachable 80 (fun what q m ->
          List.iter
            (fun i ->
-             sq_refused note what "lookup: not found" i (fun () -> SQ.lookup i q);
-             sq_refused note what "update: not found" i (fun () ->
-               SQ.is_empty (SQ.update i 0 q)))
+              sq_refused note what "lookup: not found" i (fun () -> SQ.lookup i q);
+              sq_refused note what "update: not found" i (fun () ->
+                SQ.is_empty (SQ.update i 0 q)))
            [ -1; List.length m ]))
 ;;
 
@@ -3834,18 +3835,19 @@ let test_skew_queue_update name =
        sq_reachable 80 (fun what q m ->
          List.iteri
            (fun i _ ->
-             let what = Printf.sprintf "%s update %d" what i in
-             let want = List.mapi (fun j x -> if j = i then 1000 + i else x) m in
-             match SQ.update i (1000 + i) q with
-             | q' ->
-               sq_looks note what q' want;
-               (match sq_drain q' with
-                | got when got = want -> ()
-                | got ->
-                  note (Printf.sprintf "%s: drains to %s" what (string_of_int_list got))
-                | exception e ->
-                  note (Printf.sprintf "%s: drain raised %s" what (Printexc.to_string e)))
-             | exception e -> note (Printf.sprintf "%s raised %s" what (Printexc.to_string e)))
+              let what = Printf.sprintf "%s update %d" what i in
+              let want = List.mapi (fun j x -> if j = i then 1000 + i else x) m in
+              match SQ.update i (1000 + i) q with
+              | q' ->
+                sq_looks note what q' want;
+                (match sq_drain q' with
+                 | got when got = want -> ()
+                 | got ->
+                   note (Printf.sprintf "%s: drains to %s" what (string_of_int_list got))
+                 | exception e ->
+                   note (Printf.sprintf "%s: drain raised %s" what (Printexc.to_string e)))
+              | exception e ->
+                note (Printf.sprintf "%s raised %s" what (Printexc.to_string e)))
            m))
 ;;
 
@@ -3883,9 +3885,15 @@ let test_skew_queue_walk name =
              | v when v = at i -> ()
              | v -> note (Printf.sprintf "step %d: lookup %d = %d" step i v)
              | exception e ->
-               note (Printf.sprintf "step %d: lookup %d raised %s" step i (Printexc.to_string e)))
+               note
+                 (Printf.sprintf
+                    "step %d: lookup %d raised %s"
+                    step
+                    i
+                    (Printexc.to_string e)))
           | _ -> ());
-         if SQ.is_empty !q <> (n () = 0) then note (Printf.sprintf "step %d: is_empty" step);
+         if SQ.is_empty !q <> (n () = 0)
+         then note (Printf.sprintf "step %d: is_empty" step);
          if n () > 0 && SQ.head !q <> at 0 then note (Printf.sprintf "step %d: head" step);
          if step mod 997 = 0
          then (
@@ -3898,16 +3906,16 @@ let test_skew_queue_walk name =
           version and leaves it alone. *)
        List.iter
          (fun (step, q, m) ->
-           let what = Printf.sprintf "version of step %d, at the end" step in
-           sq_looks note what q m;
-           if sq_drain q <> m then note (what ^ ": drains differently");
-           if m <> []
-           then (
-             let q' = SQ.update 0 (-1) q in
-             if SQ.head q' <> -1 || SQ.lookup 0 q' <> -1
-             then note (what ^ ": update 0 not visible in the new version");
-             if SQ.head q <> List.hd m || sq_drain q <> m
-             then note (what ^ ": update 0 changed the version it came from")))
+            let what = Printf.sprintf "version of step %d, at the end" step in
+            sq_looks note what q m;
+            if sq_drain q <> m then note (what ^ ": drains differently");
+            if m <> []
+            then (
+              let q' = SQ.update 0 (-1) q in
+              if SQ.head q' <> -1 || SQ.lookup 0 q' <> -1
+              then note (what ^ ": update 0 not visible in the new version");
+              if SQ.head q <> List.hd m || sq_drain q <> m
+              then note (what ^ ": update 0 changed the version it came from")))
          !versions)
 ;;
 
@@ -4124,6 +4132,572 @@ let test_skew_heap () =
   Skew_heap_clocks.test_versions name
 ;;
 
+(* ---------------------------------------------- HeapWithDelete (Exercise 9.16) *)
+
+(* Exercise 9.16 asks for a functor that gives any heap H a delete, over the type H.Heap x
+   H.Heap: one heap of positive occurrences and one of negative, where "a negative
+   occurrence of an element means that that element has been deleted, but not yet
+   physically removed from the heap"; the two "cancel each other out and are physically
+   removed when both become the minimum elements of their respective heaps", under the
+   invariant that "the minimum element of the positive heap is strictly smaller than the
+   minimum element of the negative heap". The invariant is what lets find_min answer from
+   the positive heap alone: its minimum is below every negative, so it is live. It also
+   settles what delete means for an element that is not there. A negative above the live
+   minimum stays and cancels the next insert of its element, the book's "curious property
+   that an element can be deleted before it has been inserted"; a negative below the live
+   minimum has nothing left to cancel and no place the invariant lets it stay, so it is let
+   go. The negatives of one operand of a merge cancel positives of the other.
+
+   The wrapped heap is the skew binomial heap of Figure 9.8. With delete unused the functor
+   is that heap and a pair, so the contract and the clocks of Exercise 9.11 run on it first,
+   to the budgets of Figure 9.8. Then delete's own contract: one copy of a present element
+   goes, whichever copy and wherever it sits; an element deleted first and inserted after is
+   not there; a delete below the minimum is let go; cancellations cascade; a merge cancels
+   across its operands; a version with a pending delete serves several futures; equal keys
+   lose exactly one of their number. And a random trace of 6000 inserts, deletes, merges and
+   delete_mins over earlier versions, against the book's description on sorted lists.
+
+   Costs. find_min reads the positive heap and stays worst-case. insert can only lower the
+   positive minimum, so the invariant survives it: it needs no check unless the positive
+   heap was empty, and into a non-empty one it is held to Figure 9.8's insert budget, with
+   negatives pending. Every pass of the check's loop ends with a delete_min on H and takes
+   an element out of one heap or both for good, and an element enters the positive heap by
+   one insert and the negative heap by one delete, so over a sequence of m operations the
+   loop runs at most m times: O(m log m) in all, amortized O(log n) a piece for delete,
+   delete_min and merge. One operation can cost Theta(n log n): insert 0 to n, delete 1 to
+   n, each a negative above the live minimum 0, and the one delete_min cancels n pairs. The
+   bound is amortized and ephemeral, since the loop's work is not memoized: a second
+   delete_min on that version cancels the n pairs over again. So the amortized clocks run
+   single-threaded sequences, the sum of a sequence against m times a budget in L = log2
+   (m + 1), m being what the two heaps can hold between them; the clocks over versions
+   above are the ones with delete unused. *)
+
+module DH = HeapWithDelete (Counting_int) (SkewBinomialHeap (Counting_int))
+module DK = HeapWithDelete (Keyed) (SkewBinomialHeap (Keyed))
+module Delete_base_contract = Heap_contract (DH) (DK)
+
+module Delete_base_clocks =
+  Heap_clocks
+    (DH)
+    (struct
+      let insert_comparisons = 2.0
+      let insert_words = flat_budget
+      let query_comparisons l = (6. *. l) +. 6.
+      let query_words l = (60. *. l) +. 60.
+    end)
+
+(* ----------------------------------------------------------- delete's contract *)
+
+(* The book's description on sorted lists: positives, negatives, and the invariant
+   restored the only way the type allows. Live is the first list; a drain gives the
+   multiset difference. *)
+module Model = struct
+  type t = int list * int list
+
+  let rec settle = function
+    | ([], _ | _, []) as m -> m
+    | (p :: ps as pos), n :: ns ->
+      if p < n then pos, n :: ns else if p = n then settle (ps, ns) else settle (pos, ns)
+  ;;
+
+  let empty = [], []
+  let is_empty (pos, _) = pos = []
+  let find_min (pos, _) = List.hd pos
+  let insert x (pos, neg) = settle (List.merge compare [ x ] pos, neg)
+  let delete x (pos, neg) = settle (pos, List.merge compare [ x ] neg)
+  let delete_min (pos, neg) = settle (List.tl pos, neg)
+
+  let merge (pos1, neg1) (pos2, neg2) =
+    settle (List.merge compare pos1 pos2, List.merge compare neg1 neg2)
+  ;;
+
+  let rec drain = function
+    | [], _ -> []
+    | pos, [] -> pos
+    | (p :: ps as pos), n :: ns ->
+      if p < n
+      then p :: drain (ps, n :: ns)
+      else if p = n
+      then drain (ps, ns)
+      else drain (pos, ns)
+  ;;
+
+  let size (pos, neg) = List.length pos + List.length neg
+end
+
+module Delete_tests
+    (D : HEAP_WITH_DELETE with type Element.t = int)
+    (K : HEAP_WITH_DELETE with type Element.t = int * int) =
+struct
+  let of_list xs = List.fold_left (fun h x -> D.insert x h) D.empty xs
+  let drain h = drain_with ~is_empty:D.is_empty ~head:D.find_min ~tail:D.delete_min h
+
+  let run name =
+    let t label = name ^ ": " ^ label in
+    let drains_to note what want h =
+      match drain h with
+      | out when out = want -> ()
+      | out -> note (Printf.sprintf "%s drains to %s" what (string_of_int_list out))
+      | exception e -> note (Printf.sprintf "%s raised %s" what (Printexc.to_string e))
+    in
+    all_of (t "delete on the empty heap leaves it empty") (fun note ->
+      let h = D.delete 3 D.empty in
+      if not (D.is_empty h) then note "not empty";
+      refused note "find_min" "find_min: empty heap" (fun () -> D.find_min h);
+      refused note "delete_min" "delete_min: empty heap" (fun () -> D.delete_min h));
+    all_of
+      (t "delete takes out one copy of a present element, wherever it sits")
+      (fun note ->
+         let h = of_list [ 4; 2; 6; 1; 3; 5; 7 ] in
+         drains_to note "delete 1, the minimum" [ 2; 3; 4; 5; 6; 7 ] (D.delete 1 h);
+         drains_to note "delete 7, the maximum" [ 1; 2; 3; 4; 5; 6 ] (D.delete 7 h);
+         drains_to note "delete 4, in the middle" [ 1; 2; 3; 5; 6; 7 ] (D.delete 4 h);
+         drains_to
+           note
+           "delete 4 then 1 then 7"
+           [ 2; 3; 5; 6 ]
+           (h |> D.delete 4 |> D.delete 1 |> D.delete 7);
+         let d = of_list [ 2; 2; 2 ] in
+         drains_to note "one of three copies" [ 2; 2 ] (D.delete 2 d);
+         drains_to note "two of three copies" [ 2 ] (d |> D.delete 2 |> D.delete 2);
+         drains_to note "all three copies" [] (d |> D.delete 2 |> D.delete 2 |> D.delete 2);
+         let r = h |> D.delete 1 |> D.delete 2 |> D.delete 3 |> D.delete 4 in
+         if D.find_min r <> 5
+         then note (Printf.sprintf "find_min after four deletes: %d" (D.find_min r)));
+    all_of (t "an element can be deleted before it has been inserted") (fun note ->
+      drains_to note "delete 3, insert 3" [] (D.empty |> D.delete 3 |> D.insert 3);
+      drains_to
+        note
+        "delete 3 twice, insert 3 twice"
+        []
+        (D.empty |> D.delete 3 |> D.delete 3 |> D.insert 3 |> D.insert 3);
+      drains_to
+        note
+        "delete 3 twice, insert 3 three times"
+        [ 3 ]
+        (D.empty |> D.delete 3 |> D.delete 3 |> D.insert 3 |> D.insert 3 |> D.insert 3);
+      drains_to
+        note
+        "insert 1, delete 3, insert 3"
+        [ 1 ]
+        (D.empty |> D.insert 1 |> D.delete 3 |> D.insert 3);
+      drains_to
+        note
+        "insert 1, delete 3, insert 3 twice"
+        [ 1; 3 ]
+        (D.empty |> D.insert 1 |> D.delete 3 |> D.insert 3 |> D.insert 3);
+      drains_to
+        note
+        "insert 1, delete 3, insert 2, insert 3"
+        [ 1; 2 ]
+        (D.empty |> D.insert 1 |> D.delete 3 |> D.insert 2 |> D.insert 3);
+      let h = D.empty |> D.delete 3 |> D.delete 5 in
+      if not (D.is_empty h) then note "two pending deletes are not empty";
+      drains_to
+        note
+        "pending 3 and 5, insert 3, 4, 5"
+        [ 4 ]
+        (h |> D.insert 3 |> D.insert 4 |> D.insert 5));
+    (* The invariant leaves a negative below the live minimum no place to stay. *)
+    all_of (t "a delete below the minimum is let go") (fun note ->
+      drains_to
+        note
+        "insert 5, delete 3, insert 3"
+        [ 3; 5 ]
+        (D.empty |> D.insert 5 |> D.delete 3 |> D.insert 3);
+      drains_to
+        note
+        "insert 5, delete 3, delete 5"
+        []
+        (D.empty |> D.insert 5 |> D.delete 3 |> D.delete 5);
+      drains_to
+        note
+        "delete 3, insert 5, insert 3"
+        [ 3; 5 ]
+        (D.empty |> D.delete 3 |> D.insert 5 |> D.insert 3);
+      drains_to
+        note
+        "insert 5, delete 1, delete 2, delete 5, insert 1"
+        [ 1 ]
+        (D.empty |> D.insert 5 |> D.delete 1 |> D.delete 2 |> D.delete 5 |> D.insert 1);
+      (* Pending 3 and 5, and 5 comes first: the 3 is let go when 5 becomes the minimum. *)
+      drains_to
+        note
+        "delete 3, delete 5, insert 5, 4, 3"
+        [ 3; 4 ]
+        (D.empty |> D.delete 3 |> D.delete 5 |> D.insert 5 |> D.insert 4 |> D.insert 3));
+    all_of (t "cancellations cascade") (fun note ->
+      let h =
+        List.fold_left (fun h x -> D.delete x h) (of_list (upto 10)) (List.tl (upto 10))
+      in
+      if D.find_min h <> 0 then note (Printf.sprintf "find_min %d, want 0" (D.find_min h));
+      if not (D.is_empty (D.delete_min h))
+      then note "delete_min of the last live element is not empty";
+      drains_to note "0 to 9, 1 to 9 deleted" [ 0 ] h;
+      let d = of_list [ 1; 2; 2; 3; 3; 3 ] in
+      drains_to
+        note
+        "1 2 2 3 3 3, one 2 and two 3s deleted"
+        [ 1; 2; 3 ]
+        (d |> D.delete 3 |> D.delete 2 |> D.delete 3);
+      drains_to
+        note
+        "every other of 0 to 19 deleted"
+        (List.filter (fun x -> x mod 2 = 0) (upto 20))
+        (List.fold_left
+           (fun h x -> D.delete x h)
+           (of_list (upto 20))
+           (List.filter (fun x -> x mod 2 = 1) (upto 20))));
+    all_of (t "a merge cancels across its operands") (fun note ->
+      let pending x = D.delete x D.empty in
+      drains_to note "pending 5 with 5" [] (D.merge (pending 5) (of_list [ 5 ]));
+      drains_to note "5 with pending 5" [] (D.merge (of_list [ 5 ]) (pending 5));
+      drains_to note "1 5 with pending 5" [ 1 ] (D.merge (of_list [ 1; 5 ]) (pending 5));
+      drains_to note "pending 5 with 1 5" [ 1 ] (D.merge (pending 5) (of_list [ 1; 5 ]));
+      drains_to
+        note
+        "3 5 less 5, with 5"
+        [ 3; 5 ]
+        (D.merge (of_list [ 3; 5 ] |> D.delete 5) (of_list [ 5 ]));
+      drains_to
+        note
+        "1 5 less 5, with pending 1"
+        []
+        (D.merge (of_list [ 1; 5 ] |> D.delete 5) (pending 1));
+      drains_to
+        note
+        "1 5 less 5, with 2 less 1: the 1 was let go, the 5 still cancels"
+        [ 1; 2 ]
+        (D.merge (of_list [ 1; 5 ] |> D.delete 5) (of_list [ 2 ] |> D.delete 1));
+      drains_to
+        note
+        "pending 5 with pending 5, then 5 5"
+        []
+        (D.merge (pending 5) (pending 5) |> D.insert 5 |> D.insert 5);
+      if not (D.is_empty (D.merge (pending 5) (pending 3)))
+      then note "two pendings merged are not empty");
+    all_of
+      (t "a version with a pending delete serves several futures, untouched")
+      (fun note ->
+         let h = D.empty |> D.insert 1 |> D.delete 3 in
+         drains_to note "insert 3" [ 1 ] (D.insert 3 h);
+         drains_to note "insert 2" [ 1; 2 ] (D.insert 2 h);
+         drains_to note "delete_min" [] (D.delete_min h);
+         drains_to note "delete_min, insert 3" [] (h |> D.delete_min |> D.insert 3);
+         drains_to note "delete 1" [] (D.delete 1 h);
+         drains_to note "delete 1, insert 3" [] (h |> D.delete 1 |> D.insert 3);
+         drains_to note "merge with itself" [ 1; 1 ] (D.merge h h);
+         drains_to
+           note
+           "merge with itself, insert 3 twice"
+           [ 1; 1 ]
+           (D.merge h h |> D.insert 3 |> D.insert 3);
+         drains_to note "the version" [ 1 ] h);
+    all_of
+      (t "equal keys, distinct tags: a delete takes exactly one of them")
+      (fun note ->
+         let xs = [ 2, 0; 2, 1; 1, 2; 3, 3; 2, 4 ] in
+         let h = List.fold_left (fun h x -> K.insert x h) K.empty xs in
+         let drain h =
+           drain_with ~is_empty:K.is_empty ~head:K.find_min ~tail:K.delete_min h
+         in
+         let keys_after ?(among = xs) what want h =
+           let out = drain h in
+           let keys = List.map fst out in
+           if keys <> want
+           then
+             note
+               (Printf.sprintf
+                  "%s: keys %s, want %s"
+                  what
+                  (string_of_int_list keys)
+                  (string_of_int_list want))
+           else if List.exists (fun x -> not (List.mem x among)) out
+           then note (what ^ ": an element that was never inserted")
+           else if List.length (List.sort_uniq compare out) <> List.length out
+           then note (what ^ ": an element twice")
+         in
+         keys_after "delete (2, 99)" [ 1; 2; 2; 3 ] (K.delete (2, 99) h);
+         keys_after
+           "delete (2, 99) twice"
+           [ 1; 2; 3 ]
+           (h |> K.delete (2, 99) |> K.delete (2, 99));
+         keys_after
+           "delete (2, 99) three times"
+           [ 1; 3 ]
+           (h |> K.delete (2, 99) |> K.delete (2, 99) |> K.delete (2, 99));
+         keys_after "delete (1, 99)" [ 2; 2; 2; 3 ] (K.delete (1, 99) h);
+         keys_after
+           ~among:((3, 5) :: xs)
+           "delete (3, 99), then insert (3, 5): one of the two 3s"
+           [ 1; 2; 2; 2; 3 ]
+           (h |> K.delete (3, 99) |> K.insert (3, 5));
+         keys_after
+           ~among:((3, 5) :: xs)
+           "delete (3, 99) twice, then insert (3, 5)"
+           [ 1; 2; 2; 2 ]
+           (h |> K.delete (3, 99) |> K.delete (3, 99) |> K.insert (3, 5)));
+    all_of
+      (t
+         "a random trace of 6000 inserts, deletes, merges and delete_mins over earlier \
+          versions, against the book's description on sorted lists")
+      (fun note ->
+         Random.init 20261008;
+         let n = 6_000 in
+         let v = Array.make (n + 1) D.empty
+         and model = Array.make (n + 1) Model.empty in
+         for i = 1 to n do
+           let p = Random.int i
+           and q = Random.int i in
+           let what, h, m =
+             match Random.int 6 with
+             | 0 when Model.size model.(p) + Model.size model.(q) <= 600 ->
+               "merge", D.merge v.(p) v.(q), Model.merge model.(p) model.(q)
+             | 1 when not (Model.is_empty model.(p)) ->
+               "delete_min", D.delete_min v.(p), Model.delete_min model.(p)
+             | 2 | 3 ->
+               (* A present element half the time, any element the other half. *)
+               let live = Model.drain model.(p) in
+               let x =
+                 if live <> [] && Random.bool ()
+                 then List.nth live (Random.int (List.length live))
+                 else Random.int 64
+               in
+               "delete", D.delete x v.(p), Model.delete x model.(p)
+             | _ ->
+               let x = Random.int 64 in
+               "insert", D.insert x v.(p), Model.insert x model.(p)
+           in
+           v.(i) <- h;
+           model.(i) <- m;
+           if Model.is_empty m
+           then (
+             if not (D.is_empty h) then note (Printf.sprintf "%s %d is not empty" what i))
+           else if D.is_empty h
+           then note (Printf.sprintf "%s %d is empty" what i)
+           else if D.find_min h <> Model.find_min m
+           then
+             note
+               (Printf.sprintf
+                  "%s %d: find_min %d, want %d"
+                  what
+                  i
+                  (D.find_min h)
+                  (Model.find_min m))
+         done;
+         for i = 0 to n do
+           if i mod 200 = 0
+           then
+             drains_to note (Printf.sprintf "version %d" i) (Model.drain model.(i)) v.(i)
+         done)
+  ;;
+end
+
+module Delete_contract = Delete_tests (DH) (DK)
+
+(* ------------------------------------------------------------ delete's clocks *)
+
+(* The budgets of Figure 9.8 for one operation, and for a sequence of m operations m times
+   the amortized budget at L = log2 (m + 1), half of Figure 9.8's query budget: the dearest
+   sequence spends a quarter of that a piece, the cascade a little over. *)
+let delete_insert_budget = 2.0, flat_budget
+let delete_query_budget l = (6. *. l) +. 6., (60. *. l) +. 60.
+
+let delete_amortized_budget m =
+  let l = log2 (m + 1) in
+  float_of_int m *. ((3. *. l) +. 3.), float_of_int m *. ((30. *. l) +. 30.)
+;;
+
+let delete_within name ~budget:(cb, wb) ~what (c, w) =
+  check
+    (Printf.sprintf
+       "%s: %s spends %.0f comparisons and %.0f words, budget %.0f and %.0f"
+       name
+       what
+       c
+       w
+       cb
+       wb)
+    (c <= cb && w <= wb)
+;;
+
+(* A heap of n random elements, every 97th of them in sorted order deleted, all of them
+   above the minimum, so that negatives are pending and the check has something to look at. *)
+let dh_pending n =
+  Random.init n;
+  let xs = List.init n (fun _ -> 1 + Random.int 1_000_000) in
+  let h = Delete_contract.of_list xs in
+  List.fold_left
+    (fun h x -> DH.delete x h)
+    h
+    (List.filteri (fun i _ -> i > 0 && i mod 97 = 0) (List.sort compare xs))
+;;
+
+let test_delete_worst_case name n =
+  let h = dh_pending n in
+  let l = log2 (n + 1) in
+  List.iter
+    (fun (what, x) ->
+       delete_within
+         name
+         ~budget:delete_insert_budget
+         ~what:(Printf.sprintf "insert %s into %d elements with negatives pending" what n)
+         (spent_only (fun () -> DH.insert x h)))
+    [ "below the minimum", 0; "above the maximum", 2_000_000; "in the middle", 500_000 ];
+  delete_within
+    name
+    ~budget:(delete_query_budget l)
+    ~what:(Printf.sprintf "find_min on %d elements with negatives pending" n)
+    (spent_only (fun () -> DH.find_min h))
+;;
+
+type dop =
+  | DInsert of int
+  | DDelete of int
+  | DFind_min
+  | DDelete_min
+
+(* Runs [ops] from the empty heap, single-threaded, every operation on the clocks: the sum
+   of the sequence, and the dearest find_min and delete_min on their own. *)
+let run_delete_ops ops =
+  let h = ref DH.empty
+  and sum = ref 0
+  and total_c = ref 0.0
+  and total_w = ref 0.0
+  and dearest_find = ref (0.0, 0.0)
+  and dearest_delete_min = ref (0.0, 0.0) in
+  let dearer (a, b) (c, d) = if c > a then c, d else a, b in
+  Array.iter
+    (fun op ->
+       let c, w =
+         match op with
+         | DInsert x ->
+           let h', cw = spent (fun () -> DH.insert x !h) in
+           h := h';
+           cw
+         | DDelete x ->
+           let h', cw = spent (fun () -> DH.delete x !h) in
+           h := h';
+           cw
+         | DFind_min ->
+           let x, cw = spent (fun () -> DH.find_min !h) in
+           sum := !sum + x;
+           dearest_find := dearer !dearest_find cw;
+           cw
+         | DDelete_min ->
+           let h', cw = spent (fun () -> DH.delete_min !h) in
+           h := h';
+           dearest_delete_min := dearer !dearest_delete_min cw;
+           cw
+       in
+       total_c := !total_c +. c;
+       total_w := !total_w +. w)
+    ops;
+  ignore (Sys.opaque_identity !sum);
+  (!total_c, !total_w), !dearest_find, !dearest_delete_min
+;;
+
+let delete_sequences n =
+  Random.init n;
+  let xs = Array.init n (fun _ -> Random.int 1_000_000) in
+  [ ( "n random inserts, then a find_min and a delete of each in a random order, to \
+       exhaustion"
+    , Array.concat
+        [ Array.map (fun x -> DInsert x) xs
+        ; Array.concat
+            (List.map
+               (fun x -> [| DFind_min; DDelete x |])
+               (shuffle n (Array.to_list xs)))
+        ] )
+  ; ( "insert x then delete x at a live size of 1000, n times over"
+    , Array.init
+        (1000 + (2 * n))
+        (fun i ->
+           if i < 1000
+           then DInsert xs.(i mod n)
+           else if i mod 2 = 0
+           then DInsert xs.(i mod n)
+           else DDelete xs.((i - 1) mod n)) )
+  ; ( "n inserts, then delete_min and a delete of a random present element in turn, to \
+       exhaustion"
+    , let sorted = Array.of_list (List.sort compare (Array.to_list xs)) in
+      Array.concat
+        [ Array.map (fun x -> DInsert x) xs
+        ; Array.init n (fun i ->
+            if i mod 2 = 0 then DDelete_min else DDelete sorted.(n - 1 - (i / 2)))
+        ] )
+  ]
+;;
+
+let test_delete_amortized name n =
+  List.iter
+    (fun (what, ops) ->
+       let m = Array.length ops in
+       let total, find, _ = run_delete_ops ops in
+       let name = Printf.sprintf "%s, n=%d, %s" name n what in
+       delete_within
+         name
+         ~budget:(delete_amortized_budget m)
+         ~what:(Printf.sprintf "the sequence of %d operations" m)
+         total;
+       if Array.mem DFind_min ops
+       then
+         delete_within
+           name
+           ~budget:(delete_query_budget (log2 (m + 1)))
+           ~what:"the dearest find_min"
+           find)
+    (delete_sequences n)
+;;
+
+(* 0 to n inserted, 1 to n deleted, all above the live minimum, then the one delete_min
+   that cancels the n pairs. *)
+let test_delete_cascade name n =
+  let ops =
+    Array.concat
+      [ Array.init (n + 1) (fun i -> DInsert i)
+      ; Array.init n (fun i -> DDelete (i + 1))
+      ; [| DDelete_min |]
+      ]
+  in
+  let m = Array.length ops in
+  let total, _, (c, w) = run_delete_ops ops in
+  let name = Printf.sprintf "%s, cascade of %d" name n in
+  delete_within
+    name
+    ~budget:(delete_amortized_budget m)
+    ~what:(Printf.sprintf "the sequence of %d operations" m)
+    total;
+  (* That the clock sees the cascade: the one delete_min cancels n pairs and compares the
+     two minimums at least once each, n comparisons and more. *)
+  check
+    (Printf.sprintf
+       "%s: the one delete_min spends %.0f comparisons and %.0f words, at least %d \
+        comparisons"
+       name
+       c
+       w
+       n)
+    (c >= float_of_int n)
+;;
+
+let test_heap_with_delete () =
+  let name = "HeapWithDelete" in
+  Delete_base_contract.run (name ^ ", delete unused");
+  Delete_base_clocks.test_all_ones (name ^ ", delete unused");
+  Delete_base_clocks.test_sequences (name ^ ", delete unused") 1_000;
+  Delete_base_clocks.test_sequences (name ^ ", delete unused") 100_000;
+  Delete_base_clocks.test_merges (name ^ ", delete unused") 1_000;
+  Delete_base_clocks.test_versions (name ^ ", delete unused");
+  Delete_contract.run name;
+  test_delete_worst_case name 1_000;
+  test_delete_worst_case name 100_000;
+  test_delete_amortized name 1_000;
+  test_delete_amortized name 100_000;
+  test_delete_cascade name 1_000;
+  test_delete_cascade name 100_000
+;;
+
 (* -------------------------------------------------------------------- cases *)
 
 let tests =
@@ -4146,5 +4720,6 @@ let tests =
   ; case "[Figure 9.7] SkewBinaryRandomAccessList" test_skew
   ; case "[Exercise 9.14] SkewHoodMelvilleQueue" test_skew_queue
   ; case "[Figure 9.8] SkewBinomialHeap" test_skew_heap
+  ; case "[Exercise 9.16] HeapWithDelete" test_heap_with_delete
   ]
 ;;

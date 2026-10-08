@@ -1605,3 +1605,59 @@ module SkewBinomialHeap (E : ORDERED) : HEAP with module Element = E = struct
       insert_all xs (merge (List.rev ts1) ts2)
   ;;
 end
+
+(* Exercise 9.16 Suppose we want a delete function of type Elem.T x Heap —> Heap. Write a
+  functor that takes an implementation H of heaps and produces an implementation of heaps
+  that supports delete as well as all the other usual heap functions. Use the type type
+
+  Heap = H.Heap x H.Heap
+
+  where one of the primitive heaps represents positive occurrences of elements and the
+  other represents negative occurrences. A negative occurrence of an element means that
+  that element has been deleted, but not yet physically removed from the heap. Positive
+  and negative occurrences of the same element cancel each other out and are physically
+  removed when both become the minimum elements of their respective heaps. Maintain the
+  invariant that the minimum element of the positive heap is strictly smaller than the
+  minimum element of the negative heap. (This implementation has the curious property
+  that an element can be deleted before it has been inserted, but this is acceptable for
+  many applications.)
+ *)
+
+module type HEAP_WITH_DELETE = sig
+  include HEAP
+
+  val delete : Element.t -> heap -> heap
+end
+
+module HeapWithDelete (E : ORDERED) (H : HEAP with module Element = E) :
+  HEAP_WITH_DELETE with module Element = E = struct
+  module Element = E
+
+  type heap = H.heap * H.heap
+
+  let empty = H.empty, H.empty
+  let is_empty (pos, _) = H.is_empty pos
+
+  let rec check ((pos, neg) as h) =
+    if H.is_empty pos || H.is_empty neg
+    then h
+    else (
+      let p = H.find_min pos
+      and n = H.find_min neg in
+      if Element.lt p n
+      then h
+      else if Element.eq p n
+      then check (H.delete_min pos, H.delete_min neg)
+      else check (pos, H.delete_min neg))
+  ;;
+
+  let insert e (pos, neg) =
+    let h' = H.insert e pos, neg in
+    if H.is_empty pos then check h' else h'
+  ;;
+
+  let delete e (pos, neg) = check (pos, H.insert e neg)
+  let merge (pos1, neg1) (pos2, neg2) = check (H.merge pos1 pos2, H.merge neg1 neg2)
+  let find_min (pos, _) = H.find_min pos
+  let delete_min (pos, neg) = check (H.delete_min pos, neg)
+end
