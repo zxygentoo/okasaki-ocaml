@@ -6,8 +6,9 @@
    9.11, the segmented numbers with digits 0 to 4 of Exercise 9.12, the random-access
    list over them of Exercise 9.13, the skew binary random-access list of Figure 9.7, the
    Hood-Melville queue over it of Exercise 9.14, the skew binomial heap of Figure 9.8
-   (section 9.3), the heap with delete of Exercise 9.16 over it and the trinomial heap of
-   Exercise 9.17, each with its own preamble further down. Alcotest cases written in the checks of harness.ml, as in the
+   (section 9.3), the heap with delete of Exercise 9.16 over it, the trinomial heap of
+   Exercise 9.17 and the zeroless quaternary random-access list of Exercise 9.18, each
+   with its own preamble further down. Alcotest cases written in the checks of harness.ml, as in the
    earlier chapters.
 
    Section 9.2.1 builds a list out of a binary number. A list of n elements holds one
@@ -1387,12 +1388,14 @@ let test_zeroless () =
 
 module Zeroless_list = Rlist_tests (ZerolessBinaryRandomAccessList)
 
-let test_zeroless_head_at n =
-  let module R = ZerolessBinaryRandomAccessList in
+(* head on the clock at every size of a build by cons and of the drain by tail after it,
+   held to one digit's budget whatever n: a zeroless list's O(1) head. Shared with the
+   quaternary list of Exercise 9.18 further down. *)
+let test_head_at (module R : RANDOM_ACCESS_LIST) name n =
   let name =
     Printf.sprintf
-      "ZerolessBinaryRandomAccessList: head, at every size of a build and of the drain \
-       after it, n=%d"
+      "%s: head, at every size of a build and of the drain after it, n=%d"
+      name
       n
   in
   let dearest () =
@@ -1422,10 +1425,11 @@ let test_zeroless_head_at n =
 ;;
 
 let test_zeroless_list () =
-  Zeroless_list.run_contract "ZerolessBinaryRandomAccessList";
-  Zeroless_list.run_costs "ZerolessBinaryRandomAccessList";
-  test_zeroless_head_at 1_000;
-  test_zeroless_head_at 100_000
+  let name = "ZerolessBinaryRandomAccessList" in
+  Zeroless_list.run_contract name;
+  Zeroless_list.run_costs name;
+  test_head_at (module ZerolessBinaryRandomAccessList) name 1_000;
+  test_head_at (module ZerolessBinaryRandomAccessList) name 100_000
 ;;
 
 (* ------------------- ZerolessRedundantBinaryRandomAccessList (Exercise 9.9) *)
@@ -4878,6 +4882,40 @@ let test_trinomial_heap () =
   Trinomial_clocks.test_versions name
 ;;
 
+(* ------------------------ ZerolessQuaternaryRandomAccessList (Exercise 9.18) *)
+
+(* Exercise 9.18 asks for zeroless quaternary random-access lists over the type LEAF of a
+   | NODE of a Tree vector, and a list a Tree vector list, "where each vector in a NODE
+   contains four trees, and each vector in a list contains one to four trees". A vector is
+   SML's immutable array; here a NODE is a four-tuple and a digit is one of ONE to FOUR, so
+   both of the book's conditions are facts of the type. The i-th digit holds complete
+   4-ary leaf trees of 4^i leaves (Definition 9.4), and a list of n elements has the digits
+   of n in zeroless quaternary, n = sum of d_i 4^i with every d_i from 1 to 4. cons is the
+   increment, a FOUR linking into the node carried up; tail the decrement, a ONE at the
+   front opening the next digit's first tree into a FOUR, and borrowing further where that
+   digit was a ONE itself; lookup and update walk the digits with the size 4^i carried
+   along, since the trees carry none, and pick the tree, then the child at every node, by
+   the quotient of the index. p.139: base k has about log_k n digits at about k + 1 steps
+   each, so cons, tail, lookup and update are O(log n) worst-case, and head, as for every
+   zeroless list (p.125), O(1): the front digit is never empty and its first tree a leaf.
+
+   The contract and the clocks are those of the lists above, through Rlist_tests, to the
+   same budget of a constant per binary digit: a quaternary list has half the digits and
+   spends more on each, a node being five words and a digit up to five. The dearest cons
+   is the carry through the all-fours list of (4^(k+1) - 4)/3 elements, 113 words at n =
+   100 000, a quarter of the budget; tail's borrow chain and update's path copy cost less.
+   And head is on the clock at every size, as for Exercise 9.5. *)
+
+module Quaternary = Rlist_tests (ZerolessQuaternaryRandomAccessList)
+
+let test_quaternary () =
+  let name = "ZerolessQuaternaryRandomAccessList" in
+  Quaternary.run_contract name;
+  Quaternary.run_costs name;
+  test_head_at (module ZerolessQuaternaryRandomAccessList) name 1_000;
+  test_head_at (module ZerolessQuaternaryRandomAccessList) name 100_000
+;;
+
 (* -------------------------------------------------------------------- cases *)
 
 let tests =
@@ -4902,5 +4940,6 @@ let tests =
   ; case "[Figure 9.8] SkewBinomialHeap" test_skew_heap
   ; case "[Exercise 9.16] HeapWithDelete" test_heap_with_delete
   ; case "[Exercise 9.17] TrinomialHeap" test_trinomial_heap
+  ; case "[Exercise 9.18] ZerolessQuaternaryRandomAccessList" test_quaternary
   ]
 ;;

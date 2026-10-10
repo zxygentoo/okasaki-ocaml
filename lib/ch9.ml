@@ -1763,3 +1763,164 @@ module TrinomialHeap (E : ORDERED) : HEAP with module Element = E = struct
       merge (ps |> List.map (fun (a, b) -> Two (a, b)) |> List.rev) h')
   ;;
 end
+
+(* Exercise 9.18 Implement zeroless quaternary random-access lists using the type
+    datatype a Tree = LEAF of a | NODE of a Tree vector
+    datatype a RList = a Tree vector list
+  where each vector in a NODE contains four trees, and each vector in a list contains one
+  to four trees.
+ *)
+
+module ZerolessQuaternaryRandomAccessList : RANDOM_ACCESS_LIST = struct
+  type 'a tree =
+    | Leaf of 'a
+    | Node of 'a tree * 'a tree * 'a tree * 'a tree
+
+  type 'a digit =
+    | One of 'a tree
+    | Two of 'a tree * 'a tree
+    | Three of 'a tree * 'a tree * 'a tree
+    | Four of 'a tree * 'a tree * 'a tree * 'a tree
+
+  type 'a rlist = 'a digit list
+
+  let empty = []
+
+  let is_empty = function
+    | [] -> true
+    | _ -> false
+  ;;
+
+  let link a b c d = Node (a, b, c, d)
+
+  let rec carry = function
+    | One a :: One b :: xs -> Two (a, b) :: xs
+    | One a :: Two (b, c) :: xs -> Three (a, b, c) :: xs
+    | One a :: Three (b, c, d) :: xs -> Four (a, b, c, d) :: xs
+    | (One _ as x) :: Four (a, b, c, d) :: xs -> x :: carry (One (link a b c d) :: xs)
+    | xs -> xs
+  ;;
+
+  let rec borrow = function
+    | Four (Node (a, b, c, d), e, f, g) :: xs ->
+      Four (a, b, c, d) :: Three (e, f, g) :: xs
+    | Three (Node (a, b, c, d), e, f) :: xs -> Four (a, b, c, d) :: Two (e, f) :: xs
+    | Two (Node (a, b, c, d), e) :: xs -> Four (a, b, c, d) :: One e :: xs
+    | One (Node (a, b, c, d)) :: xs -> Four (a, b, c, d) :: borrow xs
+    | xs -> xs
+  ;;
+
+  let cons e xs = carry (One (Leaf e) :: xs)
+
+  let head = function
+    | [] -> raise (Failure "head: empty list")
+    | One (Leaf e) :: _ -> e
+    | Two (Leaf e, _) :: _ -> e
+    | Three (Leaf e, _, _) :: _ -> e
+    | Four (Leaf e, _, _, _) :: _ -> e
+    | _ -> assert false
+  ;;
+
+  let rec tail = function
+    | [] -> raise (Failure "tail: empty list")
+    | One (Leaf _) :: xs -> borrow xs
+    | Two (a, b) :: xs -> tail (One a :: One b :: xs)
+    | Three (a, b, c) :: xs -> tail (One a :: Two (b, c) :: xs)
+    | Four (a, b, c, d) :: xs -> tail (One a :: Three (b, c, d) :: xs)
+    | _ -> assert false
+  ;;
+
+  let rec lookup_tree w i = function
+    | Leaf e when i = 0 -> e
+    | Node (a, b, c, d) ->
+      let q = w / 4 in
+      (match i / q with
+       | 0 -> lookup_tree q i a
+       | 1 -> lookup_tree q (i mod q) b
+       | 2 -> lookup_tree q (i mod q) c
+       | 3 -> lookup_tree q (i mod q) d
+       | _ -> assert false)
+    | _ -> raise (Failure "lookup: not found")
+  ;;
+
+  let rec lookup_trees sz i ds =
+    match ds with
+    | One a :: xs ->
+      if i < sz then lookup_tree sz i a else lookup_trees (4 * sz) (i - sz) xs
+    | Two (a, b) :: xs ->
+      if i < sz
+      then lookup_tree sz i a
+      else if i < 2 * sz
+      then lookup_tree sz (i - sz) b
+      else lookup_trees (4 * sz) (i - (2 * sz)) xs
+    | Three (a, b, c) :: xs ->
+      if i < sz
+      then lookup_tree sz i a
+      else if i < 2 * sz
+      then lookup_tree sz (i - sz) b
+      else if i < 3 * sz
+      then lookup_tree sz (i - (2 * sz)) c
+      else lookup_trees (4 * sz) (i - (3 * sz)) xs
+    | Four (a, b, c, d) :: xs ->
+      if i < sz
+      then lookup_tree sz i a
+      else if i < 2 * sz
+      then lookup_tree sz (i - sz) b
+      else if i < 3 * sz
+      then lookup_tree sz (i - (2 * sz)) c
+      else if i < 4 * sz
+      then lookup_tree sz (i - (3 * sz)) d
+      else lookup_trees (4 * sz) (i - (4 * sz)) xs
+    | _ -> raise (Failure "lookup: not found")
+  ;;
+
+  let lookup i ds = lookup_trees 1 i ds
+
+  let rec update_tree w i e = function
+    | Leaf _ when i = 0 -> Leaf e
+    | Node (a, b, c, d) ->
+      let q = w / 4 in
+      (match i / q with
+       | 0 -> Node (update_tree q i e a, b, c, d)
+       | 1 -> Node (a, update_tree q (i mod q) e b, c, d)
+       | 2 -> Node (a, b, update_tree q (i mod q) e c, d)
+       | 3 -> Node (a, b, c, update_tree q (i mod q) e d)
+       | _ -> assert false)
+    | _ -> raise (Failure "update: not found")
+  ;;
+
+  let rec update_trees sz i e ds =
+    match ds with
+    | (One a as x) :: xs ->
+      if i < sz
+      then One (update_tree sz i e a) :: xs
+      else x :: update_trees (4 * sz) (i - sz) e xs
+    | (Two (a, b) as x) :: xs ->
+      if i < sz
+      then Two (update_tree sz i e a, b) :: xs
+      else if i < 2 * sz
+      then Two (a, update_tree sz (i - sz) e b) :: xs
+      else x :: update_trees (4 * sz) (i - (2 * sz)) e xs
+    | (Three (a, b, c) as x) :: xs ->
+      if i < sz
+      then Three (update_tree sz i e a, b, c) :: xs
+      else if i < 2 * sz
+      then Three (a, update_tree sz (i - sz) e b, c) :: xs
+      else if i < 3 * sz
+      then Three (a, b, update_tree sz (i - (2 * sz)) e c) :: xs
+      else x :: update_trees (4 * sz) (i - (3 * sz)) e xs
+    | (Four (a, b, c, d) as x) :: xs ->
+      if i < sz
+      then Four (update_tree sz i e a, b, c, d) :: xs
+      else if i < 2 * sz
+      then Four (a, update_tree sz (i - sz) e b, c, d) :: xs
+      else if i < 3 * sz
+      then Four (a, b, update_tree sz (i - (2 * sz)) e c, d) :: xs
+      else if i < 4 * sz
+      then Four (a, b, c, update_tree sz (i - (3 * sz)) e d) :: xs
+      else x :: update_trees (4 * sz) (i - (4 * sz)) e xs
+    | _ -> raise (Failure "update: not found")
+  ;;
+
+  let update i e ds = update_trees 1 i e ds
+end
