@@ -1924,3 +1924,89 @@ module ZerolessQuaternaryRandomAccessList : RANDOM_ACCESS_LIST = struct
 
   let update i e ds = update_trees 1 i e ds
 end
+
+(* Exercise 9.19 We can also adapt the notion of skew binary numbers to arbitrary bases. 
+  In skew k-ary numbers, the ith digithas weight (k^(t+1) - l)/(k -1).
+  Each digit is chosen from {0,..., k — 1} except that the lowest non-zero digit may be k.
+  Implement skew trinary random-access lists using the type
+    datatype a Tree = LEAF of a | NODE of a x a Tree x a Tree x a Tree
+    type a RList = (int x a Tree) list
+*)
+
+module SkewTrinaryRandomAccessList : RANDOM_ACCESS_LIST = struct
+  type 'a tree =
+    | Leaf of 'a
+    | Node of 'a * 'a tree * 'a tree * 'a tree
+
+  type 'a rlist = (int * 'a tree) list
+
+  let empty = []
+
+  let is_empty = function
+    | [] -> true
+    | _ -> false
+  ;;
+
+  let cons x = function
+    | (w1, t1) :: (w2, t2) :: (w3, t3) :: ts' as ts ->
+      if w1 = w2 && w2 = w3
+      then (1 + w1 + w2 + w3, Node (x, t1, t2, t3)) :: ts'
+      else (1, Leaf x) :: ts
+    | ts -> (1, Leaf x) :: ts
+  ;;
+
+  let head = function
+    | [] -> raise (Failure "head: empty list")
+    | (1, Leaf e) :: _ -> e
+    | (_, Node (e, _, _, _)) :: _ -> e
+    | _ -> assert false
+  ;;
+
+  let tail = function
+    | [] -> raise (Failure "tail: empty list")
+    | (1, Leaf _) :: ts -> ts
+    | (w, Node (_, t1, t2, t3)) :: ts -> (w / 3, t1) :: (w / 3, t2) :: (w / 3, t3) :: ts
+    | _ -> assert false
+  ;;
+
+  let rec lookup_tree w i xs =
+    match w, i, xs with
+    | 1, 0, Leaf x -> x
+    | 1, _, Leaf _ -> raise (Failure "lookup: not found")
+    | _, 0, Node (e, _, _, _) -> e
+    | w, i, Node (_, t1, t2, t3) ->
+      let p = w / 3 in
+      if i <= p
+      then lookup_tree p (i - 1) t1
+      else if i <= 2 * p
+      then lookup_tree p (i - 1 - p) t2
+      else lookup_tree p (i - 1 - (2 * p)) t3
+    | _ -> assert false
+  ;;
+
+  let rec lookup i = function
+    | [] -> raise (Failure "lookup: not found")
+    | (w, t) :: ts -> if i < w then lookup_tree w i t else lookup (i - w) ts
+  ;;
+
+  let rec update_tree w i x xs =
+    match w, i, x, xs with
+    | 1, 0, y, Leaf _ -> Leaf y
+    | 1, _, _, Leaf _ -> raise (Failure "update: not found")
+    | _, 0, y, Node (_, t1, t2, t3) -> Node (y, t1, t2, t3)
+    | w, i, y, Node (x, t1, t2, t3) ->
+      let p = w / 3 in
+      if i <= p
+      then Node (x, update_tree p (i - 1) y t1, t2, t3)
+      else if i <= 2 * p
+      then Node (x, t1, update_tree p (i - 1 - p) y t2, t3)
+      else Node (x, t1, t2, update_tree p (i - 1 - (2 * p)) y t3)
+    | _ -> assert false
+  ;;
+
+  let rec update i y = function
+    | [] -> raise (Failure "update: not found")
+    | (w, t) :: ts ->
+      if i < w then (w, update_tree w i y t) :: ts else (w, t) :: update (i - w) y ts
+  ;;
+end

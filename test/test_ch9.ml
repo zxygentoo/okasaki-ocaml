@@ -7,9 +7,9 @@
    list over them of Exercise 9.13, the skew binary random-access list of Figure 9.7, the
    Hood-Melville queue over it of Exercise 9.14, the skew binomial heap of Figure 9.8
    (section 9.3), the heap with delete of Exercise 9.16 over it, the trinomial heap of
-   Exercise 9.17 and the zeroless quaternary random-access list of Exercise 9.18, each
-   with its own preamble further down. Alcotest cases written in the checks of harness.ml, as in the
-   earlier chapters.
+   Exercise 9.17, the zeroless quaternary random-access list of Exercise 9.18 and the
+   skew trinary one of Exercise 9.19, each with its own preamble further down. Alcotest
+   cases written in the checks of harness.ml, as in the earlier chapters.
 
    Section 9.2.1 builds a list out of a binary number. A list of n elements holds one
    complete binary leaf tree for every one in the binary representation of n, in
@@ -3675,11 +3675,10 @@ module Skew = Rlist_tests (SkewBinaryRandomAccessList)
 
 (* update at every index of a list of n: each on the clock against the smaller of the
    per-digit budget and a constant per element of the index. The dearest against its own
-   budget is what is reported. *)
-let test_skew_update_by_index name n =
-  let module R = SkewBinaryRandomAccessList in
+   budget is what is reported. Shared with the skew trinary list of Exercise 9.19. *)
+let test_update_by_index (module R : RANDOM_ACCESS_LIST) name n =
   let index_budget i = Float.min (budget n) (per_digit *. float_of_int (i + 1)) in
-  let full = Skew.of_list (upto n) in
+  let full = List.fold_right R.cons (upto n) R.empty in
   let worst = ref (0.0, 0, 0.0) in
   for i = 0 to n - 1 do
     let r', c = cost (fun () -> R.update i 0 full) in
@@ -3705,15 +3704,18 @@ module Skew_growth = Lookup_growth (SkewBinaryRandomAccessList)
 (* 2^20 - 21 = 1 + 3 + 7 + ... + (2^19 - 1): nineteen trees. *)
 let skew_all_ones = (1 lsl 20) - 21
 
-let test_skew_lookup_stopwatch name =
-  let r = Skew_growth.ratio ~large:skew_all_ones () in
+(* lookup 0 at [large] elements, a list of [trees] trees, against a list of eight, by the
+   stopwatch of [ratio]. Shared with the skew trinary list of Exercise 9.19. *)
+let test_skew_lookup_stopwatch name ~large ~trees (ratio : ?large:int -> unit -> float) =
+  let r = ratio ~large () in
   check
     (Printf.sprintf
-       "%s: lookup 0 takes %.1f times as long at %d elements, nineteen trees, as at 8, \
-        limit %.1f"
+       "%s: lookup 0 takes %.1f times as long at %d elements, %s trees, as at 8, limit \
+        %.1f"
        name
        r
-       skew_all_ones
+       large
+       trees
        lookup_growth_limit)
     (r <= lookup_growth_limit)
 ;;
@@ -3722,9 +3724,9 @@ let test_skew () =
   let name = "SkewBinaryRandomAccessList" in
   Skew.run_contract name;
   Skew.run_costs ~stack:(fun _ -> per_digit) name;
-  test_skew_update_by_index name 1_000;
-  test_skew_update_by_index name 100_000;
-  test_skew_lookup_stopwatch name
+  test_update_by_index (module SkewBinaryRandomAccessList) name 1_000;
+  test_update_by_index (module SkewBinaryRandomAccessList) name 100_000;
+  test_skew_lookup_stopwatch name ~large:skew_all_ones ~trees:"nineteen" Skew_growth.ratio
 ;;
 
 (* ---------------------------------- SkewHoodMelvilleQueue (Exercise 9.14) *)
@@ -4916,6 +4918,47 @@ let test_quaternary () =
   test_head_at (module ZerolessQuaternaryRandomAccessList) name 100_000
 ;;
 
+(* ------------------------------- SkewTrinaryRandomAccessList (Exercise 9.19) *)
+
+(* Exercise 9.19 takes skew binary to base 3: "In skew k-ary numbers, the i-th digit has
+   weight (k^(i+1) - 1)/(k - 1). Each digit is chosen from {0, ..., k - 1} except that the
+   lowest non-zero digit may be k", over the type LEAF of a | NODE of a x Tree x Tree x
+   Tree and a list of (int x Tree). Digit i weighs (3^(i+1) - 1)/2, which is 1, 4, 13,
+   40, the size of a complete ternary tree with an element at every node; a tree per unit
+   of each digit, smallest first, each with its weight beside it. It is Figure 9.7 with
+   every 2 made a 3: cons links the first THREE trees under the new element when their
+   weights agree, a 3 in the lowest non-zero digit carrying into the digit above, else a
+   leaf goes in front; tail hands the root's three children back, (w - 1)/3 each; lookup
+   and update find the tree by the weights and the element by the root and three ranges
+   of (w - 1)/3. One thing is not in the code: a 2 is now an ordinary digit, so two trees
+   of one weight may sit anywhere in the list, and only three are confined to the front.
+   Costs are those of section 9.3.1: cons, head and tail O(1) worst-case, lookup and
+   update O(log n), O(min (i, log n)) in fact.
+
+   The contract and the clocks are those of Figure 9.7, unchanged, including update
+   against its index and the stopwatch on lookup 0, whose large list is again the one with
+   the most trees: twelve twos, 2 (1 + 4 + ... + 265720) = 797148 elements in 24 trees,
+   where 2^20 is two trees and a leaf. *)
+
+module Skew_trinary = Rlist_tests (SkewTrinaryRandomAccessList)
+module Skew_trinary_growth = Lookup_growth (SkewTrinaryRandomAccessList)
+
+(* 2 (1 + 4 + 13 + ... + (3^12 - 1)/2): twenty-four trees. *)
+let skew_trinary_all_twos = 797148
+
+let test_skew_trinary () =
+  let name = "SkewTrinaryRandomAccessList" in
+  Skew_trinary.run_contract name;
+  Skew_trinary.run_costs ~stack:(fun _ -> per_digit) name;
+  test_update_by_index (module SkewTrinaryRandomAccessList) name 1_000;
+  test_update_by_index (module SkewTrinaryRandomAccessList) name 100_000;
+  test_skew_lookup_stopwatch
+    name
+    ~large:skew_trinary_all_twos
+    ~trees:"twenty-four"
+    Skew_trinary_growth.ratio
+;;
+
 (* -------------------------------------------------------------------- cases *)
 
 let tests =
@@ -4941,5 +4984,6 @@ let tests =
   ; case "[Exercise 9.16] HeapWithDelete" test_heap_with_delete
   ; case "[Exercise 9.17] TrinomialHeap" test_trinomial_heap
   ; case "[Exercise 9.18] ZerolessQuaternaryRandomAccessList" test_quaternary
+  ; case "[Exercise 9.19] SkewTrinaryRandomAccessList" test_skew_trinary
   ]
 ;;
