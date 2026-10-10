@@ -826,7 +826,7 @@ end
 module SegmentedBinomialHeap (E : ORDERED) : HEAP with module Element = E = struct
   module Element = E
 
-  type tree = Node of E.t * tree list
+  type tree = Node of Element.t * tree list
 
   type digit =
     | Zero
@@ -1660,4 +1660,106 @@ module HeapWithDelete (E : ORDERED) (H : HEAP with module Element = E) :
   let merge (pos1, neg1) (pos2, neg2) = check (H.merge pos1 pos2, H.merge neg1 neg2)
   let find_min (pos, _) = H.find_min pos
   let delete_min (pos, neg) = check (H.delete_min pos, neg)
+end
+
+(* Exercise 9.17 Implement trinomial heaps using the type
+    datatype Tree = NODE of Elem.T x (Tree x Tree) list
+    datatype Digit = ZERO | ONE of Tree | Two of Tree x Tree 
+    type Heap = Digit list
+*)
+
+module TrinomialHeap (E : ORDERED) : HEAP with module Element = E = struct
+  module Element = E
+
+  type tree = Node of Element.t * (tree * tree) list
+
+  type digit =
+    | Zero
+    | One of tree
+    | Two of tree * tree
+
+  type heap = digit list
+
+  let empty = []
+
+  let is_empty = function
+    | [] -> true
+    | _ -> false
+  ;;
+
+  let link (Node (e1, _) as t1) (Node (e2, _) as t2) (Node (e3, _) as t3) =
+    let Node (e, xs), b, c =
+      if Element.leq e1 e2
+      then t1, t2, t3
+      else if Element.leq e1 e3
+      then t2, t1, t3
+      else t2, t3, t1
+    in
+    Node (e, (b, c) :: xs)
+  ;;
+
+  let root (Node (e, _)) = e
+
+  let rec insert_tree t ds =
+    match ds with
+    | [] -> [ One t ]
+    | Zero :: ds -> One t :: ds
+    | One (Node (a, _) as t1) :: ds ->
+      (if Element.leq (root t) a then Two (t, t1) else Two (t1, t)) :: ds
+    | Two (a, b) :: ds -> Zero :: insert_tree (link t a b) ds
+  ;;
+
+  let insert e ds = insert_tree (Node (e, [])) ds
+
+  let rec merge h1 h2 =
+    match h1, h2 with
+    | _, [] -> h1
+    | [], _ -> h2
+    | Zero :: xs, a :: ys | a :: xs, Zero :: ys -> a :: merge xs ys
+    | One (Node (e1, _) as a) :: xs, One (Node (e2, _) as b) :: ys ->
+      (if Element.leq e1 e2 then Two (a, b) else Two (b, a)) :: merge xs ys
+    | One a :: xs, Two (b, c) :: ys | Two (b, c) :: xs, One a :: ys ->
+      Zero :: insert_tree (link a b c) (merge xs ys)
+    | Two (a, b) :: xs, Two (c, d) :: ys ->
+      One a :: insert_tree (link b c d) (merge xs ys)
+  ;;
+
+  let smaller a b = if Element.leq a b then a else b
+
+  let rec find_min = function
+    | [] -> raise (Failure "find_min: empty heap")
+    | [ One a ] -> root a
+    | [ Two (a, b) ] -> smaller (root a) (root b)
+    | Zero :: ds -> find_min ds
+    | One a :: ds -> smaller (root a) (find_min ds)
+    | Two (a, _) :: ds -> smaller (root a) (find_min ds)
+  ;;
+
+  let add_zero = function
+    | [] -> []
+    | ds -> Zero :: ds
+  ;;
+
+  let rec remove_min_tree = function
+    | [] -> assert false
+    | [ One a ] -> a, []
+    | [ Two (a, b) ] -> a, [ One b ]
+    | Zero :: ds ->
+      let t, h' = remove_min_tree ds in
+      t, add_zero h'
+    | One a :: ds ->
+      let t, ds' = remove_min_tree ds in
+      if Element.leq (root a) (root t) then a, add_zero ds else t, One a :: ds'
+    | (Two (a, b) as t) :: ds ->
+      let t', ds' = remove_min_tree ds in
+      if Element.leq (root a) (root t') then a, One b :: ds else t', t :: ds'
+  ;;
+
+  let delete_min h =
+    if is_empty h
+    then raise (Failure "delete_min: empty heap")
+    else (
+      let Node (_, ps), h' = remove_min_tree h in
+      merge (ps |> List.map (fun (a, b) -> Two (a, b)) |> List.rev) h')
+  ;;
 end

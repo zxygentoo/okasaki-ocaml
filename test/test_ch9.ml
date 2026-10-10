@@ -6,8 +6,8 @@
    9.11, the segmented numbers with digits 0 to 4 of Exercise 9.12, the random-access
    list over them of Exercise 9.13, the skew binary random-access list of Figure 9.7, the
    Hood-Melville queue over it of Exercise 9.14, the skew binomial heap of Figure 9.8
-   (section 9.3) and the heap with delete of Exercise 9.16 over it, each with its own
-   preamble further down. Alcotest cases written in the checks of harness.ml, as in the
+   (section 9.3), the heap with delete of Exercise 9.16 over it and the trinomial heap of
+   Exercise 9.17, each with its own preamble further down. Alcotest cases written in the checks of harness.ml, as in the
    earlier chapters.
 
    Section 9.2.1 builds a list out of a binary number. A list of n elements holds one
@@ -2695,11 +2695,12 @@ let test_sh_shape () =
 
 (* ------------------------------------------- every operation on its own clock *)
 
-(* The budgets a heap's operations are held to: for an insert two constants, for a query
-   (find_min, merge, delete_min) two functions of L = log2 (n + 1). *)
+(* The budgets a heap's operations are held to, for an insert and for a query (find_min,
+   merge, delete_min), comparisons and words, each a function of L = log2 (n + 1); the
+   heaps whose insert is O(1) give it constants. *)
 module type HEAP_BUDGETS = sig
-  val insert_comparisons : float
-  val insert_words : float
+  val insert_comparisons : float -> float
+  val insert_words : float -> float
   val query_comparisons : float -> float
   val query_words : float -> float
 end
@@ -2712,12 +2713,11 @@ module Heap_clocks (H : HEAP with type Element.t = int) (B : HEAP_BUDGETS) = str
   (* The dearest operation of a run, as a fraction of its budget: within its bound when the
      fraction is at most one. *)
   let dearer (ratio, what) ~at ~op ~size (c, w) =
+    let l = log2 (size + 1) in
     let cb, wb =
       if op = "insert"
-      then B.insert_comparisons, B.insert_words
-      else (
-        let l = log2 (size + 1) in
-        B.query_comparisons l, B.query_words l)
+      then B.insert_comparisons l, B.insert_words l
+      else B.query_comparisons l, B.query_words l
     in
     let r = Float.max (c /. cb) (w /. wb) in
     if r > ratio
@@ -2895,8 +2895,8 @@ module SH_clocks =
   Heap_clocks
     (SH)
     (struct
-      let insert_comparisons = 1.0
-      let insert_words = flat_budget
+      let insert_comparisons _ = 1.0
+      let insert_words _ = flat_budget
       let query_comparisons l = (6. *. l) +. 6.
       let query_words l = (160. *. l) +. 160.
     end)
@@ -4032,8 +4032,8 @@ module Skew_heap_clocks =
   Heap_clocks
     (SBH)
     (struct
-      let insert_comparisons = 2.0
-      let insert_words = flat_budget
+      let insert_comparisons _ = 2.0
+      let insert_words _ = flat_budget
       let query_comparisons l = (6. *. l) +. 6.
       let query_words l = (60. *. l) +. 60.
     end)
@@ -4180,8 +4180,8 @@ module Delete_base_clocks =
   Heap_clocks
     (DH)
     (struct
-      let insert_comparisons = 2.0
-      let insert_words = flat_budget
+      let insert_comparisons _ = 2.0
+      let insert_words _ = flat_budget
       let query_comparisons l = (6. *. l) +. 6.
       let query_words l = (60. *. l) +. 60.
     end)
@@ -4698,6 +4698,186 @@ let test_heap_with_delete () =
   test_delete_cascade name 100_000
 ;;
 
+(* ------------------------------------------------ TrinomialHeap (Exercise 9.17) *)
+
+(* Exercise 9.17 asks for trinomial heaps over the type NODE of Elem.T x (Tree x Tree)
+   list, the digits ZERO, ONE of Tree and TWO of Tree x Tree, and a heap a Digit list.
+   Definition 9.5: a k-nomial tree of rank r is a node with k - 1 children of each rank from
+   r - 1 to 0, so a trinomial tree has two of each, a pair per rank, and holds 3^r nodes. A
+   link takes three trees of one rank and makes one of the next, the smallest root on top
+   and the other two its new first pair. insert is the trinary increment, a link for each
+   carry; merge is trinary addition; delete_min takes the smallest root out of its digit
+   and merges the pairs it leaves, one TWO per rank, back in. The book states no cost for
+   the exercise beyond p.139: a number in base k has about log_k n digits and "processing a
+   digit in base k often takes about k + 1 steps", so an operation that processes every
+   digit is O(log n), and here every one does, insert included, since its carry can run
+   through every digit as the insert of section 3.2 can.
+
+   The contract and the clocks are those of Exercise 9.11, through their functors. The
+   budgets are all in L = log2 (n + 1), insert's too: an insert gets 3L + 3 comparisons and
+   24L + 24 words, the queries 6L + 6 and 48L + 48, twice and more what the dearest spends.
+   The dearest insert is into the all-twos heap of 3^k - 1 elements, with an element that
+   loses every link, two comparisons a link; a delete_min on a random heap of 100 000
+   spends 37 comparisons and 400 words.
+
+   The shape is read through comparisons again, two counts this time. find_min compares the
+   first root of each non-zero digit with the minimum of the rest, one comparison per
+   non-zero digit but the last, and the two roots of a last TWO, one more. The insert of a
+   new minimum links once per TWO it carries through, each link one comparison, which the
+   new minimum wins (the pair it meets is in order already, and link relies on that), and
+   one more when the digit it lands on is a ONE. After n inserts from empty the digits are
+   those of n in trinary, after a merge those of the sum, after a delete_min those of the
+   size less one, so both counts are known at every size, and a tree at the wrong rank,
+   which a sorted drain cannot see, puts the digits off within a few operations. *)
+
+module TH = TrinomialHeap (Counting_int)
+module TK = TrinomialHeap (Keyed)
+module Trinomial_contract = Heap_contract (TH) (TK)
+
+module Trinomial_clocks =
+  Heap_clocks
+    (TH)
+    (struct
+      let insert_comparisons l = (3. *. l) +. 3.
+      let insert_words l = per_digit *. (l +. 1.)
+      let query_comparisons l = (6. *. l) +. 6.
+      let query_words l = flat_budget *. (l +. 1.)
+    end)
+
+(* The digits of n in trinary, lowest first. *)
+let rec trinary n = if n = 0 then [] else (n mod 3) :: trinary (n / 3)
+let rec pow3 k = if k = 0 then 1 else 3 * pow3 (k - 1)
+
+(* What the two probes spend on the heap with the digits [ds]: find_min one comparison per
+   non-zero digit but the last, and one more when the last is a 2; the insert of a new
+   minimum one per 2 it carries through, and one more when it lands on a 1. *)
+let find_min_count ds =
+  let nonzero = List.length (List.filter (( <> ) 0) ds) in
+  match List.rev ds with
+  | 2 :: _ -> nonzero
+  | _ -> max 0 (nonzero - 1)
+;;
+
+let insert_min_count ds =
+  let rec go = function
+    | 2 :: rest -> 1 + go rest
+    | 1 :: _ -> 1
+    | _ -> 0
+  in
+  go ds
+;;
+
+(* The two counts read off [h], whose elements are all at least 0. *)
+let th_counts h =
+  ( (if TH.is_empty h then 0 else count_only (fun () -> TH.find_min h))
+  , count_only (fun () -> TH.insert (-1) h) )
+;;
+
+let test_trinomial_shape () =
+  let t label = "TrinomialHeap, shape: " ^ label in
+  let digits_of note what size h =
+    let got = th_counts h
+    and want = find_min_count (trinary size), insert_min_count (trinary size) in
+    if got <> want
+    then
+      note
+        (Printf.sprintf
+           "%s, %d elements: find_min %d comparisons and the insert of a minimum %d, \
+            want %d and %d"
+           what
+           size
+           (fst got)
+           (snd got)
+           (fst want)
+           (snd want))
+  in
+  all_of
+    (t
+       "after n inserts from empty, the digits of n in trinary, n up to 3^7, and of \
+        every size on the way back down")
+    (fun note ->
+       let n = pow3 7 in
+       let h = ref TH.empty in
+       for i = 1 to n do
+         h := TH.insert i !h;
+         digits_of note (Printf.sprintf "%d inserts" i) i !h
+       done;
+       for i = n downto 1 do
+         h := TH.delete_min !h;
+         digits_of
+           note
+           (Printf.sprintf "%d inserts, %d delete_mins" n (n - i + 1))
+           (i - 1)
+           !h
+       done);
+  all_of
+    (t
+       "after the merge of the heaps of a and b inserts, a and b up to 40, those of a + b")
+    (fun note ->
+       let heaps = Array.init 41 (fun n -> Trinomial_contract.of_list (upto n)) in
+       for a = 0 to 40 do
+         for b = 0 to 40 do
+           digits_of
+             note
+             (Printf.sprintf "the merge of %d and %d" a b)
+             (a + b)
+             (TH.merge heaps.(a) heaps.(b))
+         done
+       done);
+  all_of
+    (t
+       "those of its size at every version of a random trace of 6000 inserts, merges and \
+        delete_mins")
+    (fun note ->
+       Random.init 20261010;
+       let n = 6_000 in
+       let v = Array.make (n + 1) TH.empty
+       and size = Array.make (n + 1) 0 in
+       for i = 1 to n do
+         let p = Random.int i
+         and q = Random.int i in
+         (match Random.int 4 with
+          | 2 when size.(p) + size.(q) <= 1 lsl 20 ->
+            v.(i) <- TH.merge v.(p) v.(q);
+            size.(i) <- size.(p) + size.(q)
+          | 3 when size.(p) > 0 ->
+            v.(i) <- TH.delete_min v.(p);
+            size.(i) <- size.(p) - 1
+          | _ ->
+            v.(i) <- TH.insert i v.(p);
+            size.(i) <- size.(p) + 1);
+         digits_of note (Printf.sprintf "version %d" i) size.(i) v.(i)
+       done)
+;;
+
+(* The all-twos heap of 3^k - 1 elements, where an insert carries through every digit, k
+   links, and an element above all the others loses each of them. *)
+let test_trinomial_all_twos name =
+  let d = ref (0.0, "nothing") in
+  for k = 1 to 11 do
+    let n = pow3 k - 1 in
+    let h = Trinomial_contract.of_list (upto n) in
+    let _, cw = spent (fun () -> TH.insert n h) in
+    d := Trinomial_clocks.dearer !d ~at:k ~op:"insert" ~size:n cw
+  done;
+  Trinomial_clocks.within
+    (name ^ ": insert into the all-twos heap of 3^k - 1 elements, k = 1..11")
+    !d
+;;
+
+(* What it returns, then its shape, then its costs, the large size only after the small. *)
+let test_trinomial_heap () =
+  let name = "TrinomialHeap" in
+  Trinomial_contract.run name;
+  test_trinomial_shape ();
+  test_trinomial_all_twos name;
+  Trinomial_clocks.test_sequences name 1_000;
+  Trinomial_clocks.test_sequences name 100_000;
+  Trinomial_clocks.test_merges name 1_000;
+  Trinomial_clocks.test_merges name 100_000;
+  Trinomial_clocks.test_versions name
+;;
+
 (* -------------------------------------------------------------------- cases *)
 
 let tests =
@@ -4721,5 +4901,6 @@ let tests =
   ; case "[Exercise 9.14] SkewHoodMelvilleQueue" test_skew_queue
   ; case "[Figure 9.8] SkewBinomialHeap" test_skew_heap
   ; case "[Exercise 9.16] HeapWithDelete" test_heap_with_delete
+  ; case "[Exercise 9.17] TrinomialHeap" test_trinomial_heap
   ]
 ;;
