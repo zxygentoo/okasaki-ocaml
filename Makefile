@@ -29,3 +29,6 @@ test-ch8:
 
 test-ch9:
 	dune exec test/main.exe -- test ch9
+
+test-ch10:
+	dune exec test/main.exe -- test ch10

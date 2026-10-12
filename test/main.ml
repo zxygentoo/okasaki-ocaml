@@ -27,6 +27,7 @@ let chapters =
   ; "ch7", Test_ch7.tests
   ; "ch8", Test_ch8.tests
   ; "ch9", Test_ch9.tests
+  ; "ch10", Test_ch10.tests
   ]
 ;;
 
