@@ -1,6 +1,6 @@
-(* Tests for Chapter 10: the binary random-access list of Figure 10.1 (section 10.1.2),
-   with its own preamble below. Alcotest cases written in the checks of harness.ml, as in
-   the earlier chapters. *)
+(* Tests for Chapter 10: the binary random-access list of Figure 10.1 (section 10.1.2)
+   and its lazy form of Exercise 10.2, each with its own preamble below. Alcotest cases
+   written in the checks of harness.ml, as in the earlier chapters. *)
 
 open Okasaki.Ch10
 open Harness
@@ -47,4 +47,88 @@ let test_alt () =
   Alt.run_costs "AltBinaryRandomAccessListFigure"
 ;;
 
-let tests = [ case "[Figure 10.1] AltBinaryRandomAccessListFigure" test_alt ]
+(* --------------------------------- AltBinaryRandomAccessList (Exercise 10.2) *)
+
+(* Exercise 10.2 asks for the list of Figure 10.1 with cons, head and tail in O(1)
+   amortised time, over a type whose digits are ONE, TWO and THREE of elements, each over
+   a suspended sequence of pairs. That is Exercise 9.9 over the nested type. A TWO is
+   safe, cons and tail both stop at it; a ONE is dangerous for tail and a THREE for cons;
+   and the recursive case of each leaves a TWO behind with the level above it suspended,
+   where 9.9 suspended the stream, so that section 9.2.3's debit invariant, one debit on a
+   TWO and none on a ONE or a THREE, is the proof again. What the type adds is on the way
+   down: a THREE's carry pushes a pair up, and a ONE's borrow has to fetch one. The pair
+   is the head of the level above, strict in every digit, and the rest of that level is
+   what the suspension in the new TWO holds, so a chain of ONEs is walked one level per
+   tail, each walk memoised in the version that did it and never done twice for one
+   version. lookup and update are Figure 10.1's, forcing each level as they pass it, and
+   update strict, so that it refuses an index past the end at the call and leaves no work
+   for a later tail to pay; the exercise asks nothing of them, and they are O(log n)
+   amortised.
+
+   The behaviour is Contract's, lookup, update and persistence included, and Lite's, the
+   two ways of reaching a size and the back and forth over it. The clock for cons, head
+   and tail is Lite's amortised one, the same sequences and the same budget as 9.9.
+   Measured, the dearest means are some 34 words, a build with its drain and the tails of
+   the all-ONEs version, at both sizes. No single operation is held to anything: the
+   drain's second tail pays every carry the build put off, six hundred thousand words at 3
+   (2^17 - 1), and that is the bound at work. lookup and update have a clock of their own
+   below, a mean too, since the first lookup to reach a level pays the carries pending
+   there: lookup at every index of a built list, against the per-digit budget, measured
+   some 5 words a level; and update at every index of that one version, each read back by
+   a lookup at its index, against two digits' worth, since an update over this type builds
+   at every level a digit, the closure that carries f up and the suspension it hands on,
+   and with the lookup that reads it comes to some 21 words a level. *)
+
+module Alt_lazy = Contract (AltBinaryRandomAccessList)
+module Alt_lazy_stack = Lite (AltBinaryRandomAccessList)
+
+(* Two digits' worth a level: an update and the lookup that reads it back. *)
+let lazy_update_budget n = 2.0 *. budget n
+
+let test_alt_lazy_index_costs name n =
+  let module R = AltBinaryRandomAccessList in
+  let t label = Printf.sprintf "%s: %s" name label in
+  let within limit label c =
+    check
+      (t
+         (Printf.sprintf
+            "%s, %.1f words an operation, n=%d, budget %.0f"
+            label
+            c
+            n
+            (limit n)))
+      (c <= limit n)
+  in
+  let full = List.fold_right R.cons (upto n) R.empty in
+  within
+    budget
+    "lookup at every index of a built list"
+    (Alt_lazy_stack.mean (fun () ->
+       for i = 0 to n - 1 do
+         ignore (Sys.opaque_identity (R.lookup i full))
+       done;
+       n));
+  within
+    lazy_update_budget
+    "update at every index of that one version, each read back by a lookup"
+    (Alt_lazy_stack.mean (fun () ->
+       for i = 0 to n - 1 do
+         ignore (Sys.opaque_identity (R.lookup i (R.update i 0 full)))
+       done;
+       n))
+;;
+
+let test_alt_lazy () =
+  let name = "AltBinaryRandomAccessList" in
+  Alt_lazy.run_contract name;
+  Alt_lazy_stack.run_contract name;
+  Alt_lazy_stack.run_costs name;
+  test_alt_lazy_index_costs name 1_000;
+  test_alt_lazy_index_costs name 100_000
+;;
+
+let tests =
+  [ case "[Figure 10.1] AltBinaryRandomAccessListFigure" test_alt
+  ; case "[Exercise 10.2] AltBinaryRandomAccessList" test_alt_lazy
+  ]
+;;
