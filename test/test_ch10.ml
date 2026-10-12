@@ -128,7 +128,7 @@ let test_alt_lazy () =
   test_alt_lazy_index_costs name 100_000
 ;;
 
-(* ------------------------------------------- BootstrappedQueue (Figure 10.2) *)
+(* ------------------------------------- BootstrappedQueueFigure (Figure 10.2) *)
 
 (* Section 10.1.3 takes the banker's queue of Figure 6.1 apart. Its front stream was f ++
    reverse r1 ++ ... ++ reverse rk, appended left to right, so the elements of f were
@@ -167,10 +167,10 @@ let bootstrapped_words =
   }
 ;;
 
-module Bootstrapped = Queues.Amortised (BootstrappedQueue)
+module Bootstrapped = Queues.Amortised (BootstrappedQueueFigure)
 
 let test_bootstrapped_head () =
-  let module Q = BootstrappedQueue in
+  let module Q = BootstrappedQueueFigure in
   let n = 100_000 in
   let v = Array.make (2 * n) Q.empty in
   for i = 1 to n do
@@ -189,8 +189,8 @@ let test_bootstrapped_head () =
   ignore (Sys.opaque_identity !sum);
   check
     (Printf.sprintf
-       "BootstrappedQueue: head allocates nothing at any version of a build of %d and \
-        its drain, dearest #%d at %.0f words"
+       "BootstrappedQueueFigure: head allocates nothing at any version of a build of %d \
+        and its drain, dearest #%d at %.0f words"
        n
        (fst !dear)
        (snd !dear))
@@ -198,7 +198,7 @@ let test_bootstrapped_head () =
 ;;
 
 let test_bootstrapped () =
-  let name = "BootstrappedQueue" in
+  let name = "BootstrappedQueueFigure" in
   Bootstrapped.run_contract name;
   Bootstrapped.run_sequences bootstrapped_words name;
   test_bootstrapped_head ();
@@ -208,6 +208,6 @@ let test_bootstrapped () =
 let tests =
   [ case "[Figure 10.1] AltBinaryRandomAccessListFigure" test_alt
   ; case "[Exercise 10.2] AltBinaryRandomAccessList" test_alt_lazy
-  ; case "[Figure 10.2] BootstrappedQueue" test_bootstrapped
+  ; case "[Figure 10.2] BootstrappedQueueFigure" test_bootstrapped
   ]
 ;;

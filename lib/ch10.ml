@@ -201,8 +201,6 @@ module AltBinaryRandomAccessList : RANDOM_ACCESS_LIST = struct
   let update i e xs = fupdate (fun _ -> e) i xs
 end
 
-(* Figure 10.2 *)
-
 module type QUEUE = sig
   type 'a queue
 
@@ -213,7 +211,9 @@ module type QUEUE = sig
   val tail : 'a queue -> 'a queue
 end
 
-module BootstrappedQueue : QUEUE = struct
+(* Figure 10.2 *)
+
+module BootstrappedQueueFigure : QUEUE = struct
   type 'a queue =
     | E
     | Q of int * 'a list * 'a list lazy_t queue * int * 'a list
