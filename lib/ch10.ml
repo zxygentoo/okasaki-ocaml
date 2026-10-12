@@ -200,3 +200,58 @@ module AltBinaryRandomAccessList : RANDOM_ACCESS_LIST = struct
 
   let update i e xs = fupdate (fun _ -> e) i xs
 end
+
+(* Figure 10.2 *)
+
+module type QUEUE = sig
+  type 'a queue
+
+  val empty : 'a queue
+  val is_empty : 'a queue -> bool
+  val snoc : 'a queue -> 'a -> 'a queue
+  val head : 'a queue -> 'a
+  val tail : 'a queue -> 'a queue
+end
+
+module BootstrappedQueue : QUEUE = struct
+  type 'a queue =
+    | E
+    | Q of int * 'a list * 'a list lazy_t queue * int * 'a list
+
+  let empty = E
+
+  let is_empty = function
+    | E -> true
+    | _ -> false
+  ;;
+
+  let rec checkq : 'a. int * 'a list * 'a list lazy_t queue * int * 'a list -> 'a queue =
+    fun ((lenfm, f, m, lenr, r) as q) ->
+    if lenr <= lenfm
+    then checkf q
+    else checkf (lenfm + lenr, f, snoc m (lazy (List.rev r)), 0, [])
+
+  and checkf : 'a. int * 'a list * 'a list lazy_t queue * int * 'a list -> 'a queue =
+    fun (lenfm, f, m, lenr, r) ->
+    match f, m with
+    | [], E -> E
+    | [], _ -> Q (lenfm, Lazy.force (head m), tail m, lenr, r)
+    | _ -> Q (lenfm, f, m, lenr, r)
+
+  and snoc : 'a. 'a queue -> 'a -> 'a queue =
+    fun q x ->
+    match q with
+    | E -> Q (1, [ x ], E, 0, [])
+    | Q (lenfm, f, m, lenr, r) -> checkq (lenfm, f, m, lenr + 1, x :: r)
+
+  and head : 'a. 'a queue -> 'a = function
+    | E -> raise (Failure "head: empty queue")
+    | Q (_, x :: _, _, _, _) -> x
+    | _ -> assert false
+
+  and tail : 'a. 'a queue -> 'a queue = function
+    | E -> raise (Failure "tail: empty queue")
+    | Q (lenfm, _ :: f', m, lenr, r) -> checkq (lenfm - 1, f', m, lenr, r)
+    | _ -> assert false
+  ;;
+end

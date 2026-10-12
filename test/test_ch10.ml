@@ -1,6 +1,7 @@
-(* Tests for Chapter 10: the binary random-access list of Figure 10.1 (section 10.1.2)
-   and its lazy form of Exercise 10.2, each with its own preamble below. Alcotest cases
-   written in the checks of harness.ml, as in the earlier chapters. *)
+(* Tests for Chapter 10: the binary random-access list of Figure 10.1 (section 10.1.2),
+   its lazy form of Exercise 10.2 and the bootstrapped queue of Figure 10.2 (section
+   10.1.3), each with its own preamble below. Alcotest cases written in the checks of
+   harness.ml, as in the earlier chapters. *)
 
 open Okasaki.Ch10
 open Harness
@@ -127,8 +128,86 @@ let test_alt_lazy () =
   test_alt_lazy_index_costs name 100_000
 ;;
 
+(* ------------------------------------------- BootstrappedQueue (Figure 10.2) *)
+
+(* Section 10.1.3 takes the banker's queue of Figure 6.1 apart. Its front stream was f ++
+   reverse r1 ++ ... ++ reverse rk, appended left to right, so the elements of f were
+   walked once by every ++; here f is a plain list, and the reversed rears are a queue of
+   suspended lists, m, in the order they will be wanted. A queue of queues: the first
+   decomposition in the chapter that nests the structure itself, ('a list susp) queue
+   inside 'a queue, and polymorphic recursion again. lenfm counts f and every list in m,
+   the invariant is lenr <= lenfm as in Chapter 6, and f is never empty in a Q, the empty
+   queue being its own constructor. checkQ suspends the reverse at the moment Figure 6.1
+   did and snocs it onto m; checkF forces the first of m when f runs out, one operation
+   before Figure 6.1 would have. p.150: the reverse costs what it cost there, O(1)
+   amortised; what is new is that snoc and tail recur into m, a level per nesting, and
+   since the lists in m at least double, each level is a logarithm smaller than the one
+   before and the depth is O(log* n), five levels needing 2^65536 elements -- "constant in
+   practice". The clock is Chapter 6's, moved to queues.ml for the purpose: the contract,
+   the sequences, and the traces over the branch points of a drain and of a build, since
+   the suspensions here are memoised as Figure 6.1's are and the chapter's argument leans
+   on it. The budget is not quite Chapter 6's. Its 48 words an operation was one level's
+   worth with room to spare; here a snoc or a tail recurs a level per nesting, the
+   recursion plain and so repeated by every future that takes it, and a queue of these
+   sizes is nested five deep. Measured, the dearest is a tail from version #126 of a
+   build, taken twenty times over, where f runs out at one level after another and each
+   moves on to the next list of its m: 102 words. A level's worth for each of the five
+   levels leaves room for that, and is nowhere near a reverse run on the spot, which is
+   thousands. The sequences come to some 15 words, a build with
+   its drain and two snocs to a tail, and under 14 on the drain repeated ten times from
+   one queue; the drain of 1000 runs its dearest reverse at tail #511, which is the guard
+   inside run_traces. head is O(1) worst-case on top, the first of a list f that is never
+   empty: it forces nothing and allocates nothing, and that is checked at every version of
+   a build and its drain. *)
+
+let bootstrapped_words =
+  { Queues.amortised_words with
+    claim = "amortised O(log* n)"
+  ; budget = (fun ops -> 5.0 *. Queues.constant *. float_of_int (Queues.total ops))
+  }
+;;
+
+module Bootstrapped = Queues.Amortised (BootstrappedQueue)
+
+let test_bootstrapped_head () =
+  let module Q = BootstrappedQueue in
+  let n = 100_000 in
+  let v = Array.make (2 * n) Q.empty in
+  for i = 1 to n do
+    v.(i) <- Q.snoc v.(i - 1) i
+  done;
+  for i = n + 1 to (2 * n) - 1 do
+    v.(i) <- Q.tail v.(i - 1)
+  done;
+  let dear = ref (0, 0.0)
+  and sum = ref 0 in
+  for i = 1 to (2 * n) - 1 do
+    let x, c = cost (fun () -> Q.head v.(i)) in
+    sum := !sum + x;
+    if c > snd !dear then dear := i, c
+  done;
+  ignore (Sys.opaque_identity !sum);
+  check
+    (Printf.sprintf
+       "BootstrappedQueue: head allocates nothing at any version of a build of %d and \
+        its drain, dearest #%d at %.0f words"
+       n
+       (fst !dear)
+       (snd !dear))
+    (snd !dear = 0.0)
+;;
+
+let test_bootstrapped () =
+  let name = "BootstrappedQueue" in
+  Bootstrapped.run_contract name;
+  Bootstrapped.run_sequences bootstrapped_words name;
+  test_bootstrapped_head ();
+  Bootstrapped.run_traces bootstrapped_words (name ^ ", persistently")
+;;
+
 let tests =
   [ case "[Figure 10.1] AltBinaryRandomAccessListFigure" test_alt
   ; case "[Exercise 10.2] AltBinaryRandomAccessList" test_alt_lazy
+  ; case "[Figure 10.2] BootstrappedQueue" test_bootstrapped
   ]
 ;;
