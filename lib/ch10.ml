@@ -225,7 +225,7 @@ module BootstrappedQueueFigure : QUEUE = struct
     | _ -> false
   ;;
 
-  let rec checkq : 'a. int * 'a list * 'a list lazy_t queue * int * 'a list -> 'a queue =
+  let rec check : 'a. int * 'a list * 'a list lazy_t queue * int * 'a list -> 'a queue =
     fun ((lenfm, f, m, lenr, r) as q) ->
     if lenr <= lenfm
     then checkf q
@@ -242,7 +242,7 @@ module BootstrappedQueueFigure : QUEUE = struct
     fun q x ->
     match q with
     | E -> Q (1, [ x ], E, 0, [])
-    | Q (lenfm, f, m, lenr, r) -> checkq (lenfm, f, m, lenr + 1, x :: r)
+    | Q (lenfm, f, m, lenr, r) -> check (lenfm, f, m, lenr + 1, x :: r)
 
   and head : 'a. 'a queue -> 'a = function
     | E -> raise (Failure "head: empty queue")
@@ -251,7 +251,68 @@ module BootstrappedQueueFigure : QUEUE = struct
 
   and tail : 'a. 'a queue -> 'a queue = function
     | E -> raise (Failure "tail: empty queue")
-    | Q (lenfm, _ :: f', m, lenr, r) -> checkq (lenfm - 1, f', m, lenr, r)
+    | Q (lenfm, _ :: f', m, lenr, r) -> check (lenfm - 1, f', m, lenr, r)
     | _ -> assert false
   ;;
+end
+
+(* Exercise 10.4 Implement these queues without polymorphic recursion using the types 
+  datatype a EL = ELEM of a | LIST of a EL list susp
+  datatype a Queue = E | Q of int x a EL list x a Queue x int x a EL list
+*)
+
+module BootstrappedQueueNoPolymorphicRecursion : QUEUE = struct
+  type 'a el =
+    | El of 'a
+    | L of 'a el list lazy_t
+
+  type 'a queue =
+    | E
+    | Q of int * 'a el list * 'a queue * int * 'a el list
+
+  let empty = E
+
+  let is_empty = function
+    | E -> true
+    | _ -> false
+  ;;
+
+  let head_el = function
+    | E -> raise (Failure "head: empty queue")
+    | Q (_, el :: _, _, _, _) -> el
+    | _ -> assert false
+  ;;
+
+  let head q =
+    match head_el q with
+    | El x -> x
+    | _ -> assert false
+  ;;
+
+  let rec check ((lenfm, f, m, lenr, r) as q) =
+    if lenr <= lenfm
+    then checkf q
+    else checkf (lenfm + lenr, f, snoc_el m (L (lazy (List.rev r))), 0, [])
+
+  and checkf (lenfm, f, m, lenr, r) =
+    match f, m with
+    | [], E -> E
+    | [], _ ->
+      (match head_el m with
+       | L (lazy xs) -> Q (lenfm, xs, tail m, lenr, r)
+       | _ -> assert false)
+    | _ -> Q (lenfm, f, m, lenr, r)
+
+  and tail = function
+    | E -> raise (Failure "tail: empty queue")
+    | Q (lenfm, _ :: f', m, lenr, r) -> check (lenfm - 1, f', m, lenr, r)
+    | _ -> assert false
+
+  and snoc_el q el =
+    match q with
+    | E -> Q (1, [ el ], E, 0, [])
+    | Q (lenfm, f, m, lenr, r) -> check (lenfm, f, m, lenr + 1, el :: r)
+  ;;
+
+  let snoc q x = snoc_el q (El x)
 end

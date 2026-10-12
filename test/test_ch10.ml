@@ -1,7 +1,8 @@
 (* Tests for Chapter 10: the binary random-access list of Figure 10.1 (section 10.1.2),
-   its lazy form of Exercise 10.2 and the bootstrapped queue of Figure 10.2 (section
-   10.1.3), each with its own preamble below. Alcotest cases written in the checks of
-   harness.ml, as in the earlier chapters. *)
+   its lazy form of Exercise 10.2, and the bootstrapped queue of Figure 10.2 (section
+   10.1.3) and its form without polymorphic recursion of Exercise 10.4, each with its own
+   preamble below. Alcotest cases written in the checks of harness.ml, as in the earlier
+   chapters. *)
 
 open Okasaki.Ch10
 open Harness
@@ -158,7 +159,8 @@ let test_alt_lazy () =
    one queue; the drain of 1000 runs its dearest reverse at tail #511, which is the guard
    inside run_traces. head is O(1) worst-case on top, the first of a list f that is never
    empty: it forces nothing and allocates nothing, and that is checked at every version of
-   a build and its drain. *)
+   a build and its drain. The checks are a functor, since Exercise 10.4 is the same queue
+   over another type and is held to the same ones. *)
 
 let bootstrapped_words =
   { Queues.amortised_words with
@@ -167,47 +169,78 @@ let bootstrapped_words =
   }
 ;;
 
-module Bootstrapped = Queues.Amortised (BootstrappedQueueFigure)
+module Bootstrapped (Q : QUEUE) = struct
+  include Queues.Amortised (Q)
 
-let test_bootstrapped_head () =
-  let module Q = BootstrappedQueueFigure in
-  let n = 100_000 in
-  let v = Array.make (2 * n) Q.empty in
-  for i = 1 to n do
-    v.(i) <- Q.snoc v.(i - 1) i
-  done;
-  for i = n + 1 to (2 * n) - 1 do
-    v.(i) <- Q.tail v.(i - 1)
-  done;
-  let dear = ref (0, 0.0)
-  and sum = ref 0 in
-  for i = 1 to (2 * n) - 1 do
-    let x, c = cost (fun () -> Q.head v.(i)) in
-    sum := !sum + x;
-    if c > snd !dear then dear := i, c
-  done;
-  ignore (Sys.opaque_identity !sum);
-  check
-    (Printf.sprintf
-       "BootstrappedQueueFigure: head allocates nothing at any version of a build of %d \
-        and its drain, dearest #%d at %.0f words"
-       n
-       (fst !dear)
-       (snd !dear))
-    (snd !dear = 0.0)
-;;
+  let run_head name =
+    let n = 100_000 in
+    let v = Array.make (2 * n) Q.empty in
+    for i = 1 to n do
+      v.(i) <- Q.snoc v.(i - 1) i
+    done;
+    for i = n + 1 to (2 * n) - 1 do
+      v.(i) <- Q.tail v.(i - 1)
+    done;
+    let dear = ref (0, 0.0)
+    and sum = ref 0 in
+    for i = 1 to (2 * n) - 1 do
+      let x, c = cost (fun () -> Q.head v.(i)) in
+      sum := !sum + x;
+      if c > snd !dear then dear := i, c
+    done;
+    ignore (Sys.opaque_identity !sum);
+    check
+      (Printf.sprintf
+         "%s: head allocates nothing at any version of a build of %d and its drain, \
+          dearest #%d at %.0f words"
+         name
+         n
+         (fst !dear)
+         (snd !dear))
+      (snd !dear = 0.0)
+  ;;
 
-let test_bootstrapped () =
-  let name = "BootstrappedQueueFigure" in
-  Bootstrapped.run_contract name;
-  Bootstrapped.run_sequences bootstrapped_words name;
-  test_bootstrapped_head ();
-  Bootstrapped.run_traces bootstrapped_words (name ^ ", persistently")
-;;
+  let run name =
+    run_contract name;
+    run_sequences bootstrapped_words name;
+    run_head name;
+    run_traces bootstrapped_words (name ^ ", persistently")
+  ;;
+end
+
+module Figure = Bootstrapped (BootstrappedQueueFigure)
+
+let test_bootstrapped () = Figure.run "BootstrappedQueueFigure"
+
+(* ------------------ BootstrappedQueueNoPolymorphicRecursion (Exercise 10.4) *)
+
+(* Exercise 10.4 asks for the queue of Figure 10.2 without polymorphic recursion, over a
+   middle that is an 'a queue and not an 'a list susp queue: the elements of every level
+   are of the one type 'a el, an ELEM of an element or a LIST of a suspended list of them,
+   so that the level a value belongs to is read off its constructors, ELEMs at the first,
+   LISTs of ELEMs at the second and so on, where the figure read it off the type. The
+   functions recur at one type and need no annotation; what they need instead is the
+   wrapping the figure's types did for free. snoc and head are each two functions, one
+   over 'a el that recurs and one over 'a that the signature exports, joined by an ELEM
+   on the way in and a match on the way out; checkF opens the LIST at the front of m and
+   makes the whole of the list under it the new f, as the figure's force did; and the two
+   shapes the types no longer rule out, a LIST at the front of the outer queue and an
+   ELEM at the front of an inner one, are assertions. The queue is otherwise the figure's,
+   the same rotations at the same moments, so the bound is the figure's and so is the
+   clock. The cost is the figure's plus a constructor, two words an element for the ELEM a
+   snoc puts on and two a rotation for the LIST: measured, a build with its drain comes to
+   16 words an operation where the figure's was 15, and the dearest tail of the traces to
+   108 where it was 102. head is the figure's too, the outer f holding ELEMs only, and
+   the match that takes the element out of one allocates nothing. *)
+
+module No_poly = Bootstrapped (BootstrappedQueueNoPolymorphicRecursion)
+
+let test_no_poly () = No_poly.run "BootstrappedQueueNoPolymorphicRecursion"
 
 let tests =
   [ case "[Figure 10.1] AltBinaryRandomAccessListFigure" test_alt
   ; case "[Exercise 10.2] AltBinaryRandomAccessList" test_alt_lazy
   ; case "[Figure 10.2] BootstrappedQueueFigure" test_bootstrapped
+  ; case "[Exercise 10.4] BootstrappedQueueNoPolymorphicRecursion" test_no_poly
   ]
 ;;
