@@ -1,7 +1,7 @@
 (* Tests for Chapter 10: the binary random-access list of Figure 10.1 (section 10.1.2),
    its lazy form of Exercise 10.2, and the bootstrapped queue of Figure 10.2 (section
-   10.1.3) and its form without polymorphic recursion of Exercise 10.4, each with its own
-   preamble below. Alcotest cases written in the checks of harness.ml, as in the earlier
+   10.1.3) and its forms without polymorphic recursion of Exercises 10.4 and 10.5, each
+   with its own preamble below. Alcotest cases written in the checks of harness.ml, as in the earlier
    chapters. *)
 
 open Okasaki.Ch10
@@ -159,8 +159,9 @@ let test_alt_lazy () =
    one queue; the drain of 1000 runs its dearest reverse at tail #511, which is the guard
    inside run_traces. head is O(1) worst-case on top, the first of a list f that is never
    empty: it forces nothing and allocates nothing, and that is checked at every version of
-   a build and its drain. The checks are a functor, since Exercise 10.4 is the same queue
-   over another type and is held to the same ones. *)
+   a build and its drain. The checks are a functor over the queue and the bound, since
+   Exercises 10.4 and 10.5 are the same queue over other types and are held to the same
+   ones. *)
 
 let bootstrapped_words =
   { Queues.amortised_words with
@@ -200,17 +201,17 @@ module Bootstrapped (Q : QUEUE) = struct
       (snd !dear = 0.0)
   ;;
 
-  let run name =
+  let run bound name =
     run_contract name;
-    run_sequences bootstrapped_words name;
+    run_sequences bound name;
     run_head name;
-    run_traces bootstrapped_words (name ^ ", persistently")
+    run_traces bound (name ^ ", persistently")
   ;;
 end
 
 module Figure = Bootstrapped (BootstrappedQueueFigure)
 
-let test_bootstrapped () = Figure.run "BootstrappedQueueFigure"
+let test_bootstrapped () = Figure.run bootstrapped_words "BootstrappedQueueFigure"
 
 (* ------------------ BootstrappedQueueNoPolymorphicRecursion (Exercise 10.4) *)
 
@@ -235,12 +236,65 @@ let test_bootstrapped () = Figure.run "BootstrappedQueueFigure"
 
 module No_poly = Bootstrapped (BootstrappedQueueNoPolymorphicRecursion)
 
-let test_no_poly () = No_poly.run "BootstrappedQueueNoPolymorphicRecursion"
+let test_no_poly () =
+  No_poly.run bootstrapped_words "BootstrappedQueueNoPolymorphicRecursion"
+;;
+
+(* ------------------------------------ BootstrappedQueuePrimQ (Exercise 10.5) *)
+
+(* Exercise 10.5 removes the polymorphic recursion the other way: the middle is a queue of
+   some other implementation, PrimQ, so the type 'a list susp PrimQ.queue is not a queue
+   of the functor's own and is not recursive at all, and with the recursion gone from the
+   type it is gone from the functions, since what the middle's snoc, head and tail cost is
+   PrimQ's affair and no function here calls itself. A snoc does at most one PrimQ.snoc,
+   the rotation's, and a tail at most one PrimQ.head and one PrimQ.tail, checkF's. Part
+   (b) is then Chapter 6's argument with a constant added: the suspended reverse of
+   lenfm + 1 elements has lenfm tails to pay for it before checkF forces it, and when
+   PrimQ is a real-time queue the one PrimQ operation an operation is O(1) worst-case,
+   with no debits of its own to combine with those, so every operation is O(1) amortised.
+   That is the claim here, for the two real-time queues of the earlier chapters as PrimQ,
+   Figure 7.1's over the streams of Chapter 4 and Figure 8.1's. What the clock can check
+   is that the constant is a constant, and whose: a tail does at most three PrimQ
+   operations on top of its own, the rotation's snoc and checkF's head and tail, so its
+   budget is Chapter 6's constant and three of PrimQ's dearest operation, 24 words for
+   the real-time queue by Chapter 7's clock and 54 for Hood-Melville by Chapter 8's.
+   Measured, the sequences come to the figure's 15 words an operation with either, and
+   the dearest tail of the traces, from the build version whose tail rotates and empties
+   f in one go, to 57 with the first and 103 with the second -- the figure's 102, not
+   less. At any size a machine holds the figure is five levels deep at most, and O(1)
+   against O(log* n) is a difference the clock cannot see; part (b) is for the proof.
+   The figure is this functor applied to itself, so it goes through once more with the
+   figure's queue as PrimQ and the figure's budget: a level peeled off and the same
+   costs under it. *)
+
+(* Chapter 6's constant for this queue's own work and three PrimQ operations' worth on top,
+   each at the dearest the earlier chapter measured for that PrimQ. *)
+let prim_words prim =
+  { Queues.amortised_words with
+    budget =
+      (fun ops -> (Queues.constant +. (3.0 *. prim)) *. float_of_int (Queues.total ops))
+  }
+;;
+
+module Prim_real_time =
+  Bootstrapped (BootstrappedQueuePrimQ (Okasaki.Ch7.RealTimeQueue (Okasaki.Ch4.Stream)))
+
+module Prim_hood_melville =
+  Bootstrapped (BootstrappedQueuePrimQ (Okasaki.Ch8.HoodMelvilleQueue))
+
+module Prim_figure = Bootstrapped (BootstrappedQueuePrimQ (BootstrappedQueueFigure))
+
+let test_prim () =
+  Prim_real_time.run (prim_words 24.0) "BootstrappedQueuePrimQ (RealTimeQueue)";
+  Prim_hood_melville.run (prim_words 54.0) "BootstrappedQueuePrimQ (HoodMelvilleQueue)";
+  Prim_figure.run bootstrapped_words "BootstrappedQueuePrimQ (BootstrappedQueueFigure)"
+;;
 
 let tests =
   [ case "[Figure 10.1] AltBinaryRandomAccessListFigure" test_alt
   ; case "[Exercise 10.2] AltBinaryRandomAccessList" test_alt_lazy
   ; case "[Figure 10.2] BootstrappedQueueFigure" test_bootstrapped
   ; case "[Exercise 10.4] BootstrappedQueueNoPolymorphicRecursion" test_no_poly
+  ; case "[Exercise 10.5] BootstrappedQueuePrimQ" test_prim
   ]
 ;;

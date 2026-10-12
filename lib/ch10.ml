@@ -316,3 +316,61 @@ module BootstrappedQueueNoPolymorphicRecursion : QUEUE = struct
 
   let snoc q x = snoc_el q (El x)
 end
+
+(* Exercise 10.5 Another way to eliminate the need for polymorphic recursion is to represent
+  the middle using some other implementation of queues.
+
+  Then the type of bootstrapped queues is
+
+    datatype a Queue =
+    E | Q of int x a list x a list susp PrimQ.Queue x int x a list
+  
+  where PrimQ is the other implementation of queues.
+
+(a) Implement this variation of bootstrapped queues as a functor of the form functor
+  BootstrapQueue (PrimQ : QUEUE) : QUEUE = ...
+*)
+
+module BootstrappedQueuePrimQ (PrimQ : QUEUE) : QUEUE = struct
+  type 'a queue =
+    | E
+    | Q of int * 'a list * 'a list lazy_t PrimQ.queue * int * 'a list
+
+  let empty = E
+
+  let is_empty = function
+    | E -> true
+    | _ -> false
+  ;;
+
+  let checkf (lenfm, f, m, lenr, r) =
+    match f with
+    | [] when PrimQ.is_empty m -> E
+    | [] -> Q (lenfm, Lazy.force (PrimQ.head m), PrimQ.tail m, lenr, r)
+    | _ -> Q (lenfm, f, m, lenr, r)
+  ;;
+
+  let check ((lenfm, f, m, lenr, r) as q) =
+    if lenr <= lenfm
+    then checkf q
+    else checkf (lenfm + lenr, f, PrimQ.snoc m (lazy (List.rev r)), 0, [])
+  ;;
+
+  let snoc q x =
+    match q with
+    | E -> Q (1, [ x ], PrimQ.empty, 0, [])
+    | Q (lenfm, f, m, lenr, r) -> check (lenfm, f, m, lenr + 1, x :: r)
+  ;;
+
+  let head = function
+    | E -> raise (Failure "head: empty queue")
+    | Q (_, x :: _, _, _, _) -> x
+    | _ -> assert false
+  ;;
+
+  let tail = function
+    | E -> raise (Failure "tail: empty queue")
+    | Q (lenfm, _ :: f', m, lenr, r) -> check (lenfm - 1, f', m, lenr, r)
+    | _ -> assert false
+  ;;
+end
