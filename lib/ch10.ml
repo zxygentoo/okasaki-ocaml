@@ -480,7 +480,7 @@ end
 
 (* Figure 10.7 *)
 
-module Bootstrap
+module BootstrapFigure
     (MakeH : functor (E : ORDERED) -> HEAP with type Element.t = E.t)
     (E : ORDERED) : HEAP with module Element = E = struct
   module Element = E
@@ -557,6 +557,30 @@ module Bootstrap
   ;;
 end
 
+(* Exercise 10.7 Inlining the LazyBinomialHeap functor of Section 6.4.1 as described above
+  yields the types
+
+    datatype Tree = Node of int x Heap x Tree list
+    datatype Heap = E | NE of Elem.T x Tree list susp
+
+  Complete this implementation of bootstrapped heaps.
+*)
+
+module BootstrappedLazyBinomialHeapStub (E : ORDERED) = struct
+  (* here is only the type, full exercise is omitted as f10.7 does compile in OCaml *)
+  type heap =
+    | E
+    | NE of E.t * tree list lazy_t
+
+  and tree = Node of int * heap * tree list
+end
+
+(* Exercise 10.8 Elements in a heap frequently contain other information besides the
+  priority. For these kinds of elements, it is often more convenient to use heaps that
+  separate the priority from the rest of the element. Figure 10.8 gives an alternate
+  signature for this kind of heap.
+*)
+
 (* Figure 10.8 *)
 
 module type HEAP_WITH_INFO = sig
@@ -568,6 +592,124 @@ module type HEAP_WITH_INFO = sig
   val is_empty : 'a heap -> bool
   val insert : Priority.t -> 'a -> 'a heap -> 'a heap
   val merge : 'a heap -> 'a heap -> 'a heap
-  val find_min : 'a heap -> Priority.t -> 'a
+  val find_min : 'a heap -> Priority.t * 'a
   val delete_min : 'a heap -> 'a heap
+end
+
+(* (a) Adapt either LazyBinomialHeap or SkewBinomialHeap to this new signature. *)
+
+module LazyBinomialHeapWithInfo (E : ORDERED) : HEAP_WITH_INFO with module Priority = E =
+struct
+  module Priority = E
+
+  type 'a tree = Node of int * (Priority.t * 'a) * 'a tree list
+  type 'a heap = 'a tree list lazy_t
+
+  let empty = lazy []
+
+  let is_empty = function
+    | (lazy []) -> true
+    | _ -> false
+  ;;
+
+  let rank (Node (r, _, _)) = r
+  let priority (Node (_, (p, _), _)) = p
+  let root (Node (_, x, _)) = x
+
+  let link (Node (r, ((p1, _) as pv1), c1) as t1) (Node (_, ((p2, _) as pv2), c2) as t2) =
+    if Priority.leq p1 p2 then Node (r + 1, pv1, t2 :: c1) else Node (r + 1, pv2, t1 :: c2)
+  ;;
+
+  let rec ins_tree t = function
+    | [] -> [ t ]
+    | t' :: ts' as ts -> if rank t < rank t' then t :: ts else ins_tree (link t t') ts'
+  ;;
+
+  let rec mrg h1 h2 =
+    match h1, h2 with
+    | _, [] -> h1
+    | [], _ -> h2
+    | t1 :: t1s, t2 :: t2s ->
+      if rank t1 < rank t2
+      then t1 :: mrg t1s h2
+      else if rank t1 > rank t2
+      then t2 :: mrg h1 t2s
+      else ins_tree (link t1 t2) (mrg t1s t2s)
+  ;;
+
+  let insert p x h = lazy (ins_tree (Node (0, (p, x), [])) (Lazy.force h))
+  let merge h1 h2 = lazy (mrg (Lazy.force h1) (Lazy.force h2))
+
+  let rec remove_min_tree = function
+    | [] -> raise (Failure "remove_min_tree: empty tree")
+    | [ t ] -> t, []
+    | t :: ts ->
+      let t', ts' = remove_min_tree ts in
+      if Priority.leq (priority t) (priority t') then t, ts else t', t :: ts'
+  ;;
+
+  let find_min h =
+    let t, _ =
+      try remove_min_tree (Lazy.force h) with
+      | Failure _ -> raise (Failure "find_min: empty heap")
+    in
+    root t
+  ;;
+
+  let delete_min h =
+    let Node (_, _, ts), h' =
+      try remove_min_tree (Lazy.force h) with
+      | Failure _ -> raise (Failure "delete_min: empty heap")
+    in
+    lazy (mrg (List.rev ts) h')
+  ;;
+end
+
+(* (b) Rewrite the Bootstrap functor as 
+    functor Bootstrap (PrimH : HEAPWITHINFO) : HEAPWITHINFO = ...
+  You will need neither higher-order functors nor recursive structures.
+*)
+
+module Bootstrap (PrimH : HEAP_WITH_INFO) :
+  HEAP_WITH_INFO with module Priority = PrimH.Priority = struct
+  module Priority = PrimH.Priority
+
+  type 'a heap =
+    | E
+    | H of (Priority.t * 'a) * 'a heap PrimH.heap
+
+  let empty = E
+
+  let is_empty = function
+    | E -> true
+    | _ -> false
+  ;;
+
+  let merge h1 h2 =
+    match h1, h2 with
+    | _, E -> h1
+    | E, _ -> h2
+    | H (((p1, _) as pv1), h1'), H (((p2, _) as pv2), h2') ->
+      if Priority.leq p1 p2
+      then H (pv1, PrimH.insert p2 h2 h1')
+      else H (pv2, PrimH.insert p1 h1 h2')
+  ;;
+
+  let insert p x h = merge (H ((p, x), PrimH.empty)) h
+
+  let find_min = function
+    | E -> raise (Failure "find_min: empty heap")
+    | H (x, _) -> x
+  ;;
+
+  let delete_min = function
+    | E -> raise (Failure "delete_min: empty heap")
+    | H (_, p) ->
+      if PrimH.is_empty p
+      then E
+      else (
+        match snd (PrimH.find_min p) with
+        | H (pv, p') -> H (pv, PrimH.merge p' (PrimH.delete_min p))
+        | _ -> assert false)
+  ;;
 end

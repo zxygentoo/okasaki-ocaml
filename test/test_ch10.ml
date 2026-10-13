@@ -2,8 +2,8 @@
    its lazy form of Exercise 10.2, and the bootstrapped queue of Figure 10.2 (section
    10.1.3) and its forms without polymorphic recursion of Exercises 10.4 and 10.5, and
    the catenable list of Figure 10.6 (section 10.2.1) and its flatten of Exercise 10.6,
-   and the bootstrapped heap of Figure 10.7 (section 10.2.2), each with its own preamble
-   below. Alcotest cases written in the checks of harness.ml,
+   the bootstrapped heap of Figure 10.7 (section 10.2.2) and the heaps with info of
+   Exercise 10.8, each with its own preamble below. Alcotest cases written in the checks of harness.ml,
    as in the earlier chapters. *)
 
 open Okasaki.Ch10
@@ -1344,8 +1344,8 @@ end
 (* Figure 10.7 over a heap functor: the contract over ints and keyed pairs, the clocks
    over the counting ints. *)
 module Boot (MakeH : functor (E : ORDERED) -> HEAP with type Element.t = E.t) = struct
-  module H = Bootstrap (MakeH) (Counting_int)
-  module K = Bootstrap (MakeH) (Heaps.Keyed)
+  module H = BootstrapFigure (MakeH) (Counting_int)
+  module K = BootstrapFigure (MakeH) (Heaps.Keyed)
   module Contract = Heaps.Heap_contract (H) (K)
 
   let run ?amortised budgets name =
@@ -1369,7 +1369,7 @@ module Boot_lazy = Boot (Okasaki.Ch6.LazyBinomialHeap)
    Not an insert of a new minimum, which goes into an empty primitive heap under the new
    root whatever PrimH is: the element after 2^k ascending ones, whose primitive heap
    under the root holds the other 2^k - 1. *)
-module Boot_strict = Bootstrap (Okasaki.Ch3.BinomialHeap) (Counting_int)
+module Boot_strict = BootstrapFigure (Okasaki.Ch3.BinomialHeap) (Counting_int)
 
 let test_boot_guard () =
   let k = 17 in
@@ -1392,10 +1392,272 @@ let worst_case = (module Worst_case_budgets : HEAP_BUDGETS)
 let amortised = (module Amortised_budgets : HEAP_BUDGETS)
 
 let test_boot () =
-  Boot_skew.run worst_case "Bootstrap (SkewBinomialHeap)";
+  Boot_skew.run worst_case "BootstrapFigure (SkewBinomialHeap)";
   test_boot_guard ();
-  Boot_scheduled.run worst_case "Bootstrap (ScheduledBinomialHeap)";
-  Boot_lazy.run ~amortised:true amortised "Bootstrap (LazyBinomialHeap)"
+  Boot_scheduled.run worst_case "BootstrapFigure (ScheduledBinomialHeap)";
+  Boot_lazy.run ~amortised:true amortised "BootstrapFigure (LazyBinomialHeap)"
+;;
+
+(* ------------------------------------- heaps with info (Exercise 10.8, Figure 10.8) *)
+
+(* Exercise 10.8 splits an element in two: the priority, which is all the heap compares,
+   fixed with its order at functor application as Priority : ORDERED, and the info that
+   travels with it, of a type parameter 'a the heap never looks at. Figure 10.8 is the
+   signature: insert takes both, find_min returns both. Part (a) is the lazy binomial
+   heap of Figure 6.5 over pairs, every comparison on the priority half, and the claims
+   are Chapter 6's: insert O(1) amortised, find_min, merge and delete_min O(log n)
+   amortised, laziness making single calls as dear as they like.
+
+   A heap with info is held to the heap contract of Chapter 9 through two adapters: over
+   ints, the element its own priority and payload; and over keyed pairs, the key the
+   priority and the tag the payload, which is what the contract's ties check wants and
+   what shows a payload parted from its priority, since every pair has to come out once
+   and whole. One check more reads the pair back directly. The clocks are this chapter's
+   per-operation clocks as means, comparisons and words against Chapter 6's budgets with
+   room for the pair: an insert 2 comparisons and 32 words, a query 2L + 2 and 24L + 48.
+   Measured, an insert is 0 comparisons and 9 words, the suspension and the node it
+   wraps, and a delete_min at a hundred thousand elements 20 comparisons and 225 words a
+   call. Then p.70's "regardless of whether the heaps are used persistently", held as
+   test_ch6 holds it, on the all-ones heap. *)
+
+(* A heap with info as a HEAP, over ints and over keyed pairs. *)
+module Info (H : HEAP_WITH_INFO with type Priority.t = int) = struct
+  module As_int = struct
+    module Element = struct
+      type t = int
+
+      let eq = ( = )
+      let lt = ( < )
+      let leq = ( <= )
+    end
+
+    type heap = int H.heap
+
+    let empty = H.empty
+    let is_empty = H.is_empty
+    let insert x h = H.insert x x h
+    let merge = H.merge
+    let find_min h = fst (H.find_min h)
+    let delete_min = H.delete_min
+  end
+
+  module As_keyed = struct
+    module Element = Heaps.Keyed
+
+    type heap = int H.heap
+
+    let empty = H.empty
+    let is_empty = H.is_empty
+    let insert (key, tag) h = H.insert key tag h
+    let merge = H.merge
+    let find_min = H.find_min
+    let delete_min = H.delete_min
+  end
+
+  module Contract = Heaps.Heap_contract (As_int) (As_keyed)
+
+  let run_contract name =
+    Contract.run name;
+    let n = 200 in
+    Random.init 20261019;
+    let h =
+      List.fold_left
+        (fun h p -> H.insert p (string_of_int p) h)
+        H.empty
+        (List.init n (fun _ -> Random.int 50))
+    in
+    let pairs = drain_with ~is_empty:H.is_empty ~head:H.find_min ~tail:H.delete_min h in
+    check
+      (Printf.sprintf
+         "%s: the payload comes back with its priority, %d random inserts drained"
+         name
+         n)
+      (List.for_all (fun (p, x) -> x = string_of_int p) pairs
+       && List.map fst pairs = List.sort compare (List.map fst pairs))
+  ;;
+end
+
+(* Chapter 6's budgets for the lazy binomial heap, the words with room for the pair. *)
+module Lazy_info_budgets = struct
+  let insert _ = 2.0, 32.0
+  let merge l = (2.0 *. l) +. 2.0, (24.0 *. l) +. 48.0
+  let find_min l = (2.0 *. l) +. 2.0, (24.0 *. l) +. 48.0
+  let delete_min l = (2.0 *. l) +. 2.0, (24.0 *. l) +. 48.0
+end
+
+module Lazy_info = Info (LazyBinomialHeapWithInfo (Counting_int))
+module Lazy_info_clocks = Heap_clocks (Lazy_info.As_int) (Lazy_info_budgets)
+
+(* p.70's claim, that the insert is O(1) amortised "regardless of whether the heaps are
+   used persistently", as test_ch6 holds it: the all-ones heap of 2^16 - 1, 16 trees,
+   which an insert that ran at once would link 16 times, inserted into d times over with
+   nothing forced pays nothing but the suspensions, and when each is looked at, the
+   looking pays, within the query budget. *)
+let test_lazy_info_persistence () =
+  let module H = Lazy_info.As_int in
+  let module B = Lazy_info_budgets in
+  let t label = "LazyBinomialHeapWithInfo, persistently: " ^ label in
+  let k = 16 in
+  let n = (1 lsl k) - 1 in
+  let h = List.fold_left (fun h x -> H.insert x h) H.empty (upto n) in
+  ignore (H.find_min h);
+  let c, w = spent_only (fun () -> H.insert 0 h) in
+  check
+    (t
+       (Printf.sprintf
+          "an insert into the all-ones heap of %d compares nothing and allocates %.0f \
+           words"
+          n
+          w))
+    (c = 0.0 && w <= snd (B.insert 0.0));
+  let c, _ = spent_only (fun () -> H.merge h h) in
+  check (t "a merge of the all-ones heap with itself compares nothing") (c = 0.0);
+  let d = 10_000
+  and l = log2 (n + 3) in
+  let mean f =
+    let (), (c, w) =
+      spent (fun () ->
+        for _ = 1 to d do
+          ignore (Sys.opaque_identity (f ()))
+        done)
+    in
+    c /. float_of_int d, w /. float_of_int d
+  in
+  let ic, iw = B.insert l
+  and qc, qw = B.find_min l in
+  let c, w = mean (fun () -> H.insert 1 (H.insert 0 h)) in
+  check
+    (t
+       (Printf.sprintf
+          "%d times an insert on top of an insert into it, nothing forced: %.2f \
+           comparisons and %.1f words a pair, budget %.0f and %.0f"
+          d
+          c
+          w
+          (2.0 *. ic)
+          (2.0 *. iw)))
+    (c <= 2.0 *. ic && w <= 2.0 *. iw);
+  let c, w = mean (fun () -> H.find_min (H.insert 1 (H.insert 0 h))) in
+  check
+    (t
+       (Printf.sprintf
+          "and each of them looked at: %.2f comparisons and %.1f words, budget %.0f and \
+           %.0f"
+          c
+          w
+          ((2.0 *. ic) +. qc)
+          ((2.0 *. iw) +. qw)))
+    (c <= (2.0 *. ic) +. qc && w <= (2.0 *. iw) +. qw)
+;;
+
+let test_lazy_info () =
+  let name = "LazyBinomialHeapWithInfo" in
+  Lazy_info.run_contract name;
+  Lazy_info_clocks.test_clocks ~amortised:true name;
+  test_lazy_info_persistence ()
+;;
+
+(* ------------------------------------------------ Bootstrap (Exercise 10.8(b)) *)
+
+(* Part (b) is Figure 10.7 over a primitive heap with info, with nothing recursive about
+   the modules: the primitive heap's payloads are bootstrapped heaps, each keyed by its
+   root's priority, and that is a type 'a heap = E | H of (Priority.t * 'a) * 'a heap
+   PrimH.heap, recursive in the ordinary way. The operations are the figure's line for
+   line, and so are the claims, with p.160's remark the ones that apply to the one
+   PrimH there is, the lazy binomial heap of part (a): find_min O(1) worst-case, insert
+   and merge O(1) amortised and delete_min O(log n) amortised.
+
+   The contract is part (a)'s, through the same adapters, and the clocks are Figure
+   10.7's means over its lazy heap against its amortised budgets, find_min held to
+   nothing on every call. Measured, an insert is 1 comparison, the root's, and 18 words,
+   the two nodes, the pair and the primitive heap's suspension, and a delete_min at a
+   hundred thousand elements 28 comparisons and 298 words a call. Then part (a)'s
+   persistence check over again, which is where the two parts differ: the heap of 2^16
+   ascending inserts, its root over the all-ones primitive heap of the rest, inserted
+   into d times over with nothing forced pays nothing but the suspensions, as before; a
+   find_min of each pays nothing at all, where part (a)'s paid the query; and a
+   delete_min of each pays the 16 pending links, 20 comparisons, within its own budget.
+   The checks with teeth against a Bootstrap that looks into the primitive heap are
+   those two: find_min's budget of nothing, and the inserts with nothing forced, since
+   over a trace the suspensions are the same work forced early or late, and only the
+   ones never forced tell. *)
+
+module Boot_info = Info (Bootstrap (LazyBinomialHeapWithInfo (Counting_int)))
+module Boot_info_clocks = Heap_clocks (Boot_info.As_int) (Amortised_budgets)
+
+let test_boot_info_persistence () =
+  let module H = Boot_info.As_int in
+  let module B = Amortised_budgets in
+  let t label = "Bootstrap (LazyBinomialHeapWithInfo), persistently: " ^ label in
+  let k = 16 in
+  let n = 1 lsl k in
+  let h = List.fold_left (fun h x -> H.insert x h) H.empty (upto n) in
+  ignore (H.delete_min h);
+  let c, w = spent_only (fun () -> H.insert n h) in
+  check
+    (t
+       (Printf.sprintf
+          "an insert under the root of the heap of %d, into the all-ones primitive heap, \
+           compares %.0f and allocates %.0f words"
+          n
+          c
+          w))
+    (c <= fst (B.insert 0.0) && w <= snd (B.insert 0.0));
+  let d = 10_000
+  and l = log2 (n + 2) in
+  let mean f =
+    let (), (c, w) =
+      spent (fun () ->
+        for _ = 1 to d do
+          ignore (Sys.opaque_identity (f ()))
+        done)
+    in
+    c /. float_of_int d, w /. float_of_int d
+  in
+  let ic, iw = B.insert l
+  and dc, dw = B.delete_min l in
+  let c, w = mean (fun () -> H.insert (n + 1) (H.insert n h)) in
+  check
+    (t
+       (Printf.sprintf
+          "%d times an insert on top of an insert into it, nothing forced: %.2f \
+           comparisons and %.1f words a pair, budget %.0f and %.0f"
+          d
+          c
+          w
+          (2.0 *. ic)
+          (2.0 *. iw)))
+    (c <= 2.0 *. ic && w <= 2.0 *. iw);
+  let c, w = mean (fun () -> H.find_min (H.insert (n + 1) (H.insert n h))) in
+  check
+    (t
+       (Printf.sprintf
+          "and the minimum of each read, for nothing more: %.2f comparisons and %.1f \
+           words, budget %.0f and %.0f"
+          c
+          w
+          (2.0 *. ic)
+          (2.0 *. iw)))
+    (c <= 2.0 *. ic && w <= 2.0 *. iw);
+  let c, w = mean (fun () -> H.delete_min (H.insert (n + 1) (H.insert n h))) in
+  check
+    (t
+       (Printf.sprintf
+          "and each deleted from, paying the %d pending links: %.2f comparisons and %.1f \
+           words, budget %.0f and %.0f"
+          k
+          c
+          w
+          ((2.0 *. ic) +. dc)
+          ((2.0 *. iw) +. dw)))
+    (c <= (2.0 *. ic) +. dc && w <= (2.0 *. iw) +. dw)
+;;
+
+let test_boot_info () =
+  let name = "Bootstrap (LazyBinomialHeapWithInfo)" in
+  Boot_info.run_contract name;
+  Boot_info_clocks.test_clocks ~amortised:true name;
+  test_boot_info_persistence ()
 ;;
 
 let tests =
@@ -1406,6 +1668,8 @@ let tests =
   ; case "[Exercise 10.5] BootstrappedQueuePrimQ" test_prim
   ; case "[Figure 10.6] CatenableList" test_cat
   ; case "[Exercise 10.6] flatten" test_flatten
-  ; case "[Figure 10.7] Bootstrap" test_boot
+  ; case "[Figure 10.7] BootstrapFigure" test_boot
+  ; case "[Exercise 10.8(a)] LazyBinomialHeapWithInfo" test_lazy_info
+  ; case "[Exercise 10.8(b)] Bootstrap" test_boot_info
   ]
 ;;
