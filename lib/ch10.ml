@@ -456,3 +456,118 @@ module CatenableList (Q : QUEUE) : CATENABLE_LIST_WITH_FLATTEN = struct
        | ys -> link x (lazy (flatten ys)))
   ;;
 end
+
+module type ORDERED = sig
+  type t
+
+  val eq : t -> t -> bool
+  val lt : t -> t -> bool
+  val leq : t -> t -> bool
+end
+
+module type HEAP = sig
+  module Element : ORDERED
+
+  type heap
+
+  val empty : heap
+  val is_empty : heap -> bool
+  val insert : Element.t -> heap -> heap
+  val merge : heap -> heap -> heap
+  val find_min : heap -> Element.t (* raises Failure if heap is empty *)
+  val delete_min : heap -> heap (* raises Failure if heap is empty *)
+end
+
+(* Figure 10.7 *)
+
+module Bootstrap
+    (MakeH : functor (E : ORDERED) -> HEAP with type Element.t = E.t)
+    (E : ORDERED) : HEAP with module Element = E = struct
+  module Element = E
+
+  module rec BootstrappedElem : sig
+    type t =
+      | E
+      | H of Element.t * PrimH.heap
+
+    val leq : t -> t -> bool
+    val eq : t -> t -> bool
+    val lt : t -> t -> bool
+  end = struct
+    type t =
+      | E
+      | H of Element.t * PrimH.heap
+
+    let leq a b =
+      match a, b with
+      | H (x, _), H (y, _) -> Element.leq x y
+      | _ -> assert false
+    ;;
+
+    let eq a b =
+      match a, b with
+      | H (x, _), H (y, _) -> Element.eq x y
+      | _ -> assert false
+    ;;
+
+    let lt a b =
+      match a, b with
+      | H (x, _), H (y, _) -> Element.lt x y
+      | _ -> assert false
+    ;;
+  end
+
+  and PrimH : (HEAP with type Element.t = BootstrappedElem.t) = MakeH (BootstrappedElem)
+
+  open BootstrappedElem
+
+  type heap = BootstrappedElem.t
+
+  let empty = E
+
+  let is_empty = function
+    | E -> true
+    | _ -> false
+  ;;
+
+  let merge h1 h2 =
+    match h1, h2 with
+    | _, E -> h1
+    | E, _ -> h2
+    | H (x, p1), H (y, p2) ->
+      if Element.leq x y then H (x, PrimH.insert h2 p1) else H (y, PrimH.insert h1 p2)
+  ;;
+
+  let insert x h = merge (H (x, PrimH.empty)) h
+
+  let find_min = function
+    | E -> raise (Failure "find_min: empty heap")
+    | H (x, _) -> x
+  ;;
+
+  let delete_min = function
+    | E -> raise (Failure "delete_min: empty heap")
+    | H (_, p) ->
+      if PrimH.is_empty p
+      then E
+      else (
+        match PrimH.find_min p with
+        | H (y, p1) -> H (y, PrimH.merge p1 (PrimH.delete_min p))
+        | _ -> assert false)
+  ;;
+end
+
+(* Figure 10.8 *)
+
+module type HEAP_WITH_INFO = sig
+  module Priority : ORDERED
+
+  type 'a heap
+
+  val empty : 'a heap
+  val is_empty : 'a heap -> bool
+  val insert : Priority.t -> 'a -> 'a heap -> 'a heap
+  val merge : 'a heap -> 'a heap -> 'a heap
+  val find_min : 'a heap -> Priority.t -> 'a
+  val delete_min : 'a heap -> 'a heap
+end

@@ -163,6 +163,155 @@ module Contract (H : Okasaki.Ch5.HEAP with type Element.t = int) = struct
   ;;
 end
 
+(* ---------------------------------------------- the ties-aware heap contract *)
+
+(* Order by key only: the tag tells equal elements apart. *)
+module Keyed = struct
+  type t = int * int
+
+  let eq (a, _) (b, _) = a = b
+  let lt (a, _) (b, _) = a < b
+  let leq (a, _) (b, _) = a <= b
+end
+
+(* Chapter 9's contract, written for the segmented heap and run on every heap since:
+   [H] over ints, [K] over keyed pairs for the ties. *)
+module Heap_contract
+    (H : Okasaki.Ch9.HEAP with type Element.t = int)
+    (K : Okasaki.Ch9.HEAP with type Element.t = int * int) =
+struct
+  let of_list xs = List.fold_left (fun h x -> H.insert x h) H.empty xs
+  let drain h = drain_with ~is_empty:H.is_empty ~head:H.find_min ~tail:H.delete_min h
+
+  let run name =
+    let t label = name ^ ": " ^ label in
+    check (t "empty is empty") (H.is_empty H.empty);
+    check (t "a singleton is not empty") (not (H.is_empty (H.insert 1 H.empty)));
+    check_failure (t "find_min of the empty heap") "find_min: empty heap" (fun () ->
+      H.find_min H.empty);
+    check_failure (t "delete_min of the empty heap") "delete_min: empty heap" (fun () ->
+      H.delete_min H.empty);
+    let drains_to note what want h =
+      match drain h with
+      | out when out = want -> ()
+      | out -> note (Printf.sprintf "%s drains to %s" what (string_of_int_list out))
+      | exception e -> note (Printf.sprintf "%s raised %s" what (Printexc.to_string e))
+    in
+    Random.init 20260930;
+    all_of
+      (t "every size up to 64, ascending, descending and random, drains sorted")
+      (fun note ->
+         for n = 0 to 64 do
+           List.iter
+             (fun (kind, xs) ->
+                drains_to
+                  note
+                  (Printf.sprintf "%d %s inserts" n kind)
+                  (List.sort compare xs)
+                  (of_list xs))
+             [ "ascending", upto n
+             ; "descending", List.rev (upto n)
+             ; "random", List.init n (fun _ -> Random.int 16)
+             ]
+         done);
+    all_of
+      (t "the merge of every pair of sizes up to 24 drains to the sorted union")
+      (fun note ->
+         for a = 0 to 24 do
+           for b = 0 to 24 do
+             let xs = List.init a (fun _ -> Random.int 16)
+             and ys = List.init b (fun _ -> Random.int 16) in
+             drains_to
+               note
+               (Printf.sprintf "the merge of %d and %d" a b)
+               (List.sort compare (xs @ ys))
+               (H.merge (of_list xs) (of_list ys))
+           done
+         done);
+    all_of (t "four futures of one heap, and the heap itself, untouched") (fun note ->
+      let h = of_list [ 5; 3; 8; 1 ] in
+      let a = H.insert 0 h
+      and b = H.insert 4 h
+      and c = H.delete_min h
+      and d = H.merge h h in
+      drains_to note "insert 0" [ 0; 1; 3; 5; 8 ] a;
+      drains_to note "insert 4" [ 1; 3; 4; 5; 8 ] b;
+      drains_to note "delete_min" [ 3; 5; 8 ] c;
+      drains_to note "merge with itself" [ 1; 1; 3; 3; 5; 5; 8; 8 ] d;
+      drains_to note "the heap" [ 1; 3; 5; 8 ] h);
+    all_of
+      (t
+         "a random trace of 6000 inserts, merges and delete_mins over earlier versions, \
+          against a sorted list")
+      (fun note ->
+         let n = 6_000 in
+         let v = Array.make (n + 1) H.empty
+         and model = Array.make (n + 1) []
+         and size = Array.make (n + 1) 0 in
+         for i = 1 to n do
+           let p = Random.int i
+           and q = Random.int i in
+           let what, h, m, s =
+             match Random.int 4 with
+             | 2 when size.(p) + size.(q) <= 600 ->
+               ( "merge"
+               , H.merge v.(p) v.(q)
+               , List.merge compare model.(p) model.(q)
+               , size.(p) + size.(q) )
+             | 3 when size.(p) > 0 ->
+               "delete_min", H.delete_min v.(p), List.tl model.(p), size.(p) - 1
+             | _ ->
+               let x = Random.int 1000 in
+               ( "insert"
+               , H.insert x v.(p)
+               , List.merge compare [ x ] model.(p)
+               , size.(p) + 1 )
+           in
+           v.(i) <- h;
+           model.(i) <- m;
+           size.(i) <- s;
+           match m with
+           | [] ->
+             if not (H.is_empty h) then note (Printf.sprintf "%s %d is not empty" what i)
+           | x :: _ ->
+             if H.is_empty h
+             then note (Printf.sprintf "%s %d is empty" what i)
+             else if H.find_min h <> x
+             then
+               note (Printf.sprintf "%s %d: find_min %d, want %d" what i (H.find_min h) x)
+         done;
+         for i = 0 to n do
+           if i mod 200 = 0
+           then drains_to note (Printf.sprintf "version %d" i) model.(i) v.(i)
+         done);
+    all_of
+      (t "equal keys, distinct tags: every element comes out exactly once, in order")
+      (fun note ->
+         let sk_of_list = List.fold_left (fun h x -> K.insert x h) K.empty in
+         for n = 1 to 80 do
+           let xs = List.init n (fun tag -> Random.int 4, tag) in
+           let half = List.take (n / 2) xs
+           and rest = List.drop (n / 2) xs in
+           List.iter
+             (fun (how, h) ->
+                match
+                  drain_with ~is_empty:K.is_empty ~head:K.find_min ~tail:K.delete_min h
+                with
+                | out ->
+                  let keys = List.map fst out in
+                  if List.sort compare out <> List.sort compare xs
+                  then note (Printf.sprintf "%d %s: not every element once" n how)
+                  else if keys <> List.sort compare keys
+                  then note (Printf.sprintf "%d %s: out of order" n how)
+                | exception e ->
+                  note (Printf.sprintf "%d %s raised %s" n how (Printexc.to_string e)))
+             [ "inserts", sk_of_list xs
+             ; "merged halves", K.merge (sk_of_list half) (sk_of_list rest)
+             ]
+         done)
+  ;;
+end
+
 (* -------------------------------------------- the sortable collection contract *)
 
 module Sortable_contract (S : Okasaki.Ch6.SORTABLE with type Element.t = int) = struct

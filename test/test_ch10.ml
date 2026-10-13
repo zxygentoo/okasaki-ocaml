@@ -2,7 +2,8 @@
    its lazy form of Exercise 10.2, and the bootstrapped queue of Figure 10.2 (section
    10.1.3) and its forms without polymorphic recursion of Exercises 10.4 and 10.5, and
    the catenable list of Figure 10.6 (section 10.2.1) and its flatten of Exercise 10.6,
-   each with its own preamble below. Alcotest cases written in the checks of harness.ml,
+   and the bootstrapped heap of Figure 10.7 (section 10.2.2), each with its own preamble
+   below. Alcotest cases written in the checks of harness.ml,
    as in the earlier chapters. *)
 
 open Okasaki.Ch10
@@ -1045,6 +1046,358 @@ let test_flatten () =
   Flatten_bankers.run "flatten over BankersQueue"
 ;;
 
+(* ---------------------------------------------------- Bootstrap (Figure 10.7) *)
+
+(* Section 10.2.2 bootstraps heaps for the merge: a bootstrapped heap is empty or a node
+   of its minimum and a primitive heap whose elements are bootstrapped heaps, ordered by
+   their roots, so that merge is one PrimH.insert of the heap with the larger root into
+   the other's primitive heap, insert is a merge with a singleton, find_min reads the
+   root, and delete_min takes the least child out of the primitive heap, promotes its
+   root and merges the two primitive heaps. p.159 states the costs: find_min O(1)
+   worst-case "regardless of the underlying implementation", insert and merge the cost
+   of PrimH.insert, delete_min that of a PrimH.find_min, delete_min and merge. Over a
+   primitive heap with O(1) worst-case insert and O(log n) worst-case queries, the skew
+   binomial heap of 9.3.2 or the scheduled binomial heap of 7.3, that is find_min, insert
+   and merge in O(1) and delete_min in O(log n), all worst-case; the remark on p.160 adds
+   that over the lazy binomial heap of 6.4.1 it is find_min O(1) worst-case, insert and
+   merge O(1) amortised and delete_min O(log n) amortised. Figure 10.7 is a higher-order
+   functor, a functor over the heap functor and the element structure, with the primitive
+   heap and the element structure of bootstrapped heaps declared recursively, which
+   Standard ML cannot do and OCaml's module rec can.
+
+   The contract is Chapter 9's heap contract from heaps.ml, with its ties over keyed
+   pairs. The clocks are per operation, comparisons through the counting element type
+   and words, each applied to a heap of n elements against a budget in L = log2 (n + 1),
+   and the dearest single call of each operation is the check, since the claims are
+   worst-case: find_min is held to nothing at all, insert and merge to constants, and
+   delete_min to a line in L; over the lazy binomial heap it is the mean call of a run
+   against its own, smaller, budgets, except find_min's. Four sequences from empty at a
+   thousand and a hundred thousand (ascending, random and equal inserts, each followed
+   by a find_min, then a drain; insert and delete_min at a steady size), n singletons
+   merged pairwise and drained, and a random trace of 20000 operations over earlier
+   versions. Measured over the skew heap: insert and merge 3 comparisons, the root's and
+   the skew link's two, and 35 and 32 words; delete_min 57 comparisons and 854 words at
+   65000 elements, L = 16, about 3L + 9 and 50L; over the scheduled heap an insert is 79
+   words, its schedule; over the lazy heap a delete_min comes to 28 comparisons and 437
+   words a call at a hundred thousand. The budgets are about twice those. The guard is
+   Chapter 3's binomial heap as PrimH, whose insert is O(log n): an insert into the
+   all-ones primitive heap of 2^17 - 1 under the root must then be seen to compare 17
+   times, and not an insert of a new minimum, which lands in an empty primitive heap
+   under the new root whatever PrimH is. *)
+
+(* Comparisons and words one call may spend on a heap of n elements, L = log2 (n + 1). *)
+module type HEAP_BUDGETS = sig
+  val insert : float -> float * float
+  val merge : float -> float * float
+  val find_min : float -> float * float
+  val delete_min : float -> float * float
+end
+
+(* Over a primitive heap with O(1) worst-case insert and O(log n) worst-case queries,
+   for the dearest call. *)
+module Worst_case_budgets = struct
+  let insert _ = 6.0, 160.0
+  let merge _ = 6.0, 160.0
+  let find_min _ = 0.0, 0.0
+  let delete_min l = (6.0 *. l) +. 12.0, (100.0 *. l) +. 200.0
+end
+
+(* Over the lazy binomial heap, for the mean call of a run; find_min stays worst-case. *)
+module Amortised_budgets = struct
+  let insert _ = 2.0, 32.0
+  let merge _ = 2.0, 32.0
+  let find_min _ = 0.0, 0.0
+  let delete_min l = (3.0 *. l) +. 6.0, (40.0 *. l) +. 100.0
+end
+
+module Heap_clocks (H : HEAP with type Element.t = int) (B : HEAP_BUDGETS) = struct
+  let of_list xs = List.fold_left (fun h x -> H.insert x h) H.empty xs
+
+  (* One operation's clock: the dearest call as a fraction of its budget and what it was,
+     and the totals spent and allowed. *)
+  type clock =
+    { op : string
+    ; budget : float -> float * float
+    ; mutable ratio : float
+    ; mutable what : string
+    ; mutable spent : float * float
+    ; mutable allowed : float * float
+    ; mutable calls : int
+    }
+
+  let clock op budget =
+    { op
+    ; budget
+    ; ratio = 0.0
+    ; what = ""
+    ; spent = 0.0, 0.0
+    ; allowed = 0.0, 0.0
+    ; calls = 0
+    }
+  ;;
+
+  let insert = clock "insert" B.insert
+  and merge = clock "merge" B.merge
+  and find_min = clock "find_min" B.find_min
+  and delete_min = clock "delete_min" B.delete_min
+
+  let clocks = [ insert; merge; find_min; delete_min ]
+
+  let reset () =
+    List.iter
+      (fun k ->
+         k.ratio <- 0.0;
+         k.what <- "";
+         k.spent <- 0.0, 0.0;
+         k.allowed <- 0.0, 0.0;
+         k.calls <- 0)
+      clocks
+  ;;
+
+  (* Spent over budget; a budget of nothing is met by spending nothing. *)
+  let over spent budget =
+    if budget = 0.0 then if spent = 0.0 then 0.0 else infinity else spent /. budget
+  ;;
+
+  (* [f], call number [at] of [k], on a heap of [size] elements. *)
+  let timed k ~at ~size f =
+    let r, (c, w) = spent f in
+    let cb, wb = k.budget (log2 (size + 1)) in
+    let ratio = Float.max (over c cb) (over w wb) in
+    k.spent <- fst k.spent +. c, snd k.spent +. w;
+    k.allowed <- fst k.allowed +. cb, snd k.allowed +. wb;
+    k.calls <- k.calls + 1;
+    if ratio >= k.ratio
+    then (
+      k.ratio <- ratio;
+      k.what
+      <- Printf.sprintf
+           "#%d on %d elements at %.0f comparisons and %.0f words, budget %.0f and %.0f"
+           at
+           size
+           c
+           w
+           cb
+           wb);
+    r
+  ;;
+
+  (* The checks of a run: every clock that ran, the dearest call within its budget, or
+     the totals within theirs when [amortised], shown per call. *)
+  let within ?(amortised = false) name =
+    List.iter
+      (fun k ->
+         if k.calls > 0
+         then
+           if amortised && k.budget 1.0 <> (0.0, 0.0)
+           then (
+             let c, w = k.spent
+             and cb, wb = k.allowed
+             and per x = x /. float_of_int k.calls in
+             check
+               (Printf.sprintf
+                  "%s: %s, amortised over %d calls, %.2f comparisons and %.1f words per \
+                   call, budget %.2f and %.1f"
+                  name
+                  k.op
+                  k.calls
+                  (per c)
+                  (per w)
+                  (per cb)
+                  (per wb))
+               (c <= cb && w <= wb))
+           else
+             check
+               (Printf.sprintf "%s: %s, the dearest is %s" name k.op k.what)
+               (k.ratio <= 1.0))
+      clocks
+  ;;
+
+  type op =
+    | Insert of int
+    | Find_min
+    | Delete_min
+
+  (* [ops] from the empty heap, every call on its clock. *)
+  let run ops =
+    let h = ref H.empty
+    and size = ref 0
+    and sum = ref 0 in
+    Array.iteri
+      (fun i op ->
+         match op with
+         | Insert x ->
+           h := timed insert ~at:i ~size:!size (fun () -> H.insert x !h);
+           incr size
+         | Find_min ->
+           sum := !sum + timed find_min ~at:i ~size:!size (fun () -> H.find_min !h)
+         | Delete_min ->
+           h := timed delete_min ~at:i ~size:!size (fun () -> H.delete_min !h);
+           decr size)
+      ops;
+    ignore (Sys.opaque_identity !sum)
+  ;;
+
+  (* Each insert followed by a find_min, then a drain. *)
+  let build_then_drain xs =
+    let n = Array.length xs in
+    Array.init (3 * n) (fun i ->
+      if i < 2 * n
+      then if i mod 2 = 0 then Insert xs.(i / 2) else Find_min
+      else Delete_min)
+  ;;
+
+  let sequences n =
+    Random.init n;
+    [ ( "n ascending inserts, each then a find_min, then n delete_mins"
+      , build_then_drain (Array.init n Fun.id) )
+    ; ( "n random inserts, each then a find_min, then n delete_mins"
+      , build_then_drain (Array.init n (fun _ -> Random.int 1_000_000)) )
+    ; ( "n equal inserts, each then a find_min, then n delete_mins"
+      , build_then_drain (Array.make n 7) )
+    ; ( "insert then delete_min at a steady size of 1000, n times over"
+      , Array.init
+          (1000 + (2 * n))
+          (fun i ->
+             if i < 1000 then Insert i else if i mod 2 = 0 then Insert i else Delete_min)
+      )
+    ]
+  ;;
+
+  let test_sequences ?amortised name n =
+    List.iter
+      (fun (what, ops) ->
+         reset ();
+         run ops;
+         within ?amortised (Printf.sprintf "%s, n=%d, %s" name n what))
+      (sequences n)
+  ;;
+
+  (* n singletons merged pairwise, every merge on the clock against the heap it makes, then
+     drained. *)
+  let test_merges ?amortised name n =
+    reset ();
+    let at = ref 0 in
+    let rec round = function
+      | (a, sa) :: (b, sb) :: rest ->
+        incr at;
+        (timed merge ~at:!at ~size:(sa + sb) (fun () -> H.merge a b), sa + sb)
+        :: round rest
+      | l -> l
+    in
+    let rec go = function
+      | [ (h, _) ] -> h
+      | [] -> H.empty
+      | l -> go (round l)
+    in
+    let h = ref (go (List.init n (fun i -> H.insert i H.empty, 1))) in
+    for i = 1 to n do
+      h := timed delete_min ~at:i ~size:(n - i + 1) (fun () -> H.delete_min !h)
+    done;
+    within
+      ?amortised
+      (Printf.sprintf "%s, %d singletons merged pairwise, then drained" name n)
+  ;;
+
+  (* A random trace over earlier versions, each call on its clock against the heap it is
+     applied to or makes. Sizes are tracked, since merging versions of versions makes heaps
+     far larger than the trace is long. *)
+  let test_versions ?amortised name =
+    reset ();
+    let n = 20_000 in
+    Random.init 20261018;
+    let v = Array.make (n + 1) H.empty
+    and size = Array.make (n + 1) 0
+    and sum = ref 0 in
+    for i = 1 to n do
+      let p = Random.int i
+      and q = Random.int i in
+      match Random.int 5 with
+      | 2 when size.(p) + size.(q) <= 1 lsl 40 ->
+        v.(i)
+        <- timed merge ~at:i ~size:(size.(p) + size.(q)) (fun () -> H.merge v.(p) v.(q));
+        size.(i) <- size.(p) + size.(q)
+      | 3 when size.(p) > 0 ->
+        v.(i) <- timed delete_min ~at:i ~size:size.(p) (fun () -> H.delete_min v.(p));
+        size.(i) <- size.(p) - 1
+      | 4 when size.(p) > 0 ->
+        sum := !sum + timed find_min ~at:i ~size:size.(p) (fun () -> H.find_min v.(p));
+        v.(i) <- v.(p);
+        size.(i) <- size.(p)
+      | _ ->
+        v.(i) <- timed insert ~at:i ~size:size.(p) (fun () -> H.insert i v.(p));
+        size.(i) <- size.(p) + 1
+    done;
+    ignore (Sys.opaque_identity (v, !sum));
+    within ?amortised (name ^ ", a random trace of 20000 operations over earlier versions")
+  ;;
+
+  let test_clocks ?amortised name =
+    test_sequences ?amortised name 1_000;
+    test_sequences ?amortised name 100_000;
+    test_merges ?amortised name 1_000;
+    test_merges ?amortised name 100_000;
+    test_versions ?amortised name
+  ;;
+end
+
+(* Figure 10.7 over a heap functor: the contract over ints and keyed pairs, the clocks
+   over the counting ints. *)
+module Boot (MakeH : functor (E : ORDERED) -> HEAP with type Element.t = E.t) = struct
+  module H = Bootstrap (MakeH) (Counting_int)
+  module K = Bootstrap (MakeH) (Heaps.Keyed)
+  module Contract = Heaps.Heap_contract (H) (K)
+
+  let run ?amortised budgets name =
+    Contract.run name;
+    let module Clocks = Heap_clocks (H) ((val budgets : HEAP_BUDGETS)) in
+    Clocks.test_clocks ?amortised name
+  ;;
+end
+
+module Boot_skew = Boot (Okasaki.Ch9.SkewBinomialHeap)
+
+(* The scheduled binomial heap takes its stream functor too. *)
+module Scheduled (E : ORDERED) =
+  Okasaki.Ch7.ScheduledBinomialHeap (E) (Okasaki.Ch4.Stream)
+
+module Boot_scheduled = Boot (Scheduled)
+module Boot_lazy = Boot (Okasaki.Ch6.LazyBinomialHeap)
+
+(* Whether the insert clock can tell O(1) from O(log n): over Chapter 3's binomial heap,
+   an insert into a primitive heap of 2^k - 1 elements, the all-ones heap, links k times.
+   Not an insert of a new minimum, which goes into an empty primitive heap under the new
+   root whatever PrimH is: the element after 2^k ascending ones, whose primitive heap
+   under the root holds the other 2^k - 1. *)
+module Boot_strict = Bootstrap (Okasaki.Ch3.BinomialHeap) (Counting_int)
+
+let test_boot_guard () =
+  let k = 17 in
+  let h =
+    List.fold_left (fun h x -> Boot_strict.insert x h) Boot_strict.empty (upto (1 lsl k))
+  in
+  let c = count_only (fun () -> Boot_strict.insert (1 lsl k) h) in
+  check
+    (Printf.sprintf
+       "guard: over Chapter 3's binomial heap the insert after 2^%d ascending ones, into \
+        the all-ones primitive heap under the root, is seen to compare %d times, budget \
+        %.0f"
+       k
+       c
+       (fst (Worst_case_budgets.insert 0.0)))
+    (float_of_int c > fst (Worst_case_budgets.insert 0.0))
+;;
+
+let worst_case = (module Worst_case_budgets : HEAP_BUDGETS)
+let amortised = (module Amortised_budgets : HEAP_BUDGETS)
+
+let test_boot () =
+  Boot_skew.run worst_case "Bootstrap (SkewBinomialHeap)";
+  test_boot_guard ();
+  Boot_scheduled.run worst_case "Bootstrap (ScheduledBinomialHeap)";
+  Boot_lazy.run ~amortised:true amortised "Bootstrap (LazyBinomialHeap)"
+;;
+
 let tests =
   [ case "[Figure 10.1] AltBinaryRandomAccessListFigure" test_alt
   ; case "[Exercise 10.2] AltBinaryRandomAccessList" test_alt_lazy
@@ -1053,5 +1406,6 @@ let tests =
   ; case "[Exercise 10.5] BootstrappedQueuePrimQ" test_prim
   ; case "[Figure 10.6] CatenableList" test_cat
   ; case "[Exercise 10.6] flatten" test_flatten
+  ; case "[Figure 10.7] Bootstrap" test_boot
   ]
 ;;
