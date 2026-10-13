@@ -1,8 +1,9 @@
 (* Tests for Chapter 10: the binary random-access list of Figure 10.1 (section 10.1.2),
    its lazy form of Exercise 10.2, and the bootstrapped queue of Figure 10.2 (section
    10.1.3) and its forms without polymorphic recursion of Exercises 10.4 and 10.5, and
-   the catenable list of Figure 10.6 (section 10.2.1), each with its own preamble below. Alcotest cases written in the checks of harness.ml, as in the earlier
-   chapters. *)
+   the catenable list of Figure 10.6 (section 10.2.1) and its flatten of Exercise 10.6,
+   each with its own preamble below. Alcotest cases written in the checks of harness.ml,
+   as in the earlier chapters. *)
 
 open Okasaki.Ch10
 open Harness
@@ -710,6 +711,340 @@ let test_cat () =
   Cat_bankers.run "CatenableList (BankersQueue)"
 ;;
 
+(* ---------------------------------------------------- flatten (Exercise 10.6) *)
+
+(* Exercise 10.6 wants flatten, the catenation of a list of k catenable lists, in O(1 + e)
+   amortised time, e the number of empty lists among the k. A fold of ++ is k links; the
+   function has to do what linkAll does and link the first list to a suspension of the
+   flattening of the rest, one link and one suspension whatever k is, leaving the rest to
+   the tails that get there, each of which forces one level and finds one link to do.
+   What cannot be left to the suspension is the empties: a child is a non-empty tree,
+   link's clause for E being the assertion (the figure's SML raises Match), and a
+   suspension of the flattening of nothing but empties is a suspended E, harmless as the
+   last child, which linkAll returns as it is, but the assertion once anything is ++'d
+   after it. So the empties are stepped over on the spot, the ones in front of the first
+   non-empty list and the ones after each non-empty list before the next, and the last
+   non-empty list is returned as it is when only empties follow; those steps are the e of
+   the bound, and the suspension is its amortised 1, a last child of the root with the
+   unshared cost of one link, which is what Theorem 10.1's invariant leaves room for.
+
+   The contract flattens every list of up to four parts of sizes 0 to 5, each part built
+   a different way round the four builders, against List.concat, which puts the empties
+   in front, between and behind; then, for every list of up to three parts of sizes 0 to
+   2, goes on from the flattened list with ++ on either side, cons, snoc, tail and a
+   flatten of it beside itself, since a suspended empty shows only then; that the parts
+   are what they were; and a random trace of cons, snoc, flatten of up to four random
+   earlier versions, tail and head, every version against a list model. The clocks are
+   words, so of the 1 + e they see the 1: the walk past the empties allocates nothing,
+   and a flatten of a hundred thousand singletons is held to the one constant with and
+   without an empty before each, 19 words over the bootstrapped queue and 38 over the
+   banker's, where the fold of ++ is ten words a list; flatten and then one, two and ten
+   tails, each forcing one level, is held per operation, which is also what catches a
+   flatten that suspends the whole fold, one suspension doing every link when forced;
+   then the means of a drain after a flatten of singletons, of lists of ten with an empty
+   between, of fat trees and chains of a hundred, and of ten flattens, counting 1 + e for
+   the flatten; and persistently, tail twenty times over from every version of a drain
+   of the flatten of a thousand singletons, where every version's last child is the
+   suspension of the rest, ++ then tail, and a flatten of the version beside itself then
+   tailed, which is the dearest at 94 words, two links and their suspensions over the
+   bootstrapped queue. The constant is twice that. *)
+
+let flatten_constant = 192.0
+
+module Flatten (C : CATENABLE_LIST_WITH_FLATTEN) = struct
+  include Cat (C)
+
+  let flatten = C.flatten
+
+  (* Every list of up to [k] sizes from [sizes]. *)
+  let rec shapes k sizes =
+    if k = 0
+    then [ [] ]
+    else
+      [] :: List.concat_map (fun s -> List.map (List.cons s) (shapes (k - 1) sizes)) sizes
+  ;;
+
+  (* The parts of a shape, the i-th built the i-th way round and over its own numbers,
+     with their model. *)
+  let parts shape =
+    List.mapi
+      (fun i n ->
+         let l = List.init n (fun j -> (100 * i) + j) in
+         snd (List.nth builders (i mod List.length builders)) l, l)
+      shape
+    |> List.split
+  ;;
+
+  let show shape = String.concat "," (List.map string_of_int shape)
+
+  let run_contract name =
+    let t label = Printf.sprintf "%s: %s" name label in
+    check (t "flatten of nothing is empty") (C.is_empty (flatten []));
+    check
+      (t "flatten of three empties is empty")
+      (C.is_empty (flatten [ C.empty; C.empty; C.empty ]));
+    all_of
+      (t "every list of up to four parts of sizes 0 to 5, built every way, flattened")
+      (fun note ->
+         List.iter
+           (fun shape ->
+              let cats, ls = parts shape in
+              if to_list (flatten cats) <> List.concat ls then note (show shape))
+           (shapes 4 [ 0; 1; 2; 3; 5 ]));
+    let ys = shifted 3
+    and ly = List.map (fun i -> 1000 + i) (upto 3) in
+    all_of
+      (t
+         "gone on from, for every list of up to three parts of sizes 0 to 2: ++ on \
+          either side, cons, snoc, tail, and a flatten of it beside itself")
+      (fun note ->
+         List.iter
+           (fun shape ->
+              let cats, ls = parts shape in
+              let xs = flatten cats
+              and l = List.concat ls in
+              let after =
+                [ "++ ys", to_list (xs ++ by_cons ys), l @ ys
+                ; "ys ++", to_list (by_cons ys ++ xs), ys @ l
+                ; "cons", to_list (C.cons 7 xs), 7 :: l
+                ; "snoc", to_list (C.snoc xs 7), l @ [ 7 ]
+                ; "tail", (if l = [] then [] else to_list (C.tail xs)), List.drop 1 l
+                ; ( "flatten [xs; E; ys; xs]"
+                  , to_list (flatten [ xs; C.empty; by_cons ly; xs ])
+                  , l @ ly @ l )
+                ]
+              in
+              List.iter
+                (fun (how, got, want) ->
+                   if got <> want then note (Printf.sprintf "%s then %s" (show shape) how))
+                after)
+           (shapes 3 [ 0; 1; 2 ]));
+    let cats, ls = parts [ 3; 0; 5; 2 ] in
+    let xs = flatten cats in
+    ignore (Sys.opaque_identity (to_list xs, to_list (C.tail xs), C.snoc xs 9));
+    check
+      (t "the parts are what they were after a flatten, a tail and a snoc of it")
+      (List.map to_list cats = ls);
+    (* a random trace over earlier versions, every version against a list model *)
+    let steps = 600
+    and cap = 2_000 in
+    let v = Array.make (steps + 1) (C.empty, []) in
+    Random.init 20261016;
+    all_of
+      (t
+         (Printf.sprintf
+            "a random trace of %d cons, snoc, flatten of up to four random earlier \
+             versions, tail and head, every version against a list model"
+            steps))
+      (fun note ->
+         for i = 1 to steps do
+           let a, la = v.(Random.int i) in
+           v.(i)
+           <- (match Random.int 5 with
+               | 0 -> C.cons i a, i :: la
+               | 1 -> C.snoc a i, la @ [ i ]
+               | 2 ->
+                 let picked = List.init (Random.int 5) (fun _ -> v.(Random.int i)) in
+                 let cats, ls = List.split picked in
+                 let l = List.concat ls in
+                 if List.length l > cap then a, la else flatten cats, l
+               | 3 -> if la = [] then a, la else C.tail a, List.tl la
+               | _ ->
+                 if la <> [] && C.head a <> List.hd la
+                 then note (Printf.sprintf "head at step %d" i);
+                 a, la)
+         done;
+         Array.iteri
+           (fun i (c, l) -> if to_list c <> l then note (Printf.sprintf "version #%d" i))
+           v)
+  ;;
+
+  (* ------------------------------------------------------------------ clocks *)
+
+  let singletons n = List.init n singleton
+
+  (* [n] elements as [k] parts of n / k each, each built by [build], with an empty
+     between every two when [spaced]. *)
+  let split_into ?(spaced = false) build k n =
+    List.concat_map
+      (fun i ->
+         let part = build (List.init (n / k) (fun j -> (i * (n / k)) + j)) in
+         if spaced && i > 0 then [ C.empty; part ] else [ part ])
+      (upto k)
+  ;;
+
+  let run_flatten name =
+    let t label = Printf.sprintf "%s: %s" name label in
+    let n = 100_000 in
+    List.iter
+      (fun (label, l) ->
+         let c = allocated (fun () -> flatten l) in
+         check
+           (t (Printf.sprintf "flatten of %s, nothing forced: %.0f words" label c))
+           (c <= flatten_constant))
+      [ Printf.sprintf "%d singletons" n, singletons n
+      ; ( Printf.sprintf "%d singletons with an empty before each" n
+        , List.concat_map (fun x -> [ C.empty; x ]) (singletons n) )
+      ];
+    let l = singletons n in
+    List.iter
+      (fun j ->
+         let c =
+           allocated (fun () ->
+             let xs = ref (flatten l) in
+             drain j xs;
+             !xs)
+           /. float_of_int (1 + j)
+         in
+         check
+           (t
+              (Printf.sprintf
+                 "flatten of %d singletons then %d tails: %.2f words per operation"
+                 n
+                 j
+                 c))
+           (c <= flatten_constant))
+      [ 1; 2; 10 ]
+  ;;
+
+  (* The parts of n elements to flatten, built outside the clock, with their e. *)
+  let flatten_sequences n =
+    [ "n singletons", singletons n, 0
+    ; ( "n/10 lists of 10 by cons, an empty between every two"
+      , split_into ~spaced:true by_cons (n / 10) n
+      , (n / 10) - 1 )
+    ; "n/100 fat trees of 100", split_into fat_of (n / 100) n, 0
+    ; "n/100 chains of 100", split_into chain_of (n / 100) n, 0
+    ; ( "ten flattens of n/10 singletons"
+      , List.init 10 (fun i ->
+          flatten (List.init (n / 10) (fun j -> singleton ((i * (n / 10)) + j))))
+      , 0 )
+    ]
+  ;;
+
+  (* The flatten, counting 1 + e, and then n tails. *)
+  let run_sequences name =
+    let t label = Printf.sprintf "%s: %s" name label in
+    List.iter
+      (fun (n, longer) ->
+         List.iter
+           (fun (sequence, parts, e) ->
+              let c =
+                mean (fun () ->
+                  let xs = ref (flatten parts) in
+                  drain n xs;
+                  ignore (Sys.opaque_identity !xs);
+                  1 + e + n)
+              in
+              check
+                (t
+                   (Printf.sprintf
+                      "flatten of %s then n tails, amortised O(1 + e)%s: %.2f words per \
+                       operation at n=%d"
+                      sequence
+                      longer
+                      c
+                      n))
+                (c <= flatten_constant))
+           (flatten_sequences n))
+      [ 1_000, ""; 100_000, ", a hundred times longer" ]
+  ;;
+
+  (* Every version of a drain of the flatten of n singletons: each one's last child is
+     the suspension of the rest. *)
+  let flatten_versions n =
+    let v = Array.make n C.empty in
+    v.(0) <- flatten (singletons n);
+    for i = 1 to n - 1 do
+      v.(i) <- C.tail v.(i - 1)
+    done;
+    v
+  ;;
+
+  let run_versions name =
+    let t label = Printf.sprintf "%s, persistently: %s" name label in
+    let n = 1_000
+    and k = 20 in
+    let v = flatten_versions n in
+    List.iter
+      (fun (label, op) ->
+         let i, c = dearest_repeated v k op in
+         check
+           (t
+              (Printf.sprintf
+                 "%s, %d times over from each version of a drain of the flatten of %d \
+                  singletons, dearest from #%d: %.2f words per operation"
+                 label
+                 k
+                 n
+                 i
+                 c))
+           (c <= flatten_constant))
+      [ "tail", tail_op
+      ; "++ a singleton then tail", op (fun xs -> C.tail (xs ++ singleton 0))
+      ; ( "flatten [xs; E; xs] then tail"
+        , op (fun xs -> C.tail (flatten [ xs; C.empty; xs ])) )
+      ];
+    let i, c = dearest_repeated v 1 (op C.head) in
+    check
+      (t
+         (Printf.sprintf
+            "head allocates nothing at any version of the drain, dearest #%d at %.0f \
+             words"
+            i
+            c))
+      (c = 0.0);
+    let steps = 100_000 in
+    let v = Array.make (steps + 1) C.empty in
+    Random.init 20261017;
+    let c =
+      mean (fun () ->
+        let sum = ref 0 in
+        for i = 1 to steps do
+          let a = v.(Random.int i) in
+          v.(i)
+          <- (match Random.int 5 with
+              | 0 -> C.cons i a
+              | 1 -> C.snoc a i
+              | 2 -> flatten (List.init (Random.int 5) (fun _ -> v.(Random.int i)))
+              | 3 -> if C.is_empty a then a else C.tail a
+              | _ ->
+                if not (C.is_empty a) then sum := !sum + C.head a;
+                a)
+        done;
+        ignore (Sys.opaque_identity !sum);
+        steps)
+    in
+    check
+      (t
+         (Printf.sprintf
+            "a random trace of %d operations, flatten of up to four random earlier \
+             versions among them: %.2f words per operation"
+            steps
+            c))
+      (c <= flatten_constant)
+  ;;
+
+  let run name =
+    run_contract name;
+    run_flatten name;
+    run_sequences name;
+    run_versions name
+  ;;
+end
+
+module Flatten_bootstrapped =
+  Flatten
+    (CatenableList (BootstrappedQueuePrimQ (Okasaki.Ch7.RealTimeQueue (Okasaki.Ch4.Stream))))
+
+module Flatten_bankers =
+  Flatten (CatenableList (Okasaki.Ch6.BankersQueue (Okasaki.Ch4.Stream)))
+
+let test_flatten () =
+  Flatten_bootstrapped.run "flatten over BootstrappedQueuePrimQ (RealTimeQueue)";
+  Flatten_bankers.run "flatten over BankersQueue"
+;;
+
 let tests =
   [ case "[Figure 10.1] AltBinaryRandomAccessListFigure" test_alt
   ; case "[Exercise 10.2] AltBinaryRandomAccessList" test_alt_lazy
@@ -717,5 +1052,6 @@ let tests =
   ; case "[Exercise 10.4] BootstrappedQueueNoPolymorphicRecursion" test_no_poly
   ; case "[Exercise 10.5] BootstrappedQueuePrimQ" test_prim
   ; case "[Figure 10.6] CatenableList" test_cat
+  ; case "[Exercise 10.6] flatten" test_flatten
   ]
 ;;

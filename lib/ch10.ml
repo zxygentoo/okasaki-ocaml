@@ -389,9 +389,15 @@ module type CATENABLE_LIST = sig
   val tail : 'a cat -> 'a cat
 end
 
+module type CATENABLE_LIST_WITH_FLATTEN = sig
+  include CATENABLE_LIST
+
+  val flatten : 'a cat list -> 'a cat
+end
+
 (* Figure 10.6 *)
 
-module CatenableList (Q : QUEUE) : CATENABLE_LIST = struct
+module CatenableList (Q : QUEUE) : CATENABLE_LIST_WITH_FLATTEN = struct
   type 'a cat =
     | E
     | C of 'a * 'a cat lazy_t Q.queue
@@ -433,5 +439,20 @@ module CatenableList (Q : QUEUE) : CATENABLE_LIST = struct
   let tail = function
     | E -> raise (Failure "tail: empty list")
     | C (_, q) -> if Q.is_empty q then E else link_all q
+  ;;
+
+  (* Exercise 10.6 Write a function flatten of type a Cat list -> a Cat that catenates
+    all the elements in a list of catenable lists.
+    Show that your function runs in 0(1 + e) amortized time, where e is the number of
+    empty catenable lists in the list.
+   *)
+
+  let rec flatten = function
+    | [] -> E
+    | E :: xs -> flatten xs
+    | x :: xs ->
+      (match List.drop_while is_empty xs with
+       | [] -> x
+       | ys -> link x (lazy (flatten ys)))
   ;;
 end
