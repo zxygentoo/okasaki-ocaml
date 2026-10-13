@@ -317,8 +317,8 @@ module BootstrappedQueueNoPolymorphicRecursion : QUEUE = struct
   let snoc q x = snoc_el q (El x)
 end
 
-(* Exercise 10.5 Another way to eliminate the need for polymorphic recursion is to represent
-  the middle using some other implementation of queues.
+(* Exercise 10.5 Another way to eliminate the need for polymorphic recursion is to
+  represent the middle using some other implementation of queues.
 
   Then the type of bootstrapped queues is
 
@@ -372,5 +372,66 @@ module BootstrappedQueuePrimQ (PrimQ : QUEUE) : QUEUE = struct
     | E -> raise (Failure "tail: empty queue")
     | Q (lenfm, _ :: f', m, lenr, r) -> check (lenfm - 1, f', m, lenr, r)
     | _ -> assert false
+  ;;
+end
+
+(* Figure 10.3 *)
+
+module type CATENABLE_LIST = sig
+  type 'a cat
+
+  val empty : 'a cat
+  val is_empty : 'a cat -> bool
+  val cons : 'a -> 'a cat -> 'a cat
+  val snoc : 'a cat -> 'a -> 'a cat
+  val ( ++ ) : 'a cat -> 'a cat -> 'a cat
+  val head : 'a cat -> 'a
+  val tail : 'a cat -> 'a cat
+end
+
+(* Figure 10.6 *)
+
+module CatenableList (Q : QUEUE) : CATENABLE_LIST = struct
+  type 'a cat =
+    | E
+    | C of 'a * 'a cat lazy_t Q.queue
+
+  let empty = E
+
+  let is_empty = function
+    | E -> true
+    | _ -> false
+  ;;
+
+  let link xs ys =
+    match xs with
+    | C (x, q) -> C (x, Q.snoc q ys)
+    | _ -> assert false
+  ;;
+
+  let ( ++ ) xs ys =
+    match xs, ys with
+    | _, E -> xs
+    | E, _ -> ys
+    | _ -> link xs (lazy ys)
+  ;;
+
+  let cons x xs = C (x, Q.empty) ++ xs
+  let snoc xs x = xs ++ C (x, Q.empty)
+
+  let head = function
+    | E -> raise (Failure "head: empty list")
+    | C (x, _) -> x
+  ;;
+
+  let rec link_all q =
+    let (lazy t) = Q.head q
+    and q' = Q.tail q in
+    if Q.is_empty q' then t else link t (lazy (link_all q'))
+  ;;
+
+  let tail = function
+    | E -> raise (Failure "tail: empty list")
+    | C (_, q) -> if Q.is_empty q then E else link_all q
   ;;
 end
