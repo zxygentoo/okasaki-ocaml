@@ -727,7 +727,7 @@ end
 
 (* Figure 10.10 *)
 
-module Trie (M : FINITE_MAP) : FINITE_MAP with type key = M.key list = struct
+module TrieFigure (M : FINITE_MAP) : FINITE_MAP with type key = M.key list = struct
   type key = M.key list
   type 'a map = Trie of 'a option * 'a map M.map
 
@@ -737,18 +737,69 @@ module Trie (M : FINITE_MAP) : FINITE_MAP with type key = M.key list = struct
     match k, m with
     | [], Trie (None, _) -> raise (Failure "lookup: not found")
     | [], Trie (Some x, _) -> x
-    | k :: ks, Trie (_, m) -> lookup ks (M.lookup k m)
+    | k' :: ks, Trie (_, m') -> lookup ks (M.lookup k' m')
   ;;
 
   let rec bind k x m =
     match k, m with
-    | [], Trie (_, m) -> Trie (Some x, m)
-    | k :: ks, Trie (v, m) ->
+    | [], Trie (_, m') -> Trie (Some x, m')
+    | k' :: ks, Trie (v, m') ->
       let t =
-        try M.lookup k m with
+        try M.lookup k' m' with
         | Failure _ -> empty
       in
       let t' = bind ks x t in
-      Trie (v, M.bind k t' m)
+      Trie (v, M.bind k' t' m')
   ;;
+end
+
+(* Exercise 10.9 Very often, the set of keys to be stored in a trie has the property
+  that no key is a proper prefix of another. For example, the keys might all be
+  the same length, or the keys might all end in a unique character that occurs in
+  no other position. Reimplement tries under this assumption, using the type
+
+    datatype a Map = Entry of a | TRIE of a Map M.Map
+*)
+
+module EntryTrie (M : FINITE_MAP) : FINITE_MAP with type key = M.key list = struct
+  type key = M.key list
+
+  type 'a map =
+    | Entry of 'a
+    | Trie of 'a map M.map
+
+  let empty = Trie M.empty
+
+  let rec lookup k m =
+    match k, m with
+    | [], Entry v -> v
+    | d :: ds, Trie m' -> lookup ds (M.lookup d m')
+    | _ -> raise (Failure "lookup: not found")
+  ;;
+
+  let rec bind k x m =
+    match k, m with
+    | [], Entry _ -> Entry x
+    | [], Trie _ -> Entry x
+    | d :: ds, Trie m' ->
+      let t =
+        try M.lookup d m' with
+        | Failure _ -> empty
+      in
+      let t' = bind ds x t in
+      Trie (M.bind d t' m')
+    | _ -> assert false
+  ;;
+end
+
+module Int32KeyTrie (T : FINITE_MAP with type key = int list) :
+  FINITE_MAP with type key = Int32.t = struct
+  type key = Int32.t (* fixed length *)
+  type 'a map = 'a T.map
+
+  let chunk k n = Int32.(to_int (logand (shift_right_logical k (8 * n)) 0xFFl))
+  let digits k = [ chunk k 3; chunk k 2; chunk k 1; chunk k 0 ]
+  let empty = T.empty
+  let lookup k m = T.lookup (digits k) m
+  let bind k x m = T.bind (digits k) x m
 end

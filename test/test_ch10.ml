@@ -3,9 +3,9 @@
    10.1.3) and its forms without polymorphic recursion of Exercises 10.4 and 10.5, and
    the catenable list of Figure 10.6 (section 10.2.1) and its flatten of Exercise 10.6,
    the bootstrapped heap of Figure 10.7 (section 10.2.2), the heaps with info of
-   Exercise 10.8 and the trie of Figure 10.10 (section 10.3.1), each with its own
-   preamble below. Alcotest cases written in the checks of harness.ml, as in the earlier
-   chapters. *)
+   Exercise 10.8, and the trie of Figure 10.10 (section 10.3.1) and its prefix-free form
+   of Exercise 10.9, each with its own preamble below. Alcotest cases written in the
+   checks of harness.ml, as in the earlier chapters. *)
 
 open Okasaki.Ch10
 open Harness
@@ -1661,7 +1661,7 @@ let test_boot_info () =
   test_boot_info_persistence ()
 ;;
 
-(* --------------------------------------------------------- Trie (Figure 10.10) *)
+(* --------------------------------------------------- TrieFigure (Figure 10.10) *)
 
 (* Section 10.3.1 bootstraps a finite map over an aggregate key, a list of elements of
    some base type, out of a finite map over the base type: a trie node is a value slot,
@@ -1703,9 +1703,9 @@ end
 
 let explode s = List.init (String.length s) (String.get s)
 
-module Chars = Trie (Okasaki.Ch2.UnbalancedMap (Char_ordered))
-module Words = Trie (Chars)
-module Ints = Trie (Okasaki.Ch2.UnbalancedMap (Counting_int))
+module Chars = TrieFigure (Okasaki.Ch2.UnbalancedMap (Char_ordered))
+module Words = TrieFigure (Chars)
+module Ints = TrieFigure (Okasaki.Ch2.UnbalancedMap (Counting_int))
 
 (* A trie as a finite map: what lookup and bind alone can show, over a key universe the
    workloads draw from. *)
@@ -1780,17 +1780,19 @@ let rec lists_upto alphabet l =
 
 let test_trie_contract () =
   Chars_contract.run
-    "Trie (UnbalancedMap (char))"
+    "TrieFigure (UnbalancedMap (char))"
     ~universe:(lists_upto [ 'a'; 'b'; 'c' ] 3);
   Words_contract.run
-    "Trie (Trie (UnbalancedMap (char)))"
+    "TrieFigure (TrieFigure (UnbalancedMap (char)))"
     ~universe:(lists_upto (List.map explode [ "a"; "an"; "cat"; "dog" ]) 2);
-  Ints_contract.run "Trie (UnbalancedMap (int))" ~universe:(lists_upto [ 0; 1; 2 ] 3)
+  Ints_contract.run
+    "TrieFigure (UnbalancedMap (int))"
+    ~universe:(lists_upto [ 0; 1; 2 ] 3)
 ;;
 
 (* The book's trie: cat, dog, car, cart. *)
 let test_trie_strings () =
-  let t label = "Trie (UnbalancedMap (char)), the book's trie: " ^ label in
+  let t label = "TrieFigure (UnbalancedMap (char)), the book's trie: " ^ label in
   let at s m = Chars.lookup (explode s) m in
   let m =
     Chars_contract.of_list
@@ -1824,7 +1826,7 @@ let test_trie_strings () =
 (* A trie over lists of words: the inner trie's miss under a word is what the outer
    bind handles. *)
 let test_trie_of_tries () =
-  let t label = "Trie (Trie (UnbalancedMap (char))), sentences: " ^ label in
+  let t label = "TrieFigure (TrieFigure (UnbalancedMap (char))), sentences: " ^ label in
   let sentence s = List.map explode (String.split_on_char ' ' s) in
   let at s m = Words.lookup (sentence s) m in
   let m =
@@ -1856,9 +1858,6 @@ let rec keys b l =
   else List.concat_map (fun k -> List.init b (fun d -> d :: k)) (keys b (l - 1))
 ;;
 
-(* The complete trie of those b^l keys, b children at every inner node. *)
-let complete b l = List.fold_left (fun m k -> Ints.bind k 0 m) Ints.empty (keys b l)
-
 module Base = Okasaki.Ch2.UnbalancedMap (Counting_int)
 
 (* What one level of the complete trie costs the base map: its lookup and its bind of the
@@ -1874,94 +1873,257 @@ let base_costs b =
 (* The trie's own share of a bind: the node it makes at a level. *)
 let node_words = 3.0
 
-let test_trie_clocks () =
-  List.iter
-    (fun (b, l) ->
-       let t label =
-         Printf.sprintf
-           "Trie (UnbalancedMap (int)), the complete trie b=%d l=%d: %s"
-           b
-           l
-           label
-       in
-       let m = complete b l in
-       let lf = float_of_int l in
-       let (lc, lw), (bc, bw) = base_costs b in
-       let deepest = List.init l (fun _ -> b - 1) in
-       let c, w = spent_only (fun () -> ignore (Ints.lookup deepest m)) in
-       check
-         (t
-            (Printf.sprintf
-               "a lookup of the last key is l base-map lookups and nothing more: %.0f \
-                comparisons and %.0f words, the base map's %.0f and %.0f a level"
-               c
-               w
-               lc
-               lw))
-         (c <= lf *. lc && w <= lf *. lw);
-       let lookup_budget = l * (b + 1) in
-       let dearest =
-         List.fold_left
-           (fun acc k -> max acc (count_only (fun () -> ignore (Ints.lookup k m))))
-           0
-           (keys b l)
-       in
-       check
-         (t
-            (Printf.sprintf
-               "the dearest lookup of all %d keys compares %d times, budget l(b+1) = %d"
-               (List.length (keys b l))
-               dearest
-               lookup_budget))
-         (dearest <= lookup_budget);
-       (* A miss at the first element: the same few comparisons whatever is behind it. *)
-       let miss n = b :: List.init (n - 1) (fun _ -> 0) in
-       let short = miss 10
-       and long = miss 100_000 in
-       let c10 = count_only (fun () -> Ints_contract.lookup_opt short m)
-       and c100k, w100k = spent_only (fun () -> Ints_contract.lookup_opt long m) in
-       check
-         (t
-            (Printf.sprintf
-               "a miss at the first element compares %d times for a key of 10 and %.0f \
-                for one of 100000, budget b+1 = %d, and the long one allocates %.0f \
-                words, budget %.0f"
-               c10
-               c100k
-               (b + 1)
-               w100k
-               (lw +. 4.0)))
-         (float_of_int c10 = c100k && c10 <= b + 1 && w100k <= lw +. 4.0);
-       (* A bind of a key of n elements: n base-map lookups and binds, and n + 1 nodes. *)
-       List.iter
-         (fun (what, k) ->
-            let n = float_of_int (List.length k) in
-            let c, w = spent_only (fun () -> ignore (Ints.bind k 1 m)) in
-            let cb = n *. (lc +. bc)
-            and wb = (n +. 1.0) *. (lw +. bw +. node_words) in
-            check
-              (t
-                 (Printf.sprintf
-                    "%s is a base-map lookup and bind an element and a node a level: \
-                     %.0f comparisons and %.0f words, budget %.0f and %.0f"
-                    what
-                    c
-                    w
-                    cb
-                    wb))
-              (c <= cb && w <= wb))
-         [ "a rebind of the last key", deepest
-         ; "a bind of a new key under the last node", deepest @ [ 0 ]
-         ; "a bind of a new key off the root", [ b ]
-         ])
-    [ 4, 6; 2, 12 ]
-;;
+(* The clocks of a trie keyed by int lists over Chapter 2's map of counting ints, on the
+   complete trie. A trie that assumes no key is a prefix of another is clocked without
+   the bind under the last key, [prefixes] false. *)
+module Trie_clocks (T : FINITE_MAP with type key = int list) = struct
+  module C = Trie_contract (T)
+
+  (* The complete trie of those b^l keys, b children at every inner node. *)
+  let complete b l = C.of_list (List.map (fun k -> k, 0) (keys b l))
+
+  let run ?(prefixes = true) name =
+    List.iter
+      (fun (b, l) ->
+         let t label =
+           Printf.sprintf "%s, the complete trie b=%d l=%d: %s" name b l label
+         in
+         let m = complete b l in
+         let lf = float_of_int l in
+         let (lc, lw), (bc, bw) = base_costs b in
+         let deepest = List.init l (fun _ -> b - 1) in
+         let c, w = spent_only (fun () -> ignore (T.lookup deepest m)) in
+         check
+           (t
+              (Printf.sprintf
+                 "a lookup of the last key is l base-map lookups and nothing more: %.0f \
+                  comparisons and %.0f words, the base map's %.0f and %.0f a level"
+                 c
+                 w
+                 lc
+                 lw))
+           (c <= lf *. lc && w <= lf *. lw);
+         let lookup_budget = l * (b + 1) in
+         let dearest =
+           List.fold_left
+             (fun acc k -> max acc (count_only (fun () -> ignore (T.lookup k m))))
+             0
+             (keys b l)
+         in
+         check
+           (t
+              (Printf.sprintf
+                 "the dearest lookup of all %d keys compares %d times, budget l(b+1) = %d"
+                 (List.length (keys b l))
+                 dearest
+                 lookup_budget))
+           (dearest <= lookup_budget);
+         (* A miss at the first element: the same few comparisons whatever is behind it. *)
+         let miss n = b :: List.init (n - 1) (fun _ -> 0) in
+         let short = miss 10
+         and long = miss 100_000 in
+         let c10 = count_only (fun () -> C.lookup_opt short m)
+         and c100k, w100k = spent_only (fun () -> C.lookup_opt long m) in
+         check
+           (t
+              (Printf.sprintf
+                 "a miss at the first element compares %d times for a key of 10 and %.0f \
+                  for one of 100000, budget b+1 = %d, and the long one allocates %.0f \
+                  words, budget %.0f"
+                 c10
+                 c100k
+                 (b + 1)
+                 w100k
+                 (lw +. 4.0)))
+           (float_of_int c10 = c100k && c10 <= b + 1 && w100k <= lw +. 4.0);
+         (* A bind of a key of n elements: n base-map lookups and binds, and n + 1 nodes. *)
+         List.iter
+           (fun (what, k) ->
+              let n = float_of_int (List.length k) in
+              let c, w = spent_only (fun () -> ignore (T.bind k 1 m)) in
+              let cb = n *. (lc +. bc)
+              and wb = (n +. 1.0) *. (lw +. bw +. node_words) in
+              check
+                (t
+                   (Printf.sprintf
+                      "%s is a base-map lookup and bind an element and a node a level: \
+                       %.0f comparisons and %.0f words, budget %.0f and %.0f"
+                      what
+                      c
+                      w
+                      cb
+                      wb))
+                (c <= cb && w <= wb))
+           ([ "a rebind of the last key", deepest ]
+            @ (if prefixes
+               then [ "a bind of a new key under the last node", deepest @ [ 0 ] ]
+               else [])
+            @ [ "a bind of a new key off the root", [ b ] ]))
+      [ 4, 6; 2, 12 ]
+  ;;
+end
+
+module Ints_clocks = Trie_clocks (Ints)
 
 let test_trie () =
   test_trie_contract ();
   test_trie_strings ();
   test_trie_of_tries ();
-  test_trie_clocks ()
+  Ints_clocks.run "TrieFigure (UnbalancedMap (int))"
+;;
+
+(* ---------------------------------------------------- EntryTrie (Exercise 10.9) *)
+
+(* Exercise 10.9 rewrites the trie for keys none of which is a proper prefix of another,
+   which the book illustrates as keys all of one length, or keys all ended by a character
+   that occurs nowhere else. Then no key ends where another goes on, so a node is either
+   an Entry, a value at the end of a key, or a TRIE of children, with no value slot at
+   the inner nodes; and what a key that breaks the assumption does is the
+   implementation's own affair, so no check here binds one. EntryTrie is that trie over
+   any base map, and Int32KeyTrie keys any map over int lists by Int32.t, each key cut
+   into its four bytes, all four always: a fixed width, and so a prefix-free code.
+
+   The contract is Figure 10.10's over universes the assumption allows: the words of up
+   to three letters over a, b and c each ended by '.', and the lists of three elements
+   over 0..2. Then the book's trie with every key ended by '.', where car, a prefix of
+   cart in Figure 10.10, is a key of its own by its end marker. The Int32 tries, over
+   EntryTrie and over Figure 10.10's TrieFigure, run the contract on the 625 keys whose
+   bytes are each one of 00, 01, 7F, 80 and FF: 0, -1, and the least and the greatest
+   Int32 are among them, and so are keys that differ in one byte, and the pairs that an
+   encoding dropping a zero byte would make one key or one a prefix of the other. Their
+   base map counts its calls, and every key, small or large, must be found in exactly
+   four lookups and rebound in four lookups and four binds. The clocks are Figure 10.10's
+   on the complete trie, without the bind under the last key, which the assumption rules
+   out. Measured at b = 4, l = 6: a lookup as Figure 10.10's, 30 comparisons and 162
+   words; a rebind 290 words to Figure 10.10's 299, a word less at each of the six levels,
+   where no option is kept, and three less at the leaf, an Entry where Figure 10.10 has a
+   node and a Some. *)
+
+module Chars_entry = EntryTrie (Okasaki.Ch2.UnbalancedMap (Char_ordered))
+module Ints_entry = EntryTrie (Okasaki.Ch2.UnbalancedMap (Counting_int))
+module Chars_entry_contract = Trie_contract (Chars_entry)
+module Ints_entry_contract = Trie_contract (Ints_entry)
+module Ints_entry_clocks = Trie_clocks (Ints_entry)
+
+(* A word ended by the marker '.', which no key has anywhere else. *)
+let ended s = explode s @ [ '.' ]
+
+let test_entry_contract () =
+  Chars_entry_contract.run
+    "EntryTrie (UnbalancedMap (char)), keys ended by '.'"
+    ~universe:(List.map (fun k -> k @ [ '.' ]) (lists_upto [ 'a'; 'b'; 'c' ] 3));
+  Ints_entry_contract.run
+    "EntryTrie (UnbalancedMap (int)), keys of length 3"
+    ~universe:(keys 3 3)
+;;
+
+(* The book's trie, cat, dog, car and cart, every key ended by '.'. *)
+let test_entry_strings () =
+  let t label =
+    "EntryTrie (UnbalancedMap (char)), the book's trie, keys ended by '.': " ^ label
+  in
+  let at s m = Chars_entry.lookup (ended s) m in
+  let m =
+    Chars_entry_contract.of_list
+      (List.map (fun (s, v) -> ended s, v) [ "cat", 1; "dog", 2; "car", 3; "cart", 4 ])
+  in
+  check_int (t "cart") ~expect:4 ~actual:(at "cart" m);
+  check_int
+    (t "car, a key of its own beside cart by its end marker")
+    ~expect:3
+    ~actual:(at "car" m);
+  check_failure (t "ca is a path but not a key") "lookup: not found" (fun () -> at "ca" m);
+  check_failure (t "dark leaves the trie at d") "lookup: not found" (fun () ->
+    at "dark" m);
+  check_failure (t "carts runs past cart") "lookup: not found" (fun () -> at "carts" m);
+  check_failure
+    (t "car without its end marker stops at an inner node, which holds no value")
+    "lookup: not found"
+    (fun () -> Chars_entry.lookup (explode "car") m);
+  let m' = Chars_entry.bind (ended "car") 30 m in
+  check_int (t "rebinding car replaces its value") ~expect:30 ~actual:(at "car" m');
+  check_int (t "and keeps cart") ~expect:4 ~actual:(at "cart" m');
+  check_int (t "and cat") ~expect:1 ~actual:(at "cat" m');
+  check_int (t "while the original still has car at 3") ~expect:3 ~actual:(at "car" m)
+;;
+
+(* A base map that counts the calls made to it. *)
+module Counting_map (M : FINITE_MAP) = struct
+  include M
+
+  let lookups = ref 0
+  let binds = ref 0
+
+  let lookup k m =
+    incr lookups;
+    M.lookup k m
+  ;;
+
+  let bind k x m =
+    incr binds;
+    M.bind k x m
+  ;;
+end
+
+module Byte_map = Counting_map (Base)
+
+(* The 625 keys whose four bytes are each one of 00, 01, 7F, 80 and FF. *)
+let int32_universe =
+  let bytes = [| 0x00; 0x01; 0x7F; 0x80; 0xFF |] in
+  List.map
+    (fun k -> Int32.of_int (List.fold_left (fun acc i -> (acc lsl 8) lor bytes.(i)) 0 k))
+    (keys 5 4)
+;;
+
+(* An Int32 trie: the contract, and the base-map calls each key costs. *)
+module Int32_trie (T : FINITE_MAP with type key = Int32.t) = struct
+  module C = Trie_contract (T)
+
+  (* The base-map lookups and binds [f] makes. *)
+  let calls f =
+    Byte_map.lookups := 0;
+    Byte_map.binds := 0;
+    ignore (f ());
+    !Byte_map.lookups, !Byte_map.binds
+  ;;
+
+  let run name =
+    C.run name ~universe:int32_universe;
+    let m = C.of_list (List.map (fun k -> k, 0) int32_universe) in
+    let off expect f =
+      List.filter (fun k -> calls (fun () -> f k) <> expect) int32_universe
+    and first = function
+      | [] -> ""
+      | k :: _ -> Printf.sprintf ", but not 0x%08lx" k
+    in
+    let lookups = off (4, 0) (fun k -> T.lookup k m)
+    and binds = off (4, 4) (fun k -> T.bind k 1 m) in
+    check
+      (Printf.sprintf
+         "%s: every one of the %d keys, 0, -1 and the least and greatest Int32 among \
+          them, is found in exactly 4 base-map lookups%s"
+         name
+         (List.length int32_universe)
+         (first lookups))
+      (lookups = []);
+    check
+      (Printf.sprintf
+         "%s: and rebound in exactly 4 base-map lookups and 4 base-map binds%s"
+         name
+         (first binds))
+      (binds = [])
+  ;;
+end
+
+module Int32_entry = Int32_trie (Int32KeyTrie (EntryTrie (Byte_map)))
+module Int32_figure = Int32_trie (Int32KeyTrie (TrieFigure (Byte_map)))
+
+let test_entry_trie () =
+  test_entry_contract ();
+  test_entry_strings ();
+  Int32_entry.run "Int32KeyTrie (EntryTrie (UnbalancedMap (int)))";
+  Int32_figure.run "Int32KeyTrie (TrieFigure (UnbalancedMap (int)))";
+  Ints_entry_clocks.run ~prefixes:false "EntryTrie (UnbalancedMap (int))"
 ;;
 
 let tests =
@@ -1975,6 +2137,7 @@ let tests =
   ; case "[Figure 10.7] BootstrapFigure" test_boot
   ; case "[Exercise 10.8(a)] LazyBinomialHeapWithInfo" test_lazy_info
   ; case "[Exercise 10.8(b)] Bootstrap" test_boot_info
-  ; case "[Figure 10.10] Trie" test_trie
+  ; case "[Figure 10.10] TrieFigure" test_trie
+  ; case "[Exercise 10.9] EntryTrie" test_entry_trie
   ]
 ;;
