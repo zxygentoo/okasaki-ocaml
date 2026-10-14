@@ -4,9 +4,9 @@
    the catenable list of Figure 10.6 (section 10.2.1) and its flatten of Exercise 10.6,
    the bootstrapped heap of Figure 10.7 (section 10.2.2), the heaps with info of
    Exercise 10.8, and the trie of Figure 10.10 (section 10.3.1), its prefix-free form of
-   Exercise 10.9 and its path-compressed form of Exercise 10.10, each with its own
-   preamble below. Alcotest cases written in the checks of harness.ml, as in the earlier
-   chapters. *)
+   Exercise 10.9 and its path-compressed form of Exercise 10.10, and the hash table of
+   Exercise 10.11, each with its own preamble below. Alcotest cases written in the
+   checks of harness.ml, as in the earlier chapters. *)
 
 open Okasaki.Ch10
 open Harness
@@ -1730,7 +1730,7 @@ module Trie_contract (T : FINITE_MAP) = struct
     let n = List.length universe in
     let pick () = List.nth universe (Random.int n) in
     check
-      (t "the empty trie has no key of the universe")
+      (t "the empty map has no key of the universe")
       (List.for_all (fun k -> lookup_opt k T.empty = None) universe);
     let ok = ref true in
     for _ = 1 to 300 do
@@ -2454,6 +2454,276 @@ let test_compressed () =
     "PathCompressionTrie (UnbalancedMap (int))"
 ;;
 
+(* ------------------------------------------------ HashTable (Exercise 10.11) *)
+
+(* Exercise 10.11 (Schwenke) stacks two finite maps: an Approx map keyed by the hash of
+   a key, whose every entry is a bucket, an Exact map keyed by the key itself, holding
+   the keys that share that hash. A lookup hashes its key, finds the bucket in Approx and
+   the key in the bucket; a bind does the same and puts the bucket back, a fresh one when
+   the hash had none. The advantage the book claims is the division of labour: Approx can
+   be keyed by something cheap to compare, integers, and Exact can be trivial, an
+   association list, since all it ever sees is one bucket.
+
+   Here Approx is Chapter 2's map over integers and Exact an association list over
+   strings that tells keys apart by equality alone, both counting the calls made to them,
+   the list its string comparisons too; the hash counts its calls. Four hashes: the
+   length of the string, so that buckets are shared; OCaml's Hashtbl.hash, which spreads
+   the keys out; the same modulo 64, buckets that fill as the table grows; and a
+   constant, one bucket for all, which makes the table its association list. The contract
+   is Figure 10.10's, any finite map's, over every string of up to three letters over a,
+   b and c, for three of the hashes. Then collisions spelled out: two keys of one bucket,
+   a miss inside a bucket and a miss with no bucket, a rebind, and a new key in a shared
+   bucket. Then the structure, by its calls, under the same three: every lookup and every
+   bind hashes its key once and makes one Approx lookup; a lookup that finds its key
+   makes one Exact lookup, a miss at most one; a bind makes one Exact bind and one
+   Approx bind, whether the bucket was there or not, and no Exact lookup. Last the claim
+   itself, over n decimal strings at n = 100 and 10000: a lookup or a rebind compares its
+   key with the keys of its own bucket and no others. Measured: under Hashtbl.hash no two
+   of the strings share a bucket and every lookup and rebind compares one string at
+   either size; modulo 64 the widest bucket holds 6 keys at n = 100 and 183 at 10000,
+   and the dearest lookup or rebind compares exactly that many. *)
+
+(* Exercise 10.11's trivial Exact map: an association list over strings, its keys told
+   apart by equality alone, every comparison counted. *)
+let string_eqs = ref 0
+
+module Assoc = struct
+  type key = string
+  type 'a map = (string * 'a) list
+
+  let empty = []
+
+  let same a b =
+    incr string_eqs;
+    String.equal a b
+  ;;
+
+  let lookup k m =
+    match List.find_opt (fun (k', _) -> same k k') m with
+    | Some (_, v) -> v
+    | None -> raise (Failure "lookup: not found")
+  ;;
+
+  let bind k x m = (k, x) :: List.filter (fun (k', _) -> not (same k k')) m
+end
+
+module Approx = Counting_map (Base)
+module Exact = Counting_map (Assoc)
+
+let hashes = ref 0
+
+(* A hash that counts its calls. *)
+module Hashing (F : sig
+    val hash : string -> int
+  end) =
+struct
+  let hash k =
+    incr hashes;
+    F.hash k
+  ;;
+end
+
+module Length_hash = struct
+  let hash = String.length
+end
+
+module Spread_hash = struct
+  let hash = Hashtbl.hash
+end
+
+module Hash_64 = struct
+  let hash k = Hashtbl.hash k mod 64
+end
+
+module Constant_hash = struct
+  let hash _ = 0
+end
+
+module By_length = HashTable (Approx) (Exact) (Hashing (Length_hash))
+module By_spread = HashTable (Approx) (Exact) (Hashing (Spread_hash))
+module By_64 = HashTable (Approx) (Exact) (Hashing (Hash_64))
+module One_bucket = HashTable (Approx) (Exact) (Hashing (Constant_hash))
+
+(* Figure 10.10's contract is any finite map's. *)
+module By_length_contract = Trie_contract (By_length)
+module By_spread_contract = Trie_contract (By_spread)
+module One_bucket_contract = Trie_contract (One_bucket)
+
+let implode k = String.of_seq (List.to_seq k)
+let hash_universe = List.map implode (lists_upto [ 'a'; 'b'; 'c' ] 3)
+
+let test_hash_contract () =
+  By_length_contract.run "HashTable, hashed by length" ~universe:hash_universe;
+  By_spread_contract.run "HashTable, hashed by Hashtbl.hash" ~universe:hash_universe;
+  One_bucket_contract.run "HashTable, one bucket for all" ~universe:hash_universe
+;;
+
+(* Collisions spelled out, hashed by length: ab and ba share a bucket. *)
+let test_hash_collisions () =
+  let t label = "HashTable, hashed by length: " ^ label in
+  let at = By_length.lookup in
+  let m = By_length_contract.of_list [ "ab", 1; "ba", 2; "abc", 3 ] in
+  check_int (t "ab") ~expect:1 ~actual:(at "ab" m);
+  check_int (t "ba, in the same bucket") ~expect:2 ~actual:(at "ba" m);
+  check_failure
+    (t "ca, missing from a bucket that is there")
+    "lookup: not found"
+    (fun () -> at "ca" m);
+  check_failure (t "abcd, with no bucket at all") "lookup: not found" (fun () ->
+    at "abcd" m);
+  let m' = By_length.bind "ab" 10 m in
+  check_int (t "rebinding ab replaces its value") ~expect:10 ~actual:(at "ab" m');
+  check_int (t "and keeps ba beside it") ~expect:2 ~actual:(at "ba" m');
+  let m'' = By_length.bind "cc" 5 m in
+  check_int (t "cc, bound into the shared bucket") ~expect:5 ~actual:(at "cc" m'');
+  check_int (t "keeps ab") ~expect:1 ~actual:(at "ab" m'');
+  check_int (t "and ba") ~expect:2 ~actual:(at "ba" m'');
+  check_int (t "while the original still has ab at 1") ~expect:1 ~actual:(at "ab" m);
+  check_failure (t "and no cc") "lookup: not found" (fun () -> at "cc" m)
+;;
+
+(* The calls [f] makes: hashes, Approx lookups and binds, Exact lookups and binds. *)
+let hash_calls f =
+  hashes := 0;
+  Approx.lookups := 0;
+  Approx.binds := 0;
+  Exact.lookups := 0;
+  Exact.binds := 0;
+  ignore (f ());
+  !hashes, (!Approx.lookups, !Approx.binds), (!Exact.lookups, !Exact.binds)
+;;
+
+let show_calls (h, (al, ab), (el, eb)) =
+  Printf.sprintf
+    "%d hashes, Approx %d lookups and %d binds, Exact %d lookups and %d binds"
+    h
+    al
+    ab
+    el
+    eb
+;;
+
+(* What a table spends on each kind of key, by its calls. *)
+module Hash_calls (T : FINITE_MAP with type key = string) = struct
+  module C = Trie_contract (T)
+
+  let run name =
+    let t label = name ^ ": " ^ label in
+    let m = C.of_list (List.map (fun k -> k, 0) hash_universe) in
+    let each what keys f ok =
+      all_of (t what) (fun note ->
+        List.iter
+          (fun k ->
+             let c = hash_calls (fun () -> f k) in
+             if not (ok c) then note (Printf.sprintf "%S: %s" k (show_calls c)))
+          keys)
+    in
+    let found k = T.lookup k m
+    and missed k = C.lookup_opt k m
+    and bound k = T.bind k 1 m in
+    each
+      "every key bound is found in one hash, one Approx lookup and one Exact lookup"
+      hash_universe
+      found
+      (fun c -> c = (1, (1, 0), (1, 0)));
+    each
+      "a key not bound misses in one hash and one Approx lookup, and at most one Exact \
+       lookup"
+      [ "d"; "dd"; "ddd"; "abcd"; "dddd" ]
+      missed
+      (fun (h, (al, ab), (el, eb)) -> h = 1 && al = 1 && ab = 0 && el <= 1 && eb = 0);
+    each
+      "every bind, of a key bound or not, is one hash, one Approx lookup, one Exact bind \
+       and one Approx bind"
+      (hash_universe @ [ "d"; "dd"; "ddd"; "abcd"; "dddd" ])
+      bound
+      (fun c -> c = (1, (1, 1), (0, 1)))
+  ;;
+end
+
+module By_length_calls = Hash_calls (By_length)
+module By_spread_calls = Hash_calls (By_spread)
+module One_bucket_calls = Hash_calls (One_bucket)
+
+(* The claim: Exact sees one bucket. Over n decimal strings, every lookup and every
+   rebind compares its key with no more keys than share its hash. *)
+module Hash_buckets
+    (T : FINITE_MAP with type key = string)
+    (F : sig
+       val hash : string -> int
+     end) =
+struct
+  module C = Trie_contract (T)
+
+  let run name =
+    List.iter
+      (fun n ->
+         let t label = Printf.sprintf "%s, %d decimal strings: %s" name n label in
+         let keys = List.init n string_of_int in
+         let m = C.of_list (List.map (fun k -> k, 0) keys) in
+         let sizes = Hashtbl.create n in
+         List.iter
+           (fun k ->
+              let h = F.hash k in
+              Hashtbl.replace
+                sizes
+                h
+                (1 + Option.value (Hashtbl.find_opt sizes h) ~default:0))
+           keys;
+         let size k = Hashtbl.find sizes (F.hash k) in
+         let eqs f =
+           string_eqs := 0;
+           ignore (f ());
+           !string_eqs
+         in
+         let widest = ref 0
+         and dearest = ref 0 in
+         all_of
+           (t
+              "every lookup and every rebind compares its key only with its bucket's keys")
+           (fun note ->
+              List.iter
+                (fun k ->
+                   let s = size k
+                   and l = eqs (fun () -> T.lookup k m)
+                   and b = eqs (fun () -> T.bind k 1 m) in
+                   widest := max !widest s;
+                   dearest := max !dearest (max l b);
+                   if l > s || b > s
+                   then
+                     note
+                       (Printf.sprintf
+                          "%S, in a bucket of %d, compared %d times to look up and %d to \
+                           rebind"
+                          k
+                          s
+                          l
+                          b))
+                keys);
+         check
+           (t
+              (Printf.sprintf
+                 "the dearest of them compares %d, the widest bucket holding %d keys"
+                 !dearest
+                 !widest))
+           (!dearest <= !widest))
+      [ 100; 10_000 ]
+  ;;
+end
+
+module By_spread_buckets = Hash_buckets (By_spread) (Spread_hash)
+module By_64_buckets = Hash_buckets (By_64) (Hash_64)
+
+let test_hash_table () =
+  test_hash_contract ();
+  test_hash_collisions ();
+  By_length_calls.run "HashTable, hashed by length";
+  By_spread_calls.run "HashTable, hashed by Hashtbl.hash";
+  One_bucket_calls.run "HashTable, one bucket for all";
+  By_spread_buckets.run "HashTable, hashed by Hashtbl.hash";
+  By_64_buckets.run "HashTable, hashed by Hashtbl.hash mod 64"
+;;
+
 let tests =
   [ case "[Figure 10.1] AltBinaryRandomAccessListFigure" test_alt
   ; case "[Exercise 10.2] AltBinaryRandomAccessList" test_alt_lazy
@@ -2468,5 +2738,6 @@ let tests =
   ; case "[Figure 10.10] TrieFigure" test_trie
   ; case "[Exercise 10.9] EntryTrie" test_entry_trie
   ; case "[Exercise 10.10] PathCompressionTrie" test_compressed
+  ; case "[Exercise 10.11] HashTable" test_hash_table
   ]
 ;;

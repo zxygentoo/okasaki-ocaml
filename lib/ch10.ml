@@ -885,3 +885,45 @@ module PathCompressionTrie (M : FINITE_MAP_WITH_EQ_AND_IS_EMPTY) :
         Trie (List.take n ys, None, M.bind k t2 (M.bind p t1 M.empty)))
   ;;
 end
+
+(* Exercise 10.11 (Schwenke [Sch97]) Another common data structure that involves
+  multiple layers of finite maps is the hash table. Complete the following
+  implementation of abstract hash tables.
+
+    functor HashTable (structure Approx : FINITEMAP
+                      structure Exact : FINITEMAP
+                      val hash : Exact.Key ->• Approx.Key): FINITEMAP =
+    struct
+      type Key = Exact.Key
+      type a Map = a Exact.Map Approx.Map
+      ...
+      fun lookup (k, m) = Exact.lookup (k, Approx.lookup (hash k, m))
+      ...
+    end
+
+  The advantage of this representation is that Approx can use an efficient key
+  type (such as integers) and Exact can use a trivial implementation (such as
+  association lists).
+*)
+
+module HashTable
+    (Approx : FINITE_MAP)
+    (Exact : FINITE_MAP)
+    (H : sig
+       val hash : Exact.key -> Approx.key
+     end) : FINITE_MAP with type key = Exact.key = struct
+  type key = Exact.key
+  type 'a map = 'a Exact.map Approx.map
+
+  let empty = Approx.empty
+  let lookup k m = Exact.lookup k (Approx.lookup (H.hash k) m)
+
+  let bind k x m =
+    let h = H.hash k in
+    let t =
+      try Approx.lookup h m with
+      | Failure _ -> Exact.empty
+    in
+    Approx.bind h (Exact.bind k x t) m
+  ;;
+end
