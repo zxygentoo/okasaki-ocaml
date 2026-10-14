@@ -803,3 +803,85 @@ module Int32KeyTrie (T : FINITE_MAP with type key = int list) :
   let lookup k m = T.lookup (digits k) m
   let bind k x m = T.bind (digits k) x m
 end
+
+(* Exercise 10.10 Tries frequently contain long paths of nodes that each have
+  only a single child. A common optimization is to collapse such paths into a
+  single node. We accomplish this by storing with every node a substring that
+  is the longest common prefix of every key in that subtrie. The type of tries is
+  then
+
+    datatype a Map = TRIE of M.Key list x a option x a Map M.Map
+  
+  Reimplement tries using this type. You should maintain the invariant that no
+  node is both invalid and an only child. You may assume that the structure M
+  provides an isEmpty function.
+*)
+
+module type FINITE_MAP_WITH_EQ_AND_IS_EMPTY = sig
+  include FINITE_MAP
+
+  val key_eq : key -> key -> bool
+  val is_empty : 'a map -> bool
+end
+
+module PathCompressionTrie (M : FINITE_MAP_WITH_EQ_AND_IS_EMPTY) :
+  FINITE_MAP_WITH_EQ_AND_IS_EMPTY with type key = M.key list = struct
+  type key = M.key list
+  type 'a map = Trie of M.key list * 'a option * 'a map M.map
+
+  let empty = Trie ([], None, M.empty)
+  let is_empty (Trie (_, v, m')) = Option.is_none v && M.is_empty m'
+
+  let rec key_eq k1 k2 =
+    match k1, k2 with
+    | [], [] -> true
+    | x :: xs, y :: ys when M.key_eq x y -> key_eq xs ys
+    | _ -> false
+  ;;
+
+  let rec lookup_compare_keys k lcp =
+    match k, lcp with
+    | _, [] -> k
+    | x :: xs, y :: ys when M.key_eq x y -> lookup_compare_keys xs ys
+    | _ -> raise (Failure "lookup: not found")
+  ;;
+
+  let rec lookup xs (Trie (ys, v, m')) =
+    match lookup_compare_keys xs ys with
+    | [] ->
+      (match v with
+       | None -> raise (Failure "lookup: not found")
+       | Some v' -> v')
+    | z :: zs -> lookup zs (M.lookup z m')
+  ;;
+
+  let rec bind_compare_keys n k lcp =
+    match k, lcp with
+    | _, [] -> `Bind k
+    | [], p :: ps -> `Split (n, (p, ps))
+    | x :: xs, y :: ys when M.key_eq x y -> bind_compare_keys (n + 1) xs ys
+    | x :: xs, y :: ys -> `Branch (n, (x, xs), (y, ys))
+  ;;
+
+  let rec bind xs x (Trie (ys, v, m') as m) =
+    if is_empty m
+    then Trie (xs, Some x, M.empty)
+    else (
+      match bind_compare_keys 0 xs ys with
+      | `Bind [] -> Trie (ys, Some x, m')
+      | `Bind (k :: ks) ->
+        let t =
+          try M.lookup k m' with
+          | Failure _ -> empty
+        in
+        let t' = bind ks x t in
+        Trie (ys, v, M.bind k t' m')
+      | `Split (n, (p, ps)) ->
+        let t = Trie (ps, v, m') in
+        Trie (List.take n ys, Some x, M.bind p t M.empty)
+      | `Branch (n, (k, ks), (p, ps)) ->
+        let t1 = Trie (ps, v, m') in
+        let t2 = Trie (ks, Some x, M.empty) in
+        Trie (List.take n ys, None, M.bind k t2 (M.bind p t1 M.empty)))
+  ;;
+end
