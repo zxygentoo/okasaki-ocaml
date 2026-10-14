@@ -229,7 +229,7 @@ module type FINITE_MAP = sig
   type 'a map
 
   val empty : 'a map
-  val lookup : key -> 'a map -> 'a (* raises Not_found *)
+  val lookup : key -> 'a map -> 'a
   val bind : key -> 'a -> 'a map -> 'a map
 end
 
@@ -240,11 +240,12 @@ module UnbalancedMap (Key : ORDERED) : FINITE_MAP with type key = Key.t = struct
   let empty = Empty
 
   let lookup key m =
+    let err () = raise (Failure "lookup: not found") in
     let rec go candidate = function
       | Empty ->
         (match candidate with
-         | Some (k, v) -> if Key.eq key k then v else raise Not_found
-         | None -> raise Not_found)
+         | Some (k, v) -> if Key.eq key k then v else err ()
+         | None -> err ())
       | Tree (l, (k, v), r) -> if Key.lt key k then go candidate l else go (Some (k, v)) r
     in
     go None m

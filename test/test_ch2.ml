@@ -422,12 +422,13 @@ let test_create_cost () =
 
 (* UnbalancedMap seals 'a map, so the tests reach it only through lookup/bind. That is
    enough to pin a map down completely: over a known key universe, every key either looks
-   up to the expected value or raises Not_found, which also rules out bindings the map
-   should not have. *)
+   up to the expected value or fails, which also rules out bindings the map should not
+   have. The failure is the one every finite map of the book shares, Failure "lookup: not
+   found", the port's NOTFOUND. *)
 let lookup_opt k m =
   match M.lookup k m with
   | v -> Some v
-  | exception Not_found -> None
+  | exception Failure _ -> None
 ;;
 
 let test_map () =
@@ -439,9 +440,9 @@ let test_map () =
   in
   check_eq "lookup 3" ~expect:"three" ~actual:(M.lookup 3 m) Fun.id;
   check_eq "lookup 6" ~expect:"six" ~actual:(M.lookup 6 m) Fun.id;
-  check_raises "lookup of a missing key raises Not_found" Not_found (fun () ->
+  check_failure "lookup of a missing key fails" "lookup: not found" (fun () ->
     M.lookup 9 m);
-  check_raises "lookup on the empty map raises Not_found" Not_found (fun () ->
+  check_failure "lookup on the empty map fails" "lookup: not found" (fun () ->
     M.lookup 1 M.empty);
   (* The difference from a set: rebinding an existing key must REPLACE the value. A bind
      that reuses insert's "already present, nothing to do" logic silently keeps the old
@@ -459,7 +460,7 @@ let test_map () =
       (fun acc w ->
          let n =
            try M.lookup w acc with
-           | Not_found -> 0
+           | Failure _ -> 0
          in
          M.bind w (n + 1) acc)
       M.empty
@@ -515,7 +516,7 @@ let test_map_comparisons () =
   let _, c =
     count (fun () ->
       try Some (M.lookup 1000 deep) with
-      | Not_found -> None)
+      | Failure _ -> None)
   in
   check (Printf.sprintf "lookup, absent: %d <= d+1 = %d" c (d + 1)) (c <= d + 1);
   let _, c = count (fun () -> M.bind (n - 1) 0 deep) in

@@ -713,3 +713,42 @@ module Bootstrap (PrimH : HEAP_WITH_INFO) :
         | _ -> assert false)
   ;;
 end
+
+(* Figure 10.9 *)
+
+module type FINITE_MAP = sig
+  type key
+  type 'a map
+
+  val empty : 'a map
+  val lookup : key -> 'a map -> 'a
+  val bind : key -> 'a -> 'a map -> 'a map
+end
+
+(* Figure 10.10 *)
+
+module Trie (M : FINITE_MAP) : FINITE_MAP with type key = M.key list = struct
+  type key = M.key list
+  type 'a map = Trie of 'a option * 'a map M.map
+
+  let empty = Trie (None, M.empty)
+
+  let rec lookup k m =
+    match k, m with
+    | [], Trie (None, _) -> raise (Failure "lookup: not found")
+    | [], Trie (Some x, _) -> x
+    | k :: ks, Trie (_, m) -> lookup ks (M.lookup k m)
+  ;;
+
+  let rec bind k x m =
+    match k, m with
+    | [], Trie (_, m) -> Trie (Some x, m)
+    | k :: ks, Trie (v, m) ->
+      let t =
+        try M.lookup k m with
+        | Failure _ -> empty
+      in
+      let t' = bind ks x t in
+      Trie (v, M.bind k t' m)
+  ;;
+end

@@ -2,9 +2,10 @@
    its lazy form of Exercise 10.2, and the bootstrapped queue of Figure 10.2 (section
    10.1.3) and its forms without polymorphic recursion of Exercises 10.4 and 10.5, and
    the catenable list of Figure 10.6 (section 10.2.1) and its flatten of Exercise 10.6,
-   the bootstrapped heap of Figure 10.7 (section 10.2.2) and the heaps with info of
-   Exercise 10.8, each with its own preamble below. Alcotest cases written in the checks of harness.ml,
-   as in the earlier chapters. *)
+   the bootstrapped heap of Figure 10.7 (section 10.2.2), the heaps with info of
+   Exercise 10.8 and the trie of Figure 10.10 (section 10.3.1), each with its own
+   preamble below. Alcotest cases written in the checks of harness.ml, as in the earlier
+   chapters. *)
 
 open Okasaki.Ch10
 open Harness
@@ -1660,6 +1661,309 @@ let test_boot_info () =
   test_boot_info_persistence ()
 ;;
 
+(* --------------------------------------------------------- Trie (Figure 10.10) *)
+
+(* Section 10.3.1 bootstraps a finite map over an aggregate key, a list of elements of
+   some base type, out of a finite map over the base type: a trie node is a value slot,
+   filled or not, and a base map from one element to a child trie, and a key of length n
+   is read one element per level. The functor is over any FINITE_MAP, so the base map may
+   be Chapter 2's unbalanced map, or another trie, which gives maps over lists of lists.
+   The claims are the structure's: lookup and bind of a key of length n cost n base map
+   operations, one per element, and p.165's remark that an unsuccessful search can stop
+   early, at the first element with no edge, having read nothing past it.
+
+   The contract is test_ch2's for a finite map, since lookup and bind are all there is:
+   over a key universe, every key either looks up to its latest value or fails, and that
+   pins the map exactly, so random workloads are swept against an assoc-list reference
+   and so is every version of a chain of binds. Then the book's own trie, cat, dog, car
+   and cart over characters, where a prefix is a path but not a key and the empty key is
+   the root's own slot; and a trie of tries over lists of words. The clocks run over a
+   complete trie, every key of length l over 0..b-1, with the base maps built in ascending
+   order so each is Chapter 2's spine of depth b, the dearest shape that map can give a
+   trie of that branching, and they hold the trie to what the base map spends: a lookup
+   of a key of l elements is l base-map lookups and nothing more, in comparisons and in
+   words, at most l(b + 1) comparisons by 2.2's bound; a miss at the first element costs
+   one base-map lookup whether the key is 10 long or 100000; a bind of n elements
+   compares no more than its n base-map lookups and binds, and allocates no more than
+   n + 1 levels of those and a three-word node, the level to spare for the node and the
+   Some at the end of the key. Measured at b = 4, l = 6: the base map's lookup is 5
+   comparisons and 27 words, the candidate boxed a step, its bind 8 and 19, and the
+   trie's lookup of the last key exactly 30 and 162; a rebind of it 78 comparisons, six
+   levels of 13, and 299 words, six levels of 49 and the leaf's 5, against a budget of
+   343; the miss 5 comparisons and 30 words at either length. *)
+
+(* Ordered characters, for the base map of a trie over strings. *)
+module Char_ordered = struct
+  type t = char
+
+  let eq = Char.equal
+  let lt = ( < )
+  let leq = ( <= )
+end
+
+let explode s = List.init (String.length s) (String.get s)
+
+module Chars = Trie (Okasaki.Ch2.UnbalancedMap (Char_ordered))
+module Words = Trie (Chars)
+module Ints = Trie (Okasaki.Ch2.UnbalancedMap (Counting_int))
+
+(* A trie as a finite map: what lookup and bind alone can show, over a key universe the
+   workloads draw from. *)
+module Trie_contract (T : FINITE_MAP) = struct
+  let lookup_opt k m =
+    match T.lookup k m with
+    | v -> Some v
+    | exception Failure _ -> None
+  ;;
+
+  let of_list kvs = List.fold_left (fun m (k, v) -> T.bind k v m) T.empty kvs
+
+  (* Every key of [universe] against the assoc list [reference]. *)
+  let agrees universe m reference =
+    List.for_all (fun k -> lookup_opt k m = List.assoc_opt k reference) universe
+  ;;
+
+  let run name ~universe =
+    let t label = name ^ ": " ^ label in
+    Random.init 20261014;
+    let n = List.length universe in
+    let pick () = List.nth universe (Random.int n) in
+    check
+      (t "the empty trie has no key of the universe")
+      (List.for_all (fun k -> lookup_opt k T.empty = None) universe);
+    let ok = ref true in
+    for _ = 1 to 300 do
+      let ops = List.init (1 + Random.int 40) (fun _ -> pick (), Random.int 100) in
+      let reference =
+        List.fold_left (fun a (k, v) -> (k, v) :: List.remove_assoc k a) [] ops
+      in
+      if not (agrees universe (of_list ops) reference) then ok := false
+    done;
+    check
+      (t
+         (Printf.sprintf
+            "agrees with an assoc-list reference over 300 random workloads, the %d keys \
+             of the universe swept"
+            n))
+      !ok;
+    (* A chain of binds, every version answering afterwards as it did when made. *)
+    let _, _, versions =
+      List.fold_left
+        (fun (m, reference, vs) i ->
+           let k = pick () in
+           let m = T.bind k i m
+           and reference = (k, i) :: List.remove_assoc k reference in
+           m, reference, (m, reference) :: vs)
+        (T.empty, [], [])
+        (List.init 60 Fun.id)
+    in
+    check
+      (t "every version of 60 binds still answers as it did")
+      (List.for_all (fun (m, reference) -> agrees universe m reference) versions)
+  ;;
+end
+
+module Chars_contract = Trie_contract (Chars)
+module Words_contract = Trie_contract (Words)
+module Ints_contract = Trie_contract (Ints)
+
+(* Every list of length at most [l] over [alphabet]. *)
+let rec lists_upto alphabet l =
+  if l = 0
+  then [ [] ]
+  else
+    []
+    :: List.concat_map
+         (fun k -> List.map (fun c -> c :: k) alphabet)
+         (lists_upto alphabet (l - 1))
+;;
+
+let test_trie_contract () =
+  Chars_contract.run
+    "Trie (UnbalancedMap (char))"
+    ~universe:(lists_upto [ 'a'; 'b'; 'c' ] 3);
+  Words_contract.run
+    "Trie (Trie (UnbalancedMap (char)))"
+    ~universe:(lists_upto (List.map explode [ "a"; "an"; "cat"; "dog" ]) 2);
+  Ints_contract.run "Trie (UnbalancedMap (int))" ~universe:(lists_upto [ 0; 1; 2 ] 3)
+;;
+
+(* The book's trie: cat, dog, car, cart. *)
+let test_trie_strings () =
+  let t label = "Trie (UnbalancedMap (char)), the book's trie: " ^ label in
+  let at s m = Chars.lookup (explode s) m in
+  let m =
+    Chars_contract.of_list
+      (List.map (fun (s, v) -> explode s, v) [ "cat", 1; "dog", 2; "car", 3; "cart", 4 ])
+  in
+  check_int (t "cart") ~expect:4 ~actual:(at "cart" m);
+  check_int (t "car, a key of its own on the way to cart") ~expect:3 ~actual:(at "car" m);
+  check_failure (t "ca is a path but not a key") "lookup: not found" (fun () -> at "ca" m);
+  check_failure (t "dark leaves the trie at d") "lookup: not found" (fun () ->
+    at "dark" m);
+  check_failure (t "carts runs past cart") "lookup: not found" (fun () -> at "carts" m);
+  check_failure (t "the empty key is not bound") "lookup: not found" (fun () -> at "" m);
+  let m' = Chars.bind [] 0 m in
+  check_int
+    (t "the empty key, bound, is the root's own slot")
+    ~expect:0
+    ~actual:(at "" m');
+  check_int (t "and cat is still under it") ~expect:1 ~actual:(at "cat" m');
+  let m'' = Chars.bind (explode "ca") 9 m in
+  check_int (t "ca bound in the middle of the path") ~expect:9 ~actual:(at "ca" m'');
+  check_int (t "keeps cat below it") ~expect:1 ~actual:(at "cat" m'');
+  check_int (t "and cart") ~expect:4 ~actual:(at "cart" m'');
+  let m3 = Chars.bind (explode "car") 30 m in
+  check_int (t "rebinding car replaces its value") ~expect:30 ~actual:(at "car" m3);
+  check_int (t "and keeps cart") ~expect:4 ~actual:(at "cart" m3);
+  check_int (t "while the original still has car at 3") ~expect:3 ~actual:(at "car" m);
+  check_failure (t "and the original still has no ca") "lookup: not found" (fun () ->
+    at "ca" m)
+;;
+
+(* A trie over lists of words: the inner trie's miss under a word is what the outer
+   bind handles. *)
+let test_trie_of_tries () =
+  let t label = "Trie (Trie (UnbalancedMap (char))), sentences: " ^ label in
+  let sentence s = List.map explode (String.split_on_char ' ' s) in
+  let at s m = Words.lookup (sentence s) m in
+  let m =
+    Words_contract.of_list
+      (List.map
+         (fun (s, v) -> sentence s, v)
+         [ "the cat", 1; "the cat sat", 2; "the dog", 3; "a cat", 4 ])
+  in
+  check_int (t "the cat sat") ~expect:2 ~actual:(at "the cat sat" m);
+  check_int (t "the cat") ~expect:1 ~actual:(at "the cat" m);
+  check_int (t "a cat") ~expect:4 ~actual:(at "a cat" m);
+  check_failure (t "the, a prefix") "lookup: not found" (fun () -> at "the" m);
+  check_failure (t "the cow, no such word under the") "lookup: not found" (fun () ->
+    at "the cow" m);
+  check_failure (t "the cat sat down, past the end") "lookup: not found" (fun () ->
+    at "the cat sat down" m);
+  let m' = Words.bind (sentence "the cow") 5 m in
+  check_int (t "the cow, bound") ~expect:5 ~actual:(at "the cow" m');
+  check_int (t "the cat still") ~expect:1 ~actual:(at "the cat" m');
+  check_failure (t "and not in the original") "lookup: not found" (fun () ->
+    at "the cow" m)
+;;
+
+(* Every key of length [l] over 0..b-1, in an order that binds each node's children
+   ascending, so that every base map of the trie they make is Chapter 2's spine. *)
+let rec keys b l =
+  if l = 0
+  then [ [] ]
+  else List.concat_map (fun k -> List.init b (fun d -> d :: k)) (keys b (l - 1))
+;;
+
+(* The complete trie of those b^l keys, b children at every inner node. *)
+let complete b l = List.fold_left (fun m k -> Ints.bind k 0 m) Ints.empty (keys b l)
+
+module Base = Okasaki.Ch2.UnbalancedMap (Counting_int)
+
+(* What one level of the complete trie costs the base map: its lookup and its bind of the
+   last child of a spine of b, comparisons and words. *)
+let base_costs b =
+  let spine =
+    List.fold_left (fun m d -> Base.bind d () m) Base.empty (List.init b Fun.id)
+  in
+  ( spent_only (fun () -> ignore (Base.lookup (b - 1) spine))
+  , spent_only (fun () -> ignore (Base.bind (b - 1) () spine)) )
+;;
+
+(* The trie's own share of a bind: the node it makes at a level. *)
+let node_words = 3.0
+
+let test_trie_clocks () =
+  List.iter
+    (fun (b, l) ->
+       let t label =
+         Printf.sprintf
+           "Trie (UnbalancedMap (int)), the complete trie b=%d l=%d: %s"
+           b
+           l
+           label
+       in
+       let m = complete b l in
+       let lf = float_of_int l in
+       let (lc, lw), (bc, bw) = base_costs b in
+       let deepest = List.init l (fun _ -> b - 1) in
+       let c, w = spent_only (fun () -> ignore (Ints.lookup deepest m)) in
+       check
+         (t
+            (Printf.sprintf
+               "a lookup of the last key is l base-map lookups and nothing more: %.0f \
+                comparisons and %.0f words, the base map's %.0f and %.0f a level"
+               c
+               w
+               lc
+               lw))
+         (c <= lf *. lc && w <= lf *. lw);
+       let lookup_budget = l * (b + 1) in
+       let dearest =
+         List.fold_left
+           (fun acc k -> max acc (count_only (fun () -> ignore (Ints.lookup k m))))
+           0
+           (keys b l)
+       in
+       check
+         (t
+            (Printf.sprintf
+               "the dearest lookup of all %d keys compares %d times, budget l(b+1) = %d"
+               (List.length (keys b l))
+               dearest
+               lookup_budget))
+         (dearest <= lookup_budget);
+       (* A miss at the first element: the same few comparisons whatever is behind it. *)
+       let miss n = b :: List.init (n - 1) (fun _ -> 0) in
+       let short = miss 10
+       and long = miss 100_000 in
+       let c10 = count_only (fun () -> Ints_contract.lookup_opt short m)
+       and c100k, w100k = spent_only (fun () -> Ints_contract.lookup_opt long m) in
+       check
+         (t
+            (Printf.sprintf
+               "a miss at the first element compares %d times for a key of 10 and %.0f \
+                for one of 100000, budget b+1 = %d, and the long one allocates %.0f \
+                words, budget %.0f"
+               c10
+               c100k
+               (b + 1)
+               w100k
+               (lw +. 4.0)))
+         (float_of_int c10 = c100k && c10 <= b + 1 && w100k <= lw +. 4.0);
+       (* A bind of a key of n elements: n base-map lookups and binds, and n + 1 nodes. *)
+       List.iter
+         (fun (what, k) ->
+            let n = float_of_int (List.length k) in
+            let c, w = spent_only (fun () -> ignore (Ints.bind k 1 m)) in
+            let cb = n *. (lc +. bc)
+            and wb = (n +. 1.0) *. (lw +. bw +. node_words) in
+            check
+              (t
+                 (Printf.sprintf
+                    "%s is a base-map lookup and bind an element and a node a level: \
+                     %.0f comparisons and %.0f words, budget %.0f and %.0f"
+                    what
+                    c
+                    w
+                    cb
+                    wb))
+              (c <= cb && w <= wb))
+         [ "a rebind of the last key", deepest
+         ; "a bind of a new key under the last node", deepest @ [ 0 ]
+         ; "a bind of a new key off the root", [ b ]
+         ])
+    [ 4, 6; 2, 12 ]
+;;
+
+let test_trie () =
+  test_trie_contract ();
+  test_trie_strings ();
+  test_trie_of_tries ();
+  test_trie_clocks ()
+;;
+
 let tests =
   [ case "[Figure 10.1] AltBinaryRandomAccessListFigure" test_alt
   ; case "[Exercise 10.2] AltBinaryRandomAccessList" test_alt_lazy
@@ -1671,5 +1975,6 @@ let tests =
   ; case "[Figure 10.7] BootstrapFigure" test_boot
   ; case "[Exercise 10.8(a)] LazyBinomialHeapWithInfo" test_lazy_info
   ; case "[Exercise 10.8(b)] Bootstrap" test_boot_info
+  ; case "[Figure 10.10] Trie" test_trie
   ]
 ;;
