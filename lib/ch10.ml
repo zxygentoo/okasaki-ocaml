@@ -927,3 +927,42 @@ module HashTable
     Approx.bind h (Exact.bind k x t) m
   ;;
 end
+
+(* Figure 10.11 *)
+
+type 'a tree =
+  | E
+  | T of 'a * 'a tree * 'a tree
+
+module TrieOfTrees (M : FINITE_MAP) : FINITE_MAP with type key = M.key tree = struct
+  type key = M.key tree
+  type 'a map = Trie of 'a option * 'a map map M.map
+
+  let empty = Trie (None, M.empty)
+
+  let rec lookup : 'a. key -> 'a map -> 'a =
+    fun k m ->
+    match k, m with
+    | E, Trie (None, _) -> raise (Failure "lookup: not found")
+    | E, Trie (Some x, _) -> x
+    | T (k, a, b), Trie (_, m) -> lookup b (lookup a (M.lookup k m))
+  ;;
+
+  let rec bind : 'a. key -> 'a -> 'a map -> 'a map =
+    fun k x m ->
+    match k, m with
+    | E, Trie (_, m) -> Trie (Some x, m)
+    | T (k, a, b), Trie (v, m) ->
+      let tt =
+        try M.lookup k m with
+        | Failure _ -> empty
+      in
+      let t =
+        try lookup a tt with
+        | Failure _ -> empty
+      in
+      let t' = bind b x t in
+      let tt' = bind a t' tt in
+      Trie (v, M.bind k tt' m)
+  ;;
+end
