@@ -1,5 +1,5 @@
-(* Tests for Chapter 11: the queue of Figure 11.1 (section 11.1) and its lookup and
-   update of Exercise 11.1, each with its own preamble below. Alcotest cases written in the checks of harness.ml, as in the earlier
+(* Tests for Chapter 11: the queue of Figure 11.1 (section 11.1), its lookup and update
+   of Exercise 11.1 and the deque of Exercise 11.2, each with its own preamble below. Alcotest cases written in the checks of harness.ml, as in the earlier
    chapters. *)
 
 open Okasaki.Ch11
@@ -347,8 +347,275 @@ let test_indexed () =
   test_indexed_stopwatch name
 ;;
 
+(* --------------------------------------------------- ImplicitDeque (Exercise 11.2) *)
+
+(* Exercise 11.2 asks for deques by the techniques of the section. Both ends now add and
+   remove, which is the last row of p.172's table: each digit of a deep node is ONE, TWO
+   or THREE, ZERO being left to the empty deque. TWO is the safe digit, a step from either
+   edge: an insertion onto a THREE keeps the new element and one old one and sends the
+   other two into the middle as a pair, cons at the front and snoc at the back; a removal
+   from a ONE borrows a pair from the middle, its head and tail at the front and its last
+   and init at the back; and either leaves the digit at TWO. A shallow deque holds up to
+   three elements, a fourth making it deep. These are Section 9.2.3's redundant binary
+   numbers, one at each end, under Theorem 11.1's argument, and every operation is O(1)
+   amortised, head and last O(1) outright.
+
+   So the checks are Figure 11.1's twice over, once on the deque as a queue, snoc at the
+   back and head and tail at the front, and once on its mirror, cons at the front read as
+   a snoc, last and init as head and tail: the contract, the sequences, head allocating
+   nothing, the traces and the branch point of an insertion, at each end. The mirror
+   reports the deque's own refusals in the queue's words, so Chapter 5's deque contract
+   comes next, with last and init refusing as "last: empty queue" and "init: empty queue".
+   Then what neither direction sees alone, both ends at once: a stack at each end, an
+   insertion and a removal at the same end alternating on a digit's edge, and a random
+   mix of all six operations, at 1000 and 100000 under the same 48 words an operation;
+   a stack worked at its edge, 64 rounds of an insertion and a removal at one end from
+   every version of a build by that end, where digits of only ONE and TWO would push and
+   borrow a level further down at every step; and a random trace of 100000 of the six,
+   each on a random earlier version. Measured: the
+   sequences 2 to 25 words an operation in either direction; the drain's dearest removal
+   some 7450 words at n = 1000 from either end, the build's chain of pairs forced, and 14
+   a time for the other 9999 from its version; the dearest insertion 16 words at either
+   end, every time it is taken; the stacks 23, the alternations 8 and 9, the random mix
+   of six 8; the stack at its edge 7.5 from its dearest version, where a front of ONE
+   and TWO only comes to 138; and the persistent trace of six 3.5. *)
+
+(* The deque read from the back: its cons a snoc, its last a head and its init a tail,
+   refusing in a queue's words. *)
+module Mirror (D : Okasaki.Ch5.DEQUE) : Okasaki.Ch5.QUEUE = struct
+  type 'a queue = 'a D.queue
+
+  let empty = D.empty
+  let is_empty = D.is_empty
+  let snoc q x = D.cons x q
+
+  let head q =
+    try D.last q with
+    | Failure _ -> failwith "head: empty queue"
+  ;;
+
+  let tail q =
+    try D.init q with
+    | Failure _ -> failwith "tail: empty queue"
+  ;;
+end
+
+module Deque_forward = Implicit_tests (ImplicitDeque)
+module Deque_mirrored = Implicit_tests (Mirror (ImplicitDeque))
+
+module Deque_contract =
+  Queues.Deque_contract
+    (ImplicitDeque)
+    (struct
+      let refused name op f = check_failure name (op ^ ": empty queue") f
+      let seed = 20261015
+    end)
+
+(* Sequences of the six operations, each reporting how many it ran. *)
+module D = ImplicitDeque
+
+let opaque x = ignore (Sys.opaque_identity x)
+
+let cons_then_tail n () =
+  let q = ref D.empty in
+  for i = 1 to n do
+    q := D.cons i !q
+  done;
+  for _ = 1 to n do
+    q := D.tail !q
+  done;
+  opaque !q;
+  2 * n
+;;
+
+let snoc_then_init n () =
+  let q = ref D.empty in
+  for i = 1 to n do
+    q := D.snoc !q i
+  done;
+  for _ = 1 to n do
+    q := D.init !q
+  done;
+  opaque !q;
+  2 * n
+;;
+
+(* An insertion and a removal at one end, alternating, from each fill a digit can have
+   there, so that the pair crosses each digit edge. *)
+let same_end_alternating ~insert ~remove n () =
+  let q = ref D.empty in
+  for i = 1 to n do
+    q := insert !q i;
+    q := insert !q i;
+    q := remove !q
+  done;
+  for _ = 1 to n do
+    q := insert !q 0;
+    q := remove !q
+  done;
+  opaque !q;
+  5 * n
+;;
+
+let random_six n =
+  Random.init 20261015;
+  let size = ref 0 in
+  let plan =
+    Array.init n (fun _ ->
+      let op = if !size = 0 then Random.int 2 else Random.int 6 in
+      (match op with
+       | 0 | 1 -> incr size
+       | 2 | 3 -> decr size
+       | _ -> ());
+      op)
+  in
+  fun () ->
+    let q = ref D.empty
+    and sum = ref 0 in
+    Array.iteri
+      (fun i op ->
+         match op with
+         | 0 -> q := D.cons i !q
+         | 1 -> q := D.snoc !q i
+         | 2 -> q := D.tail !q
+         | 3 -> q := D.init !q
+         | 4 -> sum := !sum + D.head !q
+         | _ -> sum := !sum + D.last !q)
+      plan;
+    opaque !q;
+    opaque !sum;
+    n
+;;
+
+let deque_sequences =
+  [ "n conses then n tails, a stack at the front", cons_then_tail
+  ; "n snocs then n inits, a stack at the back", snoc_then_init
+  ; ( "two conses and a tail, then a cons and a tail, alternating at the front"
+    , same_end_alternating ~insert:(fun q x -> D.cons x q) ~remove:D.tail )
+  ; ( "two snocs and an init, then a snoc and an init, alternating at the back"
+    , same_end_alternating ~insert:D.snoc ~remove:D.init )
+  ; "a random mix of all six operations", random_six
+  ]
+;;
+
+let per_op c ops = c /. float_of_int ops
+
+let test_deque_sequences name =
+  List.iter
+    (fun (sequence, driver) ->
+       let within label n =
+         let ops, c = cost (driver n) in
+         check
+           (Printf.sprintf
+              "%s: %s, %s: %.2f words per operation at n=%d"
+              name
+              sequence
+              label
+              (per_op c ops)
+              n)
+           (c <= Queues.constant *. float_of_int ops)
+       in
+       within "amortised O(1)" 1_000;
+       within "amortised O(1), a hundred times longer" 100_000)
+    deque_sequences
+;;
+
+(* n of the six operations, each applied to a version chosen at random among all built so
+   far, an empty one only ever given an insertion. *)
+let test_deque_random_trace name =
+  let n = 100_000 in
+  Random.init 20261016;
+  let from = Array.init n (fun i -> Random.int (i + 1)) in
+  let op = Array.init n (fun _ -> Random.int 6) in
+  let v = Array.make (n + 1) D.empty in
+  let _, c =
+    cost (fun () ->
+      let sum = ref 0 in
+      for i = 1 to n do
+        let q = v.(from.(i - 1)) in
+        v.(i)
+        <- (match if D.is_empty q then op.(i - 1) land 1 else op.(i - 1) with
+            | 0 -> D.cons i q
+            | 1 -> D.snoc q i
+            | 2 -> D.tail q
+            | 3 -> D.init q
+            | 4 ->
+              sum := !sum + D.head q;
+              q
+            | _ ->
+              sum := !sum + D.last q;
+              q)
+      done;
+      opaque !sum;
+      v)
+  in
+  check
+    (Printf.sprintf
+       "%s, persistently: a random trace of %d of the six operations, each on a random \
+        earlier version: %.2f words per operation"
+       name
+       n
+       (per_op c n))
+    (c <= Queues.constant *. float_of_int n)
+;;
+
+(* A stack worked at its edge: from every version of a build of n by one end's insertion,
+   64 rounds of an insertion and a removal at that end, each round carrying on from the
+   last. One run from each version goes unmeasured first, so that what the build put off
+   is not charged to it. The dearest version's run. *)
+let test_deque_stack_edges name =
+  let n = 2_000
+  and rounds = 64 in
+  List.iter
+    (fun (which, insert, remove) ->
+       let v = Array.make (n + 1) D.empty in
+       for i = 1 to n do
+         v.(i) <- insert v.(i - 1) i
+       done;
+       let worst = ref (0, 0.0) in
+       Array.iteri
+         (fun k q ->
+            let run () =
+              let q = ref q in
+              for i = 1 to rounds do
+                q := remove (insert !q i)
+              done;
+              opaque !q
+            in
+            run ();
+            let _, c = cost run in
+            if c > snd !worst then worst := k, c)
+         v;
+       let k, c = !worst in
+       check
+         (Printf.sprintf
+            "%s: %s, %d rounds from each version of a build of %d, dearest from #%d: \
+             %.2f words per operation"
+            name
+            which
+            rounds
+            n
+            k
+            (per_op c (2 * rounds)))
+         (c <= Queues.constant *. float_of_int (2 * rounds)))
+    [ "a cons and a tail at the front", (fun q x -> D.cons x q), D.tail
+    ; "a snoc and an init at the back", D.snoc, D.init
+    ]
+;;
+
+let test_deque () =
+  let name = "ImplicitDeque" in
+  Deque_forward.run implicit_words name;
+  Deque_mirrored.run implicit_words (name ^ ", mirrored");
+  Deque_contract.run_contract name;
+  test_deque_sequences name;
+  test_deque_stack_edges name;
+  test_deque_random_trace name
+;;
+
 let tests =
   [ case "[Figure 11.1] ImplicitQueue" test_implicit
   ; case "[Exercise 11.1] ImplicitQueueWithLookupAndUpdate" test_indexed
+  ; case "[Exercise 11.2] ImplicitDeque" test_deque
   ]
 ;;
