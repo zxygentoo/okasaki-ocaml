@@ -966,3 +966,62 @@ module TrieOfTrees (M : FINITE_MAP) : FINITE_MAP with type key = M.key tree = st
       Trie (v, M.bind k tt' m)
   ;;
 end
+
+(* Exercise 10.12 Reimplement the TrieOfTrees functor without polymorphic recursion
+  using the types
+    datatype a Map = TRIE of a EM option x a Map M.Map
+    and a EM = ELEM of a | MAP of a Map
+*)
+
+module TrieOfTreesWithoutPolymorphicRecursion (M : FINITE_MAP) :
+  FINITE_MAP with type key = M.key tree = struct
+  type key = M.key tree
+
+  type 'a map = Trie of 'a em option * 'a map M.map
+
+  and 'a em =
+    | Elem of 'a
+    | Map of 'a map
+
+  let empty = Trie (None, M.empty)
+  let lookup_err () = raise (Failure "lookup: not found")
+
+  let rec find : key -> 'a map -> 'a em =
+    fun k m ->
+    match k, m with
+    | E, Trie (None, _) -> lookup_err ()
+    | E, Trie (Some em, _) -> em
+    | T (k, a, b), Trie (_, m') ->
+      (match find a (M.lookup k m') with
+       | Elem _ -> lookup_err ()
+       | Map t -> find b t)
+  ;;
+
+  let lookup k m =
+    match find k m with
+    | Elem x -> x
+    | Map _ -> lookup_err ()
+  ;;
+
+  let rec update : key -> 'a em -> 'a map -> 'a map =
+    fun k em m ->
+    match k, m with
+    | E, Trie (_, m) -> Trie (Some em, m)
+    | T (k, a, b), Trie (v, m') ->
+      let tt =
+        try M.lookup k m' with
+        | Failure _ -> empty
+      in
+      let t =
+        match find a tt with
+        | Elem _ -> empty
+        | Map t -> t
+        | exception Failure _ -> empty
+      in
+      let t' = update b em t in
+      let tt' = update a (Map t') tt in
+      Trie (v, M.bind k tt' m')
+  ;;
+
+  let bind k x m = update k (Elem x) m
+end

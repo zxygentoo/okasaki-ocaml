@@ -5,9 +5,10 @@
    the bootstrapped heap of Figure 10.7 (section 10.2.2), the heaps with info of
    Exercise 10.8, and the trie of Figure 10.10 (section 10.3.1), its prefix-free form of
    Exercise 10.9 and its path-compressed form of Exercise 10.10, the hash table of
-   Exercise 10.11, and the trie over binary trees of Figure 10.11 (section 10.3.2), each
-   with its own preamble below. Alcotest cases written in the checks of harness.ml, as in
-   the earlier chapters. *)
+   Exercise 10.11, and the trie over binary trees of Figure 10.11 (section 10.3.2) and its
+   form without polymorphic recursion of Exercise 10.12, each with its own preamble
+   below. Alcotest cases written in the checks of harness.ml, as in the earlier
+   chapters. *)
 
 open Okasaki.Ch10
 open Harness
@@ -2754,13 +2755,10 @@ let test_hash_table () =
    lookups, at any shape; a bind n base-map binds; a fresh bind of a left spine of 1000
    nodes 1999 lookups, a rebind 500500, and of a right spine 1000 both; on the complete
    tree of 1023 nodes 1534 and 5120. The figure's rebind is quadratic in the length of a
-   left spine, every level looking up again the path the level below then walks. *)
+   left spine, every level looking up again the path the level below then walks. The
+   checks are a functor over the trie's functor, so that Exercise 10.12's runs them too. *)
 
 module Node_map = Counting_map (Base)
-module Int_trees = TrieOfTrees (Node_map)
-module Tree_trees = TrieOfTrees (Int_trees)
-module Int_trees_contract = Trie_contract (Int_trees)
-module Tree_trees_contract = Trie_contract (Tree_trees)
 
 (* Every tree of exactly [n] nodes over [labels]. *)
 let rec trees_of labels n =
@@ -2803,44 +2801,6 @@ let rec show_tree = function
 
 let leaf x = T (x, E, E)
 
-let test_tree_trie_contract () =
-  Int_trees_contract.run
-    "TrieOfTrees (UnbalancedMap (int))"
-    ~universe:(trees_upto [ 0; 1 ] 3);
-  Tree_trees_contract.run
-    "TrieOfTrees (TrieOfTrees (UnbalancedMap (int)))"
-    ~universe:(trees_upto (trees_upto [ 0; 1 ] 1) 2)
-;;
-
-let test_tree_trie_shapes () =
-  let t label = "TrieOfTrees (UnbalancedMap (int)): " ^ label in
-  let at = Int_trees.lookup in
-  check_failure (t "the empty trie has no E") "lookup: not found" (fun () ->
-    at E Int_trees.empty);
-  let m = Int_trees.bind E 0 Int_trees.empty in
-  check_int (t "E, bound, is the root's own slot") ~expect:0 ~actual:(at E m);
-  check_failure (t "and 1 is not under it") "lookup: not found" (fun () -> at (leaf 1) m);
-  let on_left = T (1, leaf 2, E)
-  and on_right = T (1, E, leaf 2) in
-  let m = Int_trees.bind on_left 1 m in
-  check_int (t "T (1, 2, E)") ~expect:1 ~actual:(at on_left m);
-  check_failure
-    (t "T (1, E, 2), the same nodes with the child on the other side, is not bound")
-    "lookup: not found"
-    (fun () -> at on_right m);
-  check_failure
-    (t "nor 1 alone, which T (1, 2, E) passes through")
-    "lookup: not found"
-    (fun () -> at (leaf 1) m);
-  let m' = Int_trees.bind on_right 2 (Int_trees.bind (leaf 1) 3 m) in
-  check_int (t "T (1, E, 2), bound") ~expect:2 ~actual:(at on_right m');
-  check_int (t "T (1, 2, E) still") ~expect:1 ~actual:(at on_left m');
-  check_int (t "1 alone, bound") ~expect:3 ~actual:(at (leaf 1) m');
-  check_int (t "and E still") ~expect:0 ~actual:(at E m');
-  check_failure (t "while the original has no T (1, E, 2)") "lookup: not found" (fun () ->
-    at on_right m)
-;;
-
 (* The base-map lookups and binds [f] makes. *)
 let node_calls f =
   Node_map.lookups := 0;
@@ -2853,107 +2813,188 @@ let rec left_spine n = if n = 0 then E else T (n, left_spine (n - 1), E)
 let rec right_spine n = if n = 0 then E else T (n, E, right_spine (n - 1))
 let rec complete d = if d = 0 then E else T (d, complete (d - 1), complete (d - 1))
 
-let test_tree_trie_calls () =
-  let t label = "TrieOfTrees (UnbalancedMap (int)): " ^ label in
-  let small = trees_upto [ 0; 1 ] 3 in
-  let table = Int_trees_contract.of_list (List.map (fun k -> k, 0) small) in
-  (* Each key, in a table of all the small trees or alone, with that table. *)
-  let cases =
-    List.map (fun k -> k, table) small
-    @ List.map
-        (fun k -> k, Int_trees.bind k 0 Int_trees.empty)
-        [ left_spine 1000; right_spine 1000; complete 10 ]
-  in
-  let describe k =
-    if nodes k <= 3 then show_tree k else Printf.sprintf "a tree of %d nodes" (nodes k)
-  in
-  all_of
-    (t
-       "every key bound, small or of a thousand nodes, is found in one base-map lookup a \
-        node")
-    (fun note ->
-       List.iter
-         (fun (k, m) ->
-            let l, b = node_calls (fun () -> Int_trees.lookup k m) in
-            if (l, b) <> (nodes k, 0)
-            then
-              note
-                (Printf.sprintf
-                   "%s: %d lookups and %d binds for %d nodes"
-                   (describe k)
-                   l
-                   b
-                   (nodes k)))
-         cases);
-  (* Binds, fresh into the empty trie and again into the trie that has the key. *)
-  let binds =
-    List.concat_map
-      (fun (k, m) ->
-         [ k, node_calls (fun () -> Int_trees.bind k 1 Int_trees.empty)
-         ; k, node_calls (fun () -> Int_trees.bind k 1 m)
-         ])
-      cases
-  in
-  all_of (t "every bind, fresh or again, is one base-map bind a node") (fun note ->
-    List.iter
-      (fun (k, (l, b)) ->
-         if b <> nodes k
-         then
-           note
-             (Printf.sprintf
-                "%s: %d lookups and %d binds for %d nodes"
-                (describe k)
-                l
-                b
-                (nodes k)))
-      binds);
-  let over side =
-    List.filter
-      (fun (k, (l, _)) ->
-         let lw, rw = subtree_weights k in
-         l > nodes k + if side = `Left then lw else rw)
-      binds
-  in
-  let over_left = over `Left
-  and over_right = over `Right in
-  check
-    (t
-       (Printf.sprintf
-          "and no more base-map lookups than one a node and, at every node, one for each \
-           node of its left subtree (or of its right, the same side throughout)%s"
-          (match over_left with
-           | [] -> ""
-           | (k, (l, _)) :: _ ->
-             let lw, _ = subtree_weights k in
-             Printf.sprintf
-               " -- %s: %d lookups, budget n + left %d"
-               (describe k)
-               l
-               (nodes k + lw))))
-    (over_left = [] || over_right = []);
-  (* A miss at the root's element: one base-map lookup whatever is below. *)
-  let miss n = T (-1, left_spine (n - 1), E) in
-  let short = miss 10
-  and long = miss 100_000 in
-  let m = Int_trees.bind (left_spine 1000) 0 table in
-  let c10 = count_only (fun () -> Int_trees_contract.lookup_opt short m)
-  and c100k = count_only (fun () -> Int_trees_contract.lookup_opt long m) in
-  let calls10 = node_calls (fun () -> Int_trees_contract.lookup_opt short m)
-  and calls100k = node_calls (fun () -> Int_trees_contract.lookup_opt long m) in
-  check
-    (t
-       (Printf.sprintf
-          "a miss at the root's element is one base-map lookup whether the key has 10 \
-           nodes or 100000, and the same comparisons, %d and %d"
-          c10
-          c100k))
-    (calls10 = (1, 0) && calls100k = (1, 0) && c10 = c100k)
-;;
+(* A trie over binary trees, given a base map. *)
+module type TREE_TRIE = functor (M : FINITE_MAP) -> FINITE_MAP with type key = M.key tree
 
-let test_trie_of_trees () =
-  test_tree_trie_contract ();
-  test_tree_trie_shapes ();
-  test_tree_trie_calls ()
+(* The checks of a trie over trees, by the name of its functor. *)
+module Tree_trie_tests (Make : TREE_TRIE) = struct
+  module Ints = Make (Node_map)
+  module Trees = Make (Ints)
+  module Ints_contract = Trie_contract (Ints)
+  module Trees_contract = Trie_contract (Trees)
+
+  let contract name =
+    Ints_contract.run
+      (Printf.sprintf "%s (UnbalancedMap (int))" name)
+      ~universe:(trees_upto [ 0; 1 ] 3);
+    Trees_contract.run
+      (Printf.sprintf "%s (%s (UnbalancedMap (int)))" name name)
+      ~universe:(trees_upto (trees_upto [ 0; 1 ] 1) 2)
+  ;;
+
+  let shapes name =
+    let t label = Printf.sprintf "%s (UnbalancedMap (int)): %s" name label in
+    let at = Ints.lookup in
+    check_failure (t "the empty trie has no E") "lookup: not found" (fun () ->
+      at E Ints.empty);
+    let m = Ints.bind E 0 Ints.empty in
+    check_int (t "E, bound, is the root's own slot") ~expect:0 ~actual:(at E m);
+    check_failure (t "and 1 is not under it") "lookup: not found" (fun () ->
+      at (leaf 1) m);
+    let on_left = T (1, leaf 2, E)
+    and on_right = T (1, E, leaf 2) in
+    let m = Ints.bind on_left 1 m in
+    check_int (t "T (1, 2, E)") ~expect:1 ~actual:(at on_left m);
+    check_failure
+      (t "T (1, E, 2), the same nodes with the child on the other side, is not bound")
+      "lookup: not found"
+      (fun () -> at on_right m);
+    check_failure
+      (t "nor 1 alone, which T (1, 2, E) passes through")
+      "lookup: not found"
+      (fun () -> at (leaf 1) m);
+    let m' = Ints.bind on_right 2 (Ints.bind (leaf 1) 3 m) in
+    check_int (t "T (1, E, 2), bound") ~expect:2 ~actual:(at on_right m');
+    check_int (t "T (1, 2, E) still") ~expect:1 ~actual:(at on_left m');
+    check_int (t "1 alone, bound") ~expect:3 ~actual:(at (leaf 1) m');
+    check_int (t "and E still") ~expect:0 ~actual:(at E m');
+    check_failure
+      (t "while the original has no T (1, E, 2)")
+      "lookup: not found"
+      (fun () -> at on_right m)
+  ;;
+
+  let calls name =
+    let t label = Printf.sprintf "%s (UnbalancedMap (int)): %s" name label in
+    let small = trees_upto [ 0; 1 ] 3 in
+    let table = Ints_contract.of_list (List.map (fun k -> k, 0) small) in
+    (* Each key, in a table of all the small trees or alone, with that table. *)
+    let cases =
+      List.map (fun k -> k, table) small
+      @ List.map
+          (fun k -> k, Ints.bind k 0 Ints.empty)
+          [ left_spine 1000; right_spine 1000; complete 10 ]
+    in
+    let describe k =
+      if nodes k <= 3 then show_tree k else Printf.sprintf "a tree of %d nodes" (nodes k)
+    in
+    all_of
+      (t
+         "every key bound, small or of a thousand nodes, is found in one base-map lookup \
+          a node")
+      (fun note ->
+         List.iter
+           (fun (k, m) ->
+              let l, b = node_calls (fun () -> Ints.lookup k m) in
+              if (l, b) <> (nodes k, 0)
+              then
+                note
+                  (Printf.sprintf
+                     "%s: %d lookups and %d binds for %d nodes"
+                     (describe k)
+                     l
+                     b
+                     (nodes k)))
+           cases);
+    (* Binds, fresh into the empty trie and again into the trie that has the key. *)
+    let binds =
+      List.concat_map
+        (fun (k, m) ->
+           [ k, node_calls (fun () -> Ints.bind k 1 Ints.empty)
+           ; k, node_calls (fun () -> Ints.bind k 1 m)
+           ])
+        cases
+    in
+    all_of (t "every bind, fresh or again, is one base-map bind a node") (fun note ->
+      List.iter
+        (fun (k, (l, b)) ->
+           if b <> nodes k
+           then
+             note
+               (Printf.sprintf
+                  "%s: %d lookups and %d binds for %d nodes"
+                  (describe k)
+                  l
+                  b
+                  (nodes k)))
+        binds);
+    let over side =
+      List.filter
+        (fun (k, (l, _)) ->
+           let lw, rw = subtree_weights k in
+           l > nodes k + if side = `Left then lw else rw)
+        binds
+    in
+    let over_left = over `Left
+    and over_right = over `Right in
+    check
+      (t
+         (Printf.sprintf
+            "and no more base-map lookups than one a node and, at every node, one for \
+             each node of its left subtree (or of its right, the same side throughout)%s"
+            (match over_left with
+             | [] -> ""
+             | (k, (l, _)) :: _ ->
+               let lw, _ = subtree_weights k in
+               Printf.sprintf
+                 " -- %s: %d lookups, budget n + left %d"
+                 (describe k)
+                 l
+                 (nodes k + lw))))
+      (over_left = [] || over_right = []);
+    (* A miss at the root's element: one base-map lookup whatever is below. *)
+    let miss n = T (-1, left_spine (n - 1), E) in
+    let short = miss 10
+    and long = miss 100_000 in
+    let m = Ints.bind (left_spine 1000) 0 table in
+    let c10 = count_only (fun () -> Ints_contract.lookup_opt short m)
+    and c100k = count_only (fun () -> Ints_contract.lookup_opt long m) in
+    let calls10 = node_calls (fun () -> Ints_contract.lookup_opt short m)
+    and calls100k = node_calls (fun () -> Ints_contract.lookup_opt long m) in
+    check
+      (t
+         (Printf.sprintf
+            "a miss at the root's element is one base-map lookup whether the key has 10 \
+             nodes or 100000, and the same comparisons, %d and %d"
+            c10
+            c100k))
+      (calls10 = (1, 0) && calls100k = (1, 0) && c10 = c100k)
+  ;;
+
+  let run name =
+    contract name;
+    shapes name;
+    calls name
+  ;;
+end
+
+module Figure_tree_trie = Tree_trie_tests (TrieOfTrees)
+
+let test_trie_of_trees () = Figure_tree_trie.run "TrieOfTrees"
+
+(* ------------------- TrieOfTreesWithoutPolymorphicRecursion (Exercise 10.12) *)
+
+(* Exercise 10.12 writes Figure 10.11 over again without polymorphic recursion. The map
+   type there mentions itself as a map of maps, the values found at the end of a left
+   subtree being tries over right subtrees, and so each call recurs at a larger type.
+   Here the value slot holds an EM instead: ELEM of a value at the end of a whole key, or
+   MAP of the trie in which to read the right subtree at the end of a left one, and the
+   type mentions itself only at 'a, so plain recursion types every function. That a slot
+   holds the kind its place calls for, an ELEM where a key ends and a MAP where a left
+   subtree does, is now the code's to keep, and not the type's.
+
+   That claim is the compiler's to check, and it does, since the functions carry no 'a.
+   annotation. What a test can check is that nothing else changed, and so this case runs
+   Figure 10.11's checks as they are: the contract over small trees and over trees of
+   trees, the shapes, and the base-map calls, lookups one a node, binds one a node,
+   lookups within the figure's budget, and a miss at the root's element one base-map
+   lookup at 10 nodes or 100000. Measured: the same calls as the figure's, key for key,
+   down to the rebind of a left spine of 1000 nodes, 500500 lookups. *)
+
+module No_poly_tree_trie = Tree_trie_tests (TrieOfTreesWithoutPolymorphicRecursion)
+
+let test_trie_of_trees_no_poly () =
+  No_poly_tree_trie.run "TrieOfTreesWithoutPolymorphicRecursion"
 ;;
 
 let tests =
@@ -2972,5 +3013,8 @@ let tests =
   ; case "[Exercise 10.10] PathCompressionTrie" test_compressed
   ; case "[Exercise 10.11] HashTable" test_hash_table
   ; case "[Figure 10.11] TrieOfTrees" test_trie_of_trees
+  ; case
+      "[Exercise 10.12] TrieOfTreesWithoutPolymorphicRecursion"
+      test_trie_of_trees_no_poly
   ]
 ;;
