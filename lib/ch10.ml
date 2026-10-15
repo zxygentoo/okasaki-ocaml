@@ -1025,3 +1025,56 @@ module TrieOfTreesWithoutPolymorphicRecursion (M : FINITE_MAP) :
 
   let bind k x m = update k (Elem x) m
 end
+
+(* Exercise 10.13 Implement tries whose keys are multiway trees of type
+    datatype a Tree = T of a x a Tree list
+*)
+
+type 'a mtree = MT of 'a * 'a mtree list
+
+module MultiwayTreesKeyTrie (M : FINITE_MAP) : FINITE_MAP with type key = M.key mtree =
+struct
+  type key = M.key mtree
+
+  type 'a map = Trie of 'a forest M.map
+  and 'a forest = Forest of 'a option * 'a forest map
+
+  let empty = Trie M.empty
+  let empty_forest = Forest (None, empty)
+
+  let rec lookup : 'a. key -> 'a map -> 'a =
+    fun k m ->
+    match k, m with
+    | MT (t, ts), Trie m -> find ts (M.lookup t m)
+
+  and find : 'a. key list -> 'a forest -> 'a =
+    fun ks f ->
+    match ks, f with
+    | [], Forest (None, _) -> raise (Failure "lookup: not found")
+    | [], Forest (Some x, _) -> x
+    | k :: ks, Forest (_, m) -> find ks (lookup k m)
+  ;;
+
+  let rec bind : 'a. key -> 'a -> 'a map -> 'a map =
+    fun k x m ->
+    match k, m with
+    | MT (t, ts), Trie m' ->
+      let tt =
+        try M.lookup t m' with
+        | Failure _ -> empty_forest
+      in
+      Trie (M.bind t (update ts x tt) m')
+
+  and update : 'a. key list -> 'a -> 'a forest -> 'a forest =
+    fun ks x f ->
+    match ks, f with
+    | [], Forest (_, m) -> Forest (Some x, m)
+    | k :: ks, Forest (v, m) ->
+      let tt =
+        try lookup k m with
+        | Failure _ -> empty_forest
+      in
+      let t = update ks x tt in
+      Forest (v, bind k t m)
+  ;;
+end

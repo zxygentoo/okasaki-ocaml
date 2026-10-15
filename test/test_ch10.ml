@@ -5,10 +5,10 @@
    the bootstrapped heap of Figure 10.7 (section 10.2.2), the heaps with info of
    Exercise 10.8, and the trie of Figure 10.10 (section 10.3.1), its prefix-free form of
    Exercise 10.9 and its path-compressed form of Exercise 10.10, the hash table of
-   Exercise 10.11, and the trie over binary trees of Figure 10.11 (section 10.3.2) and its
-   form without polymorphic recursion of Exercise 10.12, each with its own preamble
-   below. Alcotest cases written in the checks of harness.ml, as in the earlier
-   chapters. *)
+   Exercise 10.11, and the trie over binary trees of Figure 10.11 (section 10.3.2), its
+   form without polymorphic recursion of Exercise 10.12 and the trie over multiway trees
+   of Exercise 10.13, each with its own preamble below. Alcotest cases written in the
+   checks of harness.ml, as in the earlier chapters. *)
 
 open Okasaki.Ch10
 open Harness
@@ -2997,6 +2997,206 @@ let test_trie_of_trees_no_poly () =
   No_poly_tree_trie.run "TrieOfTreesWithoutPolymorphicRecursion"
 ;;
 
+(* ------------------------------------------- MultiwayTreesKeyTrie (Exercise 10.13) *)
+
+(* Exercise 10.13 asks for tries over multiway trees, a node an element and a list of
+   children. The product rule of p.168 builds the map: a node is an element and a list,
+   so the trie's base map indexes the element and gives back a map over the list of
+   children; there is no empty tree, and so no value slot at the node. A list is either
+   empty or a first tree and the rest, so a map over lists is a value slot for the end
+   of the list and edges indexed by the first tree, the trie over trees itself, giving
+   back a map over the rest. The edges are a trie whose values are maps over lists, a
+   map over the type's own forests, so the recursion is non-uniform again, and lookup and
+   bind are each a pair of functions carrying the 'a. annotation. The book states no cost
+   for it, and Figure 10.11's carries over: a lookup is one base-map lookup a node, and a
+   bind one base-map bind a node, though before it binds a child's way it looks the child
+   up, so a node pays a base-map lookup for each node below its own children.
+
+   The base map is Chapter 2's over counting integers, counting the calls made to it. The
+   contract is Figure 10.10's over every tree of up to four nodes over 0 and 1, and over
+   trees of trees, a trie of these tries, every tree of up to two nodes whose elements are
+   the trees of up to two nodes. Then the shapes spelled out: two children against a chain
+   over the same elements, a first child alone, the children the other way round, a root
+   alone, and a list read past its end. Then the calls: over a table of all the small
+   trees and over a chain, a star and a complete ternary tree of hundreds of nodes, a
+   lookup is one base-map lookup a node; a bind, of a key new or bound, one base-map bind
+   a node and no more base-map lookups than a node each and one for every node of every
+   subtree below the root; and a miss at the root's element one base-map lookup at 10
+   nodes or 100000. Measured: a lookup of n nodes n base-map lookups at any shape; a
+   bind n binds; a rebind exactly the budget, 500500 lookups on a chain of 1000 nodes,
+   1999 on a star of 1000 and 2005 on the ternary tree of 364, a fresh bind 1999, 1999
+   and 727. The rebind is quadratic in the depth of a chain, as Figure 10.11's is in a
+   left spine. *)
+
+module Multiway = MultiwayTreesKeyTrie (Node_map)
+module Multiway_of_multiway = MultiwayTreesKeyTrie (Multiway)
+module Multiway_contract = Trie_contract (Multiway)
+module Multiway_of_multiway_contract = Trie_contract (Multiway_of_multiway)
+
+(* Every multiway tree of exactly [n] nodes over [labels], and every list of them of
+   [n] nodes in all. *)
+let rec mtrees_of labels n =
+  if n = 0
+  then []
+  else
+    List.concat_map
+      (fun x -> List.map (fun ts -> MT (x, ts)) (forests_of labels (n - 1)))
+      labels
+
+and forests_of labels n =
+  if n = 0
+  then [ [] ]
+  else
+    List.concat_map
+      (fun i ->
+         List.concat_map
+           (fun t -> List.map (fun ts -> t :: ts) (forests_of labels (n - i)))
+           (mtrees_of labels i))
+      (List.init n (fun i -> i + 1))
+;;
+
+(* Every multiway tree of one to [n] nodes over [labels]. *)
+let mtrees_upto labels n =
+  List.concat_map (mtrees_of labels) (List.init n (fun i -> i + 1))
+;;
+
+let mleaf x = MT (x, [])
+let rec mnodes (MT (_, ts)) = List.fold_left (fun acc t -> acc + mnodes t) 1 ts
+
+(* Over every subtree below the root, its nodes. *)
+let rec below (MT (_, ts)) = List.fold_left (fun acc t -> acc + mnodes t + below t) 0 ts
+
+let rec show_mtree = function
+  | MT (x, []) -> string_of_int x
+  | MT (x, ts) ->
+    Printf.sprintf "MT (%d, [%s])" x (String.concat "; " (List.map show_mtree ts))
+;;
+
+let rec chain n = if n = 1 then mleaf 1 else MT (n, [ chain (n - 1) ])
+let star n = MT (0, List.init (n - 1) mleaf)
+
+let rec complete_multiway b d =
+  if d = 1 then mleaf 1 else MT (d, List.init b (fun _ -> complete_multiway b (d - 1)))
+;;
+
+let test_multiway_contract () =
+  Multiway_contract.run
+    "MultiwayTreesKeyTrie (UnbalancedMap (int))"
+    ~universe:(mtrees_upto [ 0; 1 ] 4);
+  Multiway_of_multiway_contract.run
+    "MultiwayTreesKeyTrie (MultiwayTreesKeyTrie (UnbalancedMap (int)))"
+    ~universe:(mtrees_upto (mtrees_upto [ 0; 1 ] 2) 2)
+;;
+
+let test_multiway_shapes () =
+  let t label = "MultiwayTreesKeyTrie (UnbalancedMap (int)): " ^ label in
+  let at = Multiway.lookup in
+  check_failure (t "the empty trie has no 1") "lookup: not found" (fun () ->
+    at (mleaf 1) Multiway.empty);
+  let two = MT (1, [ mleaf 2; mleaf 3 ])
+  and chained = MT (1, [ MT (2, [ mleaf 3 ]) ])
+  and first = MT (1, [ mleaf 2 ]) in
+  let m = Multiway_contract.of_list [ two, 1; chained, 2 ] in
+  check_int (t "MT (1, [2; 3]), two children") ~expect:1 ~actual:(at two m);
+  check_int
+    (t "MT (1, [MT (2, [3])]), a chain over the same elements")
+    ~expect:2
+    ~actual:(at chained m);
+  check_failure
+    (t "MT (1, [2]), the first child alone, is not bound")
+    "lookup: not found"
+    (fun () -> at first m);
+  check_failure
+    (t "nor MT (1, [3; 2]), the children the other way round")
+    "lookup: not found"
+    (fun () -> at (MT (1, [ mleaf 3; mleaf 2 ])) m);
+  check_failure (t "nor 1, the root alone") "lookup: not found" (fun () -> at (mleaf 1) m);
+  check_failure
+    (t "nor MT (1, [2; 3; 2]), a list read past its end")
+    "lookup: not found"
+    (fun () -> at (MT (1, [ mleaf 2; mleaf 3; mleaf 2 ])) m);
+  let m' = Multiway.bind (mleaf 1) 3 (Multiway.bind first 4 m) in
+  check_int (t "1 alone, bound") ~expect:3 ~actual:(at (mleaf 1) m');
+  check_int (t "MT (1, [2]), bound") ~expect:4 ~actual:(at first m');
+  check_int (t "MT (1, [2; 3]) still") ~expect:1 ~actual:(at two m');
+  check_int (t "and the chain still") ~expect:2 ~actual:(at chained m');
+  check_failure (t "while the original has no MT (1, [2])") "lookup: not found" (fun () ->
+    at first m)
+;;
+
+let test_multiway_calls () =
+  let t label = "MultiwayTreesKeyTrie (UnbalancedMap (int)): " ^ label in
+  let small = mtrees_upto [ 0; 1 ] 4 in
+  let table = Multiway_contract.of_list (List.map (fun k -> k, 0) small) in
+  (* Each key, in a table of all the small trees or alone, with that table. *)
+  let cases =
+    List.map (fun k -> k, table) small
+    @ List.map
+        (fun k -> k, Multiway.bind k 0 Multiway.empty)
+        [ chain 1000; star 1000; complete_multiway 3 6 ]
+  in
+  let describe k =
+    if mnodes k <= 4 then show_mtree k else Printf.sprintf "a tree of %d nodes" (mnodes k)
+  in
+  let report k (l, b) =
+    Printf.sprintf "%s: %d lookups and %d binds for %d nodes" (describe k) l b (mnodes k)
+  in
+  all_of
+    (t
+       "every key bound, small or of hundreds of nodes, is found in one base-map lookup \
+        a node")
+    (fun note ->
+       List.iter
+         (fun (k, m) ->
+            let c = node_calls (fun () -> Multiway.lookup k m) in
+            if c <> (mnodes k, 0) then note (report k c))
+         cases);
+  (* Binds, fresh into the empty trie and again into the trie that has the key. *)
+  let binds =
+    List.concat_map
+      (fun (k, m) ->
+         [ k, node_calls (fun () -> Multiway.bind k 1 Multiway.empty)
+         ; k, node_calls (fun () -> Multiway.bind k 1 m)
+         ])
+      cases
+  in
+  all_of (t "every bind, fresh or again, is one base-map bind a node") (fun note ->
+    List.iter (fun (k, ((_, b) as c)) -> if b <> mnodes k then note (report k c)) binds);
+  all_of
+    (t
+       "and no more base-map lookups than one a node and one for every node of every \
+        subtree below the root")
+    (fun note ->
+       List.iter
+         (fun (k, ((l, _) as c)) ->
+            if l > mnodes k + below k
+            then note (Printf.sprintf "%s, budget %d" (report k c) (mnodes k + below k)))
+         binds);
+  (* A miss at the root's element: one base-map lookup whatever is below. *)
+  let miss n = MT (-1, [ chain (n - 1) ]) in
+  let short = miss 10
+  and long = miss 100_000 in
+  let m = Multiway.bind (chain 1000) 0 table in
+  let c10 = count_only (fun () -> Multiway_contract.lookup_opt short m)
+  and c100k = count_only (fun () -> Multiway_contract.lookup_opt long m) in
+  let calls10 = node_calls (fun () -> Multiway_contract.lookup_opt short m)
+  and calls100k = node_calls (fun () -> Multiway_contract.lookup_opt long m) in
+  check
+    (t
+       (Printf.sprintf
+          "a miss at the root's element is one base-map lookup whether the key has 10 \
+           nodes or 100000, and the same comparisons, %d and %d"
+          c10
+          c100k))
+    (calls10 = (1, 0) && calls100k = (1, 0) && c10 = c100k)
+;;
+
+let test_multiway () =
+  test_multiway_contract ();
+  test_multiway_shapes ();
+  test_multiway_calls ()
+;;
+
 let tests =
   [ case "[Figure 10.1] AltBinaryRandomAccessListFigure" test_alt
   ; case "[Exercise 10.2] AltBinaryRandomAccessList" test_alt_lazy
@@ -3016,5 +3216,6 @@ let tests =
   ; case
       "[Exercise 10.12] TrieOfTreesWithoutPolymorphicRecursion"
       test_trie_of_trees_no_poly
+  ; case "[Exercise 10.13] MultiwayTreesKeyTrie" test_multiway
   ]
 ;;
