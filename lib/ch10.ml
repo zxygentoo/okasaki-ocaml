@@ -1078,3 +1078,61 @@ struct
       Forest (v, bind k t m)
   ;;
 end
+
+(* Exercise 10.14 Complete the following functors that implement the above
+  rules for products and sums.
+
+    functor ProductMap (M1 : FINITEMAP) (M2 : FINITEMAP): FINITEMAP =
+    struct
+      type Key = M1.Key x M2.Key
+      ...
+    end
+    datatype (a, b) Sum = LEFT of a | RIGHT of b
+    functor SumMap (M1 : FINITEMAP) (M2 : FINITEMAP) : FINITEMAP =
+    struct
+      type Key = (M1.Key, M2.Key) Sum
+      ...
+    end
+*)
+
+module ProductMap (M1 : FINITE_MAP) (M2 : FINITE_MAP) :
+  FINITE_MAP with type key = M1.key * M2.key = struct
+  type key = M1.key * M2.key
+  type 'a map = 'a M2.map M1.map
+
+  let empty = M1.empty
+  let lookup (k1, k2) m = M2.lookup k2 (M1.lookup k1 m)
+
+  let bind (k1, k2) x m =
+    let t =
+      try M1.lookup k1 m with
+      | Failure _ -> M2.empty
+    in
+    let tt = M2.bind k2 x t in
+    M1.bind k1 tt m
+  ;;
+end
+
+type ('a, 'b) sum =
+  | Left of 'a
+  | Right of 'b
+
+module SumMap (M1 : FINITE_MAP) (M2 : FINITE_MAP) :
+  FINITE_MAP with type key = (M1.key, M2.key) sum = struct
+  type key = (M1.key, M2.key) sum
+  type 'a map = 'a M1.map * 'a M2.map
+
+  let empty = M1.empty, M2.empty
+
+  let lookup k (m1, m2) =
+    match k with
+    | Left a -> M1.lookup a m1
+    | Right b -> M2.lookup b m2
+  ;;
+
+  let bind k x (m1, m2) =
+    match k with
+    | Left a -> M1.bind a x m1, m2
+    | Right b -> m1, M2.bind b x m2
+  ;;
+end

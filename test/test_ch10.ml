@@ -7,8 +7,9 @@
    Exercise 10.9 and its path-compressed form of Exercise 10.10, the hash table of
    Exercise 10.11, and the trie over binary trees of Figure 10.11 (section 10.3.2), its
    form without polymorphic recursion of Exercise 10.12 and the trie over multiway trees
-   of Exercise 10.13, each with its own preamble below. Alcotest cases written in the
-   checks of harness.ml, as in the earlier chapters. *)
+   of Exercise 10.13, and the product and sum maps of Exercise 10.14, each with its own
+   preamble below. Alcotest cases written in the checks of harness.ml, as in the earlier
+   chapters. *)
 
 open Okasaki.Ch10
 open Harness
@@ -3197,6 +3198,178 @@ let test_multiway () =
   test_multiway_calls ()
 ;;
 
+(* ------------------------------------------ ProductMap, SumMap (Exercise 10.14) *)
+
+(* Section 10.3.2 ends in two rules for building the finite map of a type from the maps
+   of its parts, and Exercise 10.14 makes them functors. A map over pairs is a map over
+   the first component whose values are maps over the second, one level of a list trie
+   with nothing below it; a map over a sum is a map for the left case beside a map for
+   the right one. Neither has a value slot of its own, since every pair has both halves
+   and every sum value is one of the two. Applied to a recursive type, the two rules give
+   that type's trie, as they gave Figure 10.11's: there the E case carries nothing, and
+   'a option is, as p.168 says, the map over unit.
+
+   The book states no cost for these, and the rules fix one: a lookup of a pair is one
+   lookup in each map and a bind of one a lookup in the first, a bind in the second and a
+   bind back into the first; a sum calls the map of its own side once and never the
+   other.
+
+   The parts are Chapter 2's maps over counting integers and over characters, each
+   counting the calls made to it, and the map over unit of p.168, an option. The
+   contract is Figure 10.10's over the pairs of 0..4 with 0..4, over Left 0..4 and Right
+   0..4, the same integers on either side so that Left 1 and Right 1 must be told apart,
+   over Left () and Right of 0..4, a map over int option, and over the pairs of that sum
+   with a, b and c, the rules composed. Then the calls, over every key of the first two
+   universes in a full map and of missing ones. Measured: exactly the calls the rules
+   fix, for every key. *)
+
+module Left_ints = Counting_map (Base)
+module Right_ints = Counting_map (Base)
+
+(* The map over unit, which p.168 notes 'a option is. *)
+module Unit_map = struct
+  type key = unit
+  type 'a map = 'a option
+
+  let empty = None
+
+  let lookup () = function
+    | Some x -> x
+    | None -> raise (Failure "lookup: not found")
+  ;;
+
+  let bind () x _ = Some x
+end
+
+module Chars_map = Okasaki.Ch2.UnbalancedMap (Char_ordered)
+module Pairs = ProductMap (Left_ints) (Right_ints)
+module Sums = SumMap (Left_ints) (Right_ints)
+module Options = SumMap (Unit_map) (Left_ints)
+module Composed = ProductMap (Options) (Chars_map)
+module Pairs_contract = Trie_contract (Pairs)
+module Sums_contract = Trie_contract (Sums)
+module Options_contract = Trie_contract (Options)
+module Composed_contract = Trie_contract (Composed)
+
+let pairs_universe = List.concat_map (fun i -> List.map (fun j -> i, j) (upto 5)) (upto 5)
+
+let sums_universe =
+  List.map (fun i -> Left i) (upto 5) @ List.map (fun i -> Right i) (upto 5)
+;;
+
+let options_universe = Left () :: List.map (fun i -> Right i) (upto 5)
+
+let test_product_sum_contract () =
+  Pairs_contract.run
+    "ProductMap (UnbalancedMap (int)) (UnbalancedMap (int))"
+    ~universe:pairs_universe;
+  Sums_contract.run
+    "SumMap (UnbalancedMap (int)) (UnbalancedMap (int))"
+    ~universe:sums_universe;
+  Options_contract.run
+    "SumMap (unit) (UnbalancedMap (int)), over int option"
+    ~universe:options_universe;
+  Composed_contract.run
+    "ProductMap (SumMap (unit) (UnbalancedMap (int))) (UnbalancedMap (char))"
+    ~universe:
+      (List.concat_map
+         (fun o -> List.map (fun c -> o, c) [ 'a'; 'b'; 'c' ])
+         options_universe)
+;;
+
+(* The calls [f] makes to the two maps: lookups and binds of each. *)
+let part_calls f =
+  Left_ints.lookups := 0;
+  Left_ints.binds := 0;
+  Right_ints.lookups := 0;
+  Right_ints.binds := 0;
+  ignore (f ());
+  (!Left_ints.lookups, !Left_ints.binds), (!Right_ints.lookups, !Right_ints.binds)
+;;
+
+let show_part_calls ((l1, b1), (l2, b2)) =
+  Printf.sprintf
+    "first %d lookups and %d binds, second %d lookups and %d binds"
+    l1
+    b1
+    l2
+    b2
+;;
+
+(* Each of [keys] costs [expect] calls when [f] runs on it. *)
+let calls_each name keys show f expect =
+  all_of name (fun note ->
+    List.iter
+      (fun k ->
+         let c = part_calls (fun () -> f k) in
+         if c <> expect k then note (Printf.sprintf "%s: %s" (show k) (show_part_calls c)))
+      keys)
+;;
+
+let test_product_calls () =
+  let t label = "ProductMap (UnbalancedMap (int)) (UnbalancedMap (int)): " ^ label in
+  let show (i, j) = Printf.sprintf "(%d, %d)" i j in
+  let m = Pairs_contract.of_list (List.map (fun k -> k, 0) pairs_universe) in
+  calls_each
+    (t "every pair bound is found in one lookup in each map")
+    pairs_universe
+    show
+    (fun k -> Pairs.lookup k m)
+    (fun _ -> (1, 0), (1, 0));
+  calls_each
+    (t
+       "a pair whose first half is missing misses in one lookup in the first map, and \
+        one whose second half is missing in one in each")
+    [ 5, 0; -1, 2; 0, 5; 4, -1 ]
+    show
+    (fun k -> Pairs_contract.lookup_opt k m)
+    (fun (i, _) -> if i < 0 || i > 4 then (1, 0), (0, 0) else (1, 0), (1, 0));
+  calls_each
+    (t
+       "every bind, of a pair bound or not, is a lookup in the first map, a bind in the \
+        second and a bind back into the first")
+    (pairs_universe @ [ 5, 0; 0, 5 ])
+    show
+    (fun k -> Pairs.bind k 1 m)
+    (fun _ -> (1, 1), (0, 1))
+;;
+
+let test_sum_calls () =
+  let t label = "SumMap (UnbalancedMap (int)) (UnbalancedMap (int)): " ^ label in
+  let show = function
+    | Left i -> Printf.sprintf "Left %d" i
+    | Right i -> Printf.sprintf "Right %d" i
+  in
+  let own = function
+    | Left _ -> fun c -> c, (0, 0)
+    | Right _ -> fun c -> (0, 0), c
+  in
+  let m = Sums_contract.of_list (List.map (fun k -> k, 0) sums_universe) in
+  let missing = [ Left 5; Right 5 ] in
+  calls_each
+    (t
+       "every key, bound or not, is looked up in its own side's map once, and the \
+        other's not at all")
+    (sums_universe @ missing)
+    show
+    (fun k -> Sums_contract.lookup_opt k m)
+    (fun k -> own k (1, 0));
+  calls_each
+    (t
+       "every bind, of a key bound or not, is one bind in its own side's map and nothing \
+        else")
+    (sums_universe @ missing)
+    show
+    (fun k -> Sums.bind k 1 m)
+    (fun k -> own k (0, 1))
+;;
+
+let test_product_sum () =
+  test_product_sum_contract ();
+  test_product_calls ();
+  test_sum_calls ()
+;;
+
 let tests =
   [ case "[Figure 10.1] AltBinaryRandomAccessListFigure" test_alt
   ; case "[Exercise 10.2] AltBinaryRandomAccessList" test_alt_lazy
@@ -3217,5 +3390,6 @@ let tests =
       "[Exercise 10.12] TrieOfTreesWithoutPolymorphicRecursion"
       test_trie_of_trees_no_poly
   ; case "[Exercise 10.13] MultiwayTreesKeyTrie" test_multiway
+  ; case "[Exercise 10.14] ProductMap, SumMap" test_product_sum
   ]
 ;;
