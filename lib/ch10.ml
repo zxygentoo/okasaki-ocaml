@@ -1136,3 +1136,57 @@ module SumMap (M1 : FINITE_MAP) (M2 : FINITE_MAP) :
     | Right b -> m1, M2.bind b x m2
   ;;
 end
+
+(* Exercise 10.15 Given a structure M that implements finite maps over the type
+  Id of identifiers, implement tries over the type Exp of lambda expressions,
+  where
+    datatype Exp = VAR of Id | LAM of Id x Exp | APP of Exp x Exp
+  You may find it helpful to extend the type of tries with a separate constructor
+  for the empty map.
+*)
+
+type 'id exp =
+  | Var of 'id
+  | Lam of 'id * 'id exp
+  | App of 'id exp * 'id exp
+
+module ExpTrie (M : FINITE_MAP) : FINITE_MAP with type key = M.key exp = struct
+  type key = M.key exp
+
+  type 'a map =
+    | Empty
+    | Trie of 'a M.map * 'a map M.map * 'a map map
+
+  let empty = Empty
+  let empty_trie = Trie (M.empty, M.empty, empty)
+
+  let rec lookup : 'a. key -> 'a map -> 'a =
+    fun k m ->
+    match k, m with
+    | _, Empty -> raise (Failure "lookup: not found")
+    | Var id, Trie (m1, _, _) -> M.lookup id m1
+    | Lam (id, e), Trie (_, m2, _) -> lookup e (M.lookup id m2)
+    | App (e1, e2), Trie (_, _, m3) -> lookup e2 (lookup e1 m3)
+  ;;
+
+  let rec bind : 'a. key -> 'a -> 'a map -> 'a map =
+    fun k x m ->
+    match k, m with
+    | _, Empty -> bind k x empty_trie
+    | Var id, Trie (m1, m2, m3) -> Trie (M.bind id x m1, m2, m3)
+    | Lam (id, e), Trie (m1, m2, m3) ->
+      let t =
+        try M.lookup id m2 with
+        | Failure _ -> empty
+      in
+      let tt = bind e x t in
+      Trie (m1, M.bind id tt m2, m3)
+    | App (e1, e2), Trie (m1, m2, m3) ->
+      let t =
+        try lookup e1 m3 with
+        | Failure _ -> empty
+      in
+      let tt = bind e2 x t in
+      Trie (m1, m2, bind e1 tt m3)
+  ;;
+end

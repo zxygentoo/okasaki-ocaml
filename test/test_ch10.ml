@@ -7,9 +7,9 @@
    Exercise 10.9 and its path-compressed form of Exercise 10.10, the hash table of
    Exercise 10.11, and the trie over binary trees of Figure 10.11 (section 10.3.2), its
    form without polymorphic recursion of Exercise 10.12 and the trie over multiway trees
-   of Exercise 10.13, and the product and sum maps of Exercise 10.14, each with its own
-   preamble below. Alcotest cases written in the checks of harness.ml, as in the earlier
-   chapters. *)
+   of Exercise 10.13, the product and sum maps of Exercise 10.14 and the trie over lambda
+   expressions of Exercise 10.15, each with its own preamble below. Alcotest cases
+   written in the checks of harness.ml, as in the earlier chapters. *)
 
 open Okasaki.Ch10
 open Harness
@@ -3370,6 +3370,247 @@ let test_product_sum () =
   test_sum_calls ()
 ;;
 
+(* ------------------------------------------------------ ExpTrie (Exercise 10.15) *)
+
+(* Exercise 10.15 builds the trie over lambda expressions from a map over identifiers,
+   by the rules of p.168: an expression is a variable, a lambda or an application, a sum
+   of three, so a trie node is three maps side by side. A variable is an identifier, the
+   base map itself; a lambda an identifier and a body, the base map giving back a trie
+   over bodies; an application two expressions, a trie over the function part giving back
+   a trie over the argument, the trie applied to itself and so non-uniform, with 'a. on
+   lookup and bind. No constructor is bare, so there is no value slot; and since the
+   application map of an empty trie would be an empty trie of tries, and that one's an
+   empty trie of tries of tries, without end, the empty trie is a constructor of its own,
+   opened into a node of empty maps one level at a time as a bind needs it, the book's
+   own hint. The trie reads syntax: Lam (1, Var 1) and Lam (2, Var 2), one function up to
+   the name it binds, are two keys.
+
+   The book states no cost, and the rules fix one: a lookup is one base-map lookup for
+   each identifier of the key, its variables and its lambdas, and nothing for an
+   application; a bind one base-map bind for each identifier, and base-map lookups for
+   each lambda and, at each application, for each identifier of the function part,
+   which it looks up before it binds it.
+
+   The base map is Chapter 2's over counting integers, counting the calls made to it.
+   The contract is Figure 10.10's over every expression of up to four constructors over
+   identifiers 0 and 1, and over expressions whose identifiers are expressions, a trie of
+   these tries. Then the shapes spelled out: one identifier under the three constructors,
+   an application's parts the other way round and nested the other way, a lambda's
+   identifiers the other way round, an application's function part alone, and the
+   identity under two names. Then the calls, over a table of all the small expressions
+   and over 500 applications nested to the left and to the right, a chain of 1000
+   lambdas and a balanced expression of 511 identifiers: a lookup is one base-map lookup
+   an identifier; a bind, of a key new or bound, one base-map bind an identifier, and no
+   more base-map lookups than the budget above, or, for a trie that reads the argument
+   first, the same with the argument part, the same side throughout; and a miss at the
+   first identifier one base-map lookup at 10 identifiers or 100000. Measured: a rebind
+   exactly the budget, 124750 lookups for the applications nested to the left, 499 to
+   the right, 1000 for the lambdas, 2048 for the balanced expression; a fresh bind looks
+   up only its lambdas' identifiers, every application's function part missing from an
+   empty trie without a call. *)
+
+module Exps = ExpTrie (Node_map)
+module Exps_of_exps = ExpTrie (Exps)
+module Exps_contract = Trie_contract (Exps)
+module Exps_of_exps_contract = Trie_contract (Exps_of_exps)
+
+(* Every expression of exactly [n] constructors over [ids]. *)
+let rec exps_of ids n =
+  if n < 1
+  then []
+  else if n = 1
+  then List.map (fun x -> Var x) ids
+  else
+    List.concat_map (fun x -> List.map (fun e -> Lam (x, e)) (exps_of ids (n - 1))) ids
+    @ List.concat_map
+        (fun i ->
+           List.concat_map
+             (fun a -> List.map (fun b -> App (a, b)) (exps_of ids (n - 1 - i)))
+             (exps_of ids i))
+        (List.init (n - 2) (fun i -> i + 1))
+;;
+
+(* Every expression of one to [n] constructors over [ids]. *)
+let exps_upto ids n = List.concat_map (exps_of ids) (List.init n (fun i -> i + 1))
+
+let rec show_exp = function
+  | Var x -> Printf.sprintf "Var %d" x
+  | Lam (x, e) -> Printf.sprintf "Lam (%d, %s)" x (show_exp e)
+  | App (a, b) -> Printf.sprintf "App (%s, %s)" (show_exp a) (show_exp b)
+;;
+
+(* The identifiers of an expression: its variables and its lambdas. *)
+let rec ids = function
+  | Var _ -> 1
+  | Lam (_, e) -> 1 + ids e
+  | App (a, b) -> ids a + ids b
+;;
+
+let rec lambdas = function
+  | Var _ -> 0
+  | Lam (_, e) -> 1 + lambdas e
+  | App (a, b) -> lambdas a + lambdas b
+;;
+
+(* Over every application, the identifiers of its function part, and of its argument. *)
+let rec part_weights = function
+  | Var _ -> 0, 0
+  | Lam (_, e) -> part_weights e
+  | App (a, b) ->
+    let fa, aa = part_weights a
+    and fb, ab = part_weights b in
+    ids a + fa + fb, ids b + aa + ab
+;;
+
+let rec apps_left n = if n = 1 then Var 1 else App (apps_left (n - 1), Var n)
+let rec apps_right n = if n = 1 then Var 1 else App (Var n, apps_right (n - 1))
+let rec lambda_chain n = if n = 0 then Var 0 else Lam (n, lambda_chain (n - 1))
+
+let rec balanced d =
+  if d = 0 then Var 0 else App (balanced (d - 1), Lam (d, balanced (d - 1)))
+;;
+
+let test_exp_contract () =
+  Exps_contract.run "ExpTrie (UnbalancedMap (int))" ~universe:(exps_upto [ 0; 1 ] 4);
+  Exps_of_exps_contract.run
+    "ExpTrie (ExpTrie (UnbalancedMap (int)))"
+    ~universe:(exps_upto (exps_upto [ 0; 1 ] 2) 2)
+;;
+
+let test_exp_shapes () =
+  let t label = "ExpTrie (UnbalancedMap (int)): " ^ label in
+  let at = Exps.lookup in
+  let miss what k m = check_failure (t what) "lookup: not found" (fun () -> at k m) in
+  miss "the empty trie has no Var 1" (Var 1) Exps.empty;
+  let one =
+    Exps_contract.of_list [ Var 1, 1; Lam (1, Var 1), 2; App (Var 1, Var 1), 3 ]
+  in
+  check
+    (t
+       "Var 1, Lam (1, Var 1) and App (Var 1, Var 1), one identifier under three \
+        constructors, are three keys")
+    (at (Var 1) one = 1 && at (Lam (1, Var 1)) one = 2 && at (App (Var 1, Var 1)) one = 3);
+  miss
+    "Lam (2, Var 2), the identity of Lam (1, Var 1) under another name, is another key"
+    (Lam (2, Var 2))
+    one;
+  let nested = App (App (Var 1, Var 2), Var 3) in
+  let m = Exps_contract.of_list [ nested, 1; Lam (1, Var 2), 2 ] in
+  check_int (t "App (App (Var 1, Var 2), Var 3)") ~expect:1 ~actual:(at nested m);
+  miss
+    "App (Var 1, App (Var 2, Var 3)), the same identifiers nested the other way, is not \
+     bound"
+    (App (Var 1, App (Var 2, Var 3)))
+    m;
+  miss "nor App (Var 1, Var 2), its function part alone" (App (Var 1, Var 2)) m;
+  miss
+    "nor App (Var 3, App (Var 1, Var 2)), its parts the other way round"
+    (App (Var 3, App (Var 1, Var 2)))
+    m;
+  check_int (t "Lam (1, Var 2)") ~expect:2 ~actual:(at (Lam (1, Var 2)) m);
+  miss
+    "Lam (2, Var 1), its identifiers the other way round, is not bound"
+    (Lam (2, Var 1))
+    m;
+  let m' = Exps.bind (App (Var 1, Var 2)) 3 m in
+  check_int (t "App (Var 1, Var 2), bound") ~expect:3 ~actual:(at (App (Var 1, Var 2)) m');
+  check_int
+    (t "and App (App (Var 1, Var 2), Var 3) still")
+    ~expect:1
+    ~actual:(at nested m');
+  miss "while the original has no App (Var 1, Var 2)" (App (Var 1, Var 2)) m
+;;
+
+let test_exp_calls () =
+  let t label = "ExpTrie (UnbalancedMap (int)): " ^ label in
+  let small = exps_upto [ 0; 1 ] 4 in
+  let table = Exps_contract.of_list (List.map (fun k -> k, 0) small) in
+  (* Each key, in a table of all the small expressions or alone, with that table. *)
+  let cases =
+    List.map (fun k -> k, table) small
+    @ List.map
+        (fun k -> k, Exps.bind k 0 Exps.empty)
+        [ apps_left 500; apps_right 500; lambda_chain 1000; balanced 8 ]
+  in
+  let describe k =
+    if ids k <= 4
+    then show_exp k
+    else Printf.sprintf "an expression of %d identifiers" (ids k)
+  in
+  let report k (l, b) =
+    Printf.sprintf
+      "%s: %d lookups and %d binds for %d identifiers"
+      (describe k)
+      l
+      b
+      (ids k)
+  in
+  all_of
+    (t
+       "every key bound, small or of hundreds of identifiers, is found in one base-map \
+        lookup an identifier")
+    (fun note ->
+       List.iter
+         (fun (k, m) ->
+            let c = node_calls (fun () -> Exps.lookup k m) in
+            if c <> (ids k, 0) then note (report k c))
+         cases);
+  (* Binds, fresh into the empty trie and again into the trie that has the key. *)
+  let binds =
+    List.concat_map
+      (fun (k, m) ->
+         [ k, node_calls (fun () -> Exps.bind k 1 Exps.empty)
+         ; k, node_calls (fun () -> Exps.bind k 1 m)
+         ])
+      cases
+  in
+  all_of (t "every bind, fresh or again, is one base-map bind an identifier") (fun note ->
+    List.iter (fun (k, ((_, b) as c)) -> if b <> ids k then note (report k c)) binds);
+  let over side =
+    List.filter
+      (fun (k, (l, _)) ->
+         let fw, aw = part_weights k in
+         l > lambdas k + if side = `Function then fw else aw)
+      binds
+  in
+  let over_function = over `Function
+  and over_argument = over `Argument in
+  check
+    (t
+       (Printf.sprintf
+          "and no more base-map lookups than one a lambda and, at every application, one \
+           for each identifier of its function part (or of its argument, the same side \
+           throughout)%s"
+          (match over_function with
+           | [] -> ""
+           | (k, c) :: _ ->
+             let fw, _ = part_weights k in
+             Printf.sprintf " -- %s, budget %d" (report k c) (lambdas k + fw))))
+    (over_function = [] || over_argument = []);
+  (* A miss at the first identifier: one base-map lookup whatever comes after. *)
+  let miss n = App (Var (-1), lambda_chain (n - 2)) in
+  let short = miss 10
+  and long = miss 100_000 in
+  let c10 = count_only (fun () -> Exps_contract.lookup_opt short table)
+  and c100k = count_only (fun () -> Exps_contract.lookup_opt long table) in
+  let calls10 = node_calls (fun () -> Exps_contract.lookup_opt short table)
+  and calls100k = node_calls (fun () -> Exps_contract.lookup_opt long table) in
+  check
+    (t
+       (Printf.sprintf
+          "a miss at the first identifier is one base-map lookup whether the key has 10 \
+           identifiers or 100000, and the same comparisons, %d and %d"
+          c10
+          c100k))
+    (calls10 = (1, 0) && calls100k = (1, 0) && c10 = c100k)
+;;
+
+let test_exp_trie () =
+  test_exp_contract ();
+  test_exp_shapes ();
+  test_exp_calls ()
+;;
+
 let tests =
   [ case "[Figure 10.1] AltBinaryRandomAccessListFigure" test_alt
   ; case "[Exercise 10.2] AltBinaryRandomAccessList" test_alt_lazy
@@ -3391,5 +3632,6 @@ let tests =
       test_trie_of_trees_no_poly
   ; case "[Exercise 10.13] MultiwayTreesKeyTrie" test_multiway
   ; case "[Exercise 10.14] ProductMap, SumMap" test_product_sum
+  ; case "[Exercise 10.15] ExpTrie" test_exp_trie
   ]
 ;;
