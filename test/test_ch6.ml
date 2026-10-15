@@ -52,6 +52,7 @@ let theorem_6_1 =
       (fun ops c ->
         Printf.sprintf "%.0f steps, budget %d" c (ops.snocs + (2 * ops.tails)))
   ; reverse_floor = (fun n -> float_of_int n /. 6.)
+  ; dear_work = "runs the reverse"
   }
 ;;
 

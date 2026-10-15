@@ -1,4 +1,4 @@
-(* The checks Chapters 5 to 8 and 10 hold their queues and deques to, written once. Every
+(* The checks Chapters 5 to 8, 10 and 11 hold their queues and deques to, written once. Every
    chapter declares QUEUE and DEQUE over again, but as the same signatures, so the functors
    here take the queues of all of them: Contract for what every queue owes, Worst_case for
    one whose every operation is O(1), Amortised for one whose bound is over sequences and
@@ -610,10 +610,11 @@ let total ops = ops.snocs + ops.tails + ops.heads
 let tails n = { snocs = 0; tails = n; heads = 0 }
 
 (* A cost claim in one of the two units: the most a run of these operations may cost, how
-   to report what it did cost, and the least the dearest tail of a drain of n must cost.
-   The last is the guard that the clock can see a reverse at all: on a queue built by
-   snocs alone the last rotation moved a fixed fraction of the elements, in Figure 6.1 at
-   least a quarter, and the drain runs that reverse in a single tail. *)
+   to report what it did cost, the least the dearest tail of a drain of n must cost, and
+   what that tail does. The floor is the guard that the clock can see a reverse at all: on
+   a queue built by snocs alone the last rotation moved a fixed fraction of the elements,
+   in Figure 6.1 at least a quarter, and the drain runs that reverse in a single tail. A
+   queue with no reverse names the work its dearest tail does instead. *)
 type bound =
   { units : string
   ; claim : string
@@ -621,6 +622,7 @@ type bound =
   ; budget : ops -> float
   ; show : ops -> float -> string
   ; reverse_floor : int -> float
+  ; dear_work : string
   }
 
 (* The most a single cheap operation may allocate, in words, and the most a sequence may
@@ -642,6 +644,7 @@ let amortised_words =
       (fun ops c ->
         Printf.sprintf "%.2f words per operation" (c /. float_of_int (total ops)))
   ; reverse_floor = (fun n -> float_of_int n /. 2.) (* a sixth of n, 3 words a cons *)
+  ; dear_work = "runs the reverse"
   }
 ;;
 
@@ -900,8 +903,9 @@ module Amortised (Q : Okasaki.Ch5.QUEUE) = struct
     check
       (t
          (Printf.sprintf
-            "the first of %d tails of one version runs the reverse, %.0f %s"
+            "the first of %d tails of one version %s, %.0f %s"
             d
+            bound.dear_work
             first
             bound.units))
       (first >= bound.reverse_floor n);
@@ -946,5 +950,38 @@ module Amortised (Q : Okasaki.Ch5.QUEUE) = struct
     within
       "a random trace of 100000 operations, each on a random earlier version"
       (cost_on bound.clock (random_trace 100_000))
+  ;;
+
+  (* head at every version of a build of 100000 and its drain, each read as soon as it is
+     made, before a later operation can force anything on its behalf: a queue whose head
+     is O(1) worst-case reads it where it lies, and allocates nothing. *)
+  let run_head name =
+    let n = 100_000 in
+    let dear = ref (0, 0.0)
+    and sum = ref 0 in
+    let read i q =
+      let x, c = cost (fun () -> Q.head q) in
+      sum := !sum + x;
+      if c > snd !dear then dear := i, c
+    in
+    let q = ref Q.empty in
+    for i = 1 to n do
+      q := Q.snoc !q i;
+      read i !q
+    done;
+    for i = n + 1 to (2 * n) - 1 do
+      q := Q.tail !q;
+      read i !q
+    done;
+    ignore (Sys.opaque_identity !sum);
+    check
+      (Printf.sprintf
+         "%s: head allocates nothing at any version of a build of %d and its drain, \
+          dearest #%d at %.0f words"
+         name
+         n
+         (fst !dear)
+         (snd !dear))
+      (snd !dear = 0.0)
   ;;
 end

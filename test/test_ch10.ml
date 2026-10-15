@@ -180,34 +180,6 @@ let bootstrapped_words =
 module Bootstrapped (Q : QUEUE) = struct
   include Queues.Amortised (Q)
 
-  let run_head name =
-    let n = 100_000 in
-    let v = Array.make (2 * n) Q.empty in
-    for i = 1 to n do
-      v.(i) <- Q.snoc v.(i - 1) i
-    done;
-    for i = n + 1 to (2 * n) - 1 do
-      v.(i) <- Q.tail v.(i - 1)
-    done;
-    let dear = ref (0, 0.0)
-    and sum = ref 0 in
-    for i = 1 to (2 * n) - 1 do
-      let x, c = cost (fun () -> Q.head v.(i)) in
-      sum := !sum + x;
-      if c > snd !dear then dear := i, c
-    done;
-    ignore (Sys.opaque_identity !sum);
-    check
-      (Printf.sprintf
-         "%s: head allocates nothing at any version of a build of %d and its drain, \
-          dearest #%d at %.0f words"
-         name
-         n
-         (fst !dear)
-         (snd !dear))
-      (snd !dear = 0.0)
-  ;;
-
   let run bound name =
     run_contract name;
     run_sequences bound name;
