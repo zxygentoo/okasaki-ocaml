@@ -293,3 +293,101 @@ module ImplicitDeque : DEQUE = struct
     | _ -> assert false
   ;;
 end
+
+(* Figure 11.2 *)
+
+module type CATENABLE_DEQUE = sig
+  type 'a cat
+
+  val empty : 'a cat
+  val is_empty : 'a cat -> bool
+  val cons : 'a -> 'a cat -> 'a cat
+  val head : 'a cat -> 'a
+  val tail : 'a cat -> 'a cat
+  val snoc : 'a cat -> 'a -> 'a cat
+  val last : 'a cat -> 'a
+  val init : 'a cat -> 'a cat
+  val ( ++ ) : 'a cat -> 'a cat -> 'a cat
+end
+
+(* Figure 11.3 *)
+
+module SimpleCatenableDeque (D : DEQUE) : CATENABLE_DEQUE = struct
+  type 'a cat =
+    | Shallow of 'a D.queue
+    | Deep of 'a D.queue * 'a D.queue cat lazy_t * 'a D.queue
+
+  let too_small d = D.is_empty d || D.is_empty (D.tail d)
+  let dappendl d1 d2 = if D.is_empty d1 then d2 else D.cons (D.head d1) d2
+  let dappendr d1 d2 = if D.is_empty d2 then d1 else D.snoc d1 (D.head d2)
+  let empty = Shallow D.empty
+
+  let is_empty = function
+    | Shallow d -> D.is_empty d
+    | _ -> false
+  ;;
+
+  let cons x = function
+    | Shallow d -> Shallow (D.cons x d)
+    | Deep (f, m, r) -> Deep (D.cons x f, m, r)
+  ;;
+
+  let snoc q x =
+    match q with
+    | Shallow d -> Shallow (D.snoc d x)
+    | Deep (f, m, r) -> Deep (f, m, D.snoc r x)
+  ;;
+
+  let head = function
+    | Shallow d -> D.head d
+    | Deep (f, _, _) -> D.head f
+  ;;
+
+  let last = function
+    | Shallow d -> D.last d
+    | Deep (_, _, r) -> D.last r
+  ;;
+
+  let rec tail : 'a. 'a cat -> 'a cat = function
+    | Shallow d -> Shallow (D.tail d)
+    | Deep (f, m, r) ->
+      let f' = D.tail f in
+      if not (too_small f')
+      then Deep (f', m, r)
+      else if is_empty (Lazy.force m)
+      then Shallow (dappendl f' r)
+      else Deep (dappendl f' (head (Lazy.force m)), lazy (tail (Lazy.force m)), r)
+  ;;
+
+  let rec init : 'a. 'a cat -> 'a cat = function
+    | Shallow d -> Shallow (D.init d)
+    | Deep (f, m, r) ->
+      let r' = D.init r in
+      if not (too_small r')
+      then Deep (f, m, r')
+      else if is_empty (Lazy.force m)
+      then Shallow (dappendr f r')
+      else Deep (f, lazy (init (Lazy.force m)), dappendr (last (Lazy.force m)) r')
+  ;;
+
+  let rec ( ++ ) : 'a. 'a cat -> 'a cat -> 'a cat =
+    fun q1 q2 ->
+    match q1, q2 with
+    | Shallow d1, Shallow d2 ->
+      if too_small d1
+      then Shallow (dappendl d1 d2)
+      else if too_small d2
+      then Shallow (dappendr d1 d2)
+      else Deep (d1, lazy empty, d2)
+    | Shallow d, Deep (f, m, r) ->
+      if too_small d
+      then Deep (dappendl d f, m, r)
+      else Deep (d, lazy (cons f (Lazy.force m)), r)
+    | Deep (f, m, r), Shallow d ->
+      if too_small d
+      then Deep (f, m, dappendr r d)
+      else Deep (f, lazy (snoc (Lazy.force m) r), d)
+    | Deep (f1, m1, r1), Deep (f2, m2, r2) ->
+      Deep (f1, lazy (snoc (Lazy.force m1) r1 ++ cons f2 (Lazy.force m2)), r2)
+  ;;
+end
