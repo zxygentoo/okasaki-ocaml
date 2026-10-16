@@ -547,3 +547,99 @@ module ImplicitCatenableDeque (D : DEQUE_WITH_SIZE) : CATENABLE_DEQUE = struct
       else Shallow f ++ Shallow (dappendr m (D.init r))
   ;;
 end
+
+(* Exercise 11.4 Given an implementation D of non-catenable deques, implement
+    catenable lists using the type
+
+        datatype a Cat =
+            SHALLOW of a D.Queue
+            | DEEP of a D.Queue x a CmpdElem Cat susp x a D.Queue
+        and a CmpdElem = CMPD of a D.Queue x a CmpdElem Cat susp
+
+    where both the front deque of a DEEP node and the deque in a CMPD node
+    contain at least two elements. Prove that every function in your implementation
+    runs in 0(1) amortized time, assuming that all the functions in D run in 0(1)
+    time (worst-case or amortized).
+*)
+
+(* Figure 10.3 *)
+
+module type CATENABLE_LIST = sig
+  type 'a cat
+
+  val empty : 'a cat
+  val is_empty : 'a cat -> bool
+  val cons : 'a -> 'a cat -> 'a cat
+  val snoc : 'a cat -> 'a -> 'a cat
+  val ( ++ ) : 'a cat -> 'a cat -> 'a cat
+  val head : 'a cat -> 'a
+  val tail : 'a cat -> 'a cat
+end
+
+module ImplicitCatenableList (D : DEQUE) : CATENABLE_LIST = struct
+  type 'a cat =
+    | Shallow of 'a D.queue
+    | Deep of 'a D.queue * 'a cmpdelem cat lazy_t * 'a D.queue
+
+  and 'a cmpdelem = Cmpd of 'a D.queue * 'a cmpdelem cat lazy_t
+
+  let too_small d = D.is_empty d || D.is_empty (D.tail d)
+  let dappendl d1 d2 = if D.is_empty d1 then d2 else D.cons (D.head d1) d2
+  let empty = Shallow D.empty
+
+  let is_empty = function
+    | Shallow d -> D.is_empty d
+    | _ -> false
+  ;;
+
+  let cons x = function
+    | Shallow d -> Shallow (D.cons x d)
+    | Deep (f, m, r) -> Deep (D.cons x f, m, r)
+  ;;
+
+  let snoc q x =
+    match q with
+    | Shallow d -> Shallow (D.snoc d x)
+    | Deep (f, m, r) -> Deep (f, m, D.snoc r x)
+  ;;
+
+  let head = function
+    | Shallow d -> D.head d
+    | Deep (f, _, _) -> D.head f
+  ;;
+
+  let ( ++ ) : 'a. 'a cat -> 'a cat -> 'a cat =
+    fun q1 q2 ->
+    match q1, q2 with
+    | Shallow d1, Shallow d2 ->
+      if too_small d1 then Shallow (dappendl d1 d2) else Deep (d1, lazy empty, d2)
+    | Shallow d, Deep (f, m, r) ->
+      if too_small d
+      then Deep (dappendl d f, m, r)
+      else Deep (d, lazy (cons (Cmpd (f, lazy empty)) (Lazy.force m)), r)
+    | Deep (f, m, r), Shallow d ->
+      if too_small r
+      then Deep (f, m, dappendl r d)
+      else Deep (f, lazy (snoc (Lazy.force m) (Cmpd (r, lazy empty))), d)
+    | Deep (f1, m1, r1), Deep (f2, m2, r2) ->
+      let m =
+        if too_small r1
+        then lazy (snoc (Lazy.force m1) (Cmpd (dappendl r1 f2, m2)))
+        else lazy (snoc (snoc (Lazy.force m1) (Cmpd (r1, lazy empty))) (Cmpd (f2, m2)))
+      in
+      Deep (f1, m, r2)
+  ;;
+
+  let rec tail : 'a. 'a cat -> 'a cat = function
+    | Shallow d -> Shallow (D.tail d)
+    | Deep (f, m, r) ->
+      let f' = D.tail f in
+      if not (too_small f')
+      then Deep (f', m, r)
+      else if is_empty (Lazy.force m)
+      then Shallow (dappendl f' r)
+      else (
+        let (Cmpd (d', c')) = head (Lazy.force m) in
+        Deep (dappendl f' d', lazy (Lazy.force c' ++ tail (Lazy.force m)), r))
+  ;;
+end
