@@ -307,14 +307,12 @@ let test_prim () =
    linking left to right, the order the book says duplicates the most work, makes a
    drain quadratic, 8000 words an operation at a thousand. *)
 
-let cat_constant = 128.0
-
-(* The checks are catenables.ml's, shared with Chapter 11. *)
+(* The checks are catenables.ml's, shared with Chapter 11, and so is the constant. *)
 module Cat (C : CATENABLE_LIST) =
   Catenables.Contract
     (C)
     (struct
-      let constant = cat_constant
+      let constant = Catenables.constant
       let refusal op = op ^ ": empty list"
     end)
 

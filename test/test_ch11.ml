@@ -631,25 +631,25 @@ let test_deque () =
    The base deque is ImplicitDeque. Without ++ the c-deque is a deque, so the queue and
    deque contracts of queues.ml come first. Then catenation against a list model: every
    pair of sizes 0 to 7, each operand built by snocs and by a catenation of singletons,
-   read from both ends and the operands left as they were; and random runs over a pool
-   of c-deques catenated with each other and with themselves, every result checked at
-   once and every version read back whole at the end. Since ++ suspends its recursion,
-   its cost shows in what later forces it, so the clock reads whole workloads, the
-   catenations and a full drain: a budget of 48 words for every element put in or taken
-   out and 48 for each of a catenation's log (min (n1, n2) + 1) + 1 levels, over left and
-   right folds of triples, a balanced tree of them, and fourteen self-catenations, at 333
-   and 33333 triples. Then persistence: a removal twenty times over from every version
-   of a drain of a balanced c-deque, from either end, and a random trace of operations
-   on random earlier versions, catenations of two of them included; and head and last
-   allocating nothing at any version of those drains. Measured: every workload 17 to 20
-   words a unit at either size, the fourteen self-catenations, 128 levels in all for
-   49152 elements, 17; a removal from any version of the drain 25 words, from either
-   end; and the random trace 8.8 a unit. *)
+   read from both ends and the operands left as they were; and random runs over a pool of
+   c-deques catenated with each other and with themselves up to 2000 elements, every
+   result checked at once and every version read back whole at the end. Since ++ suspends
+   its recursion, its cost shows in what later forces it, so the clock reads whole
+   workloads, the catenations and a full drain: a budget of 48 words for every element put
+   in or taken out and 48 for each of a catenation's log (min (n1, n2) + 1) + 1 levels,
+   over left and right folds of triples, a balanced tree of them, and fourteen
+   self-catenations, at 333 and 33333 triples. Then persistence: a removal twenty times
+   over from every version of a drain of a balanced c-deque, from either end, and a random
+   trace of operations on random earlier versions, catenations of two of them included;
+   and head and last allocating nothing at any version of those drains. Measured: every
+   workload 17 to 20 words a unit at either size, the fourteen self-catenations, 128
+   levels in all for 49152 elements, 17; a removal from any version of the drain 25 words,
+   from either end; and the random trace 8.8 a unit. *)
 
-(* What a catenable list is built and measured with, deque or not. *)
+(* What a catenable list is built, measured and checked against a list model with, deque
+   or not: catenables.ml's builders, and these. *)
 module Catenable_builds (C : CATENABLE_LIST) = struct
-  let ( ++ ) = C.( ++ )
-  let cat_of_list xs = List.fold_left C.snoc C.empty xs
+  include Catenables.Builds (C)
 
   (* The c-deque of [xs] as a balanced catenation of singletons, deep wherever it can
      be. *)
@@ -661,8 +661,108 @@ module Catenable_builds (C : CATENABLE_LIST) = struct
       cat_tree (List.take k xs) ++ cat_tree (List.drop k xs)
   ;;
 
-  let cat_front q = drain_with ~is_empty:C.is_empty ~head:C.head ~tail:C.tail q
-  let triple j = cat_of_list [ 3 * j; (3 * j) + 1; (3 * j) + 2 ]
+  let triple j = by_snoc [ 3 * j; (3 * j) + 1; (3 * j) + 2 ]
+
+  (* Catenation against a list model: every pair of sizes 0 to [max_size], each operand
+     built by snocs or as a balanced catenation of singletons, which nests deep ones
+     inside the middles of deep ones; and random runs over a pool of six, catenated with
+     each other and with themselves while they stay under [cap] elements. A c-deque
+     passes its [back], last and init, to be read and taken from that end as well. *)
+  let test_model ?back name ~noun ~max_size ~seed =
+    let t label = Printf.sprintf "%s: %s" name label in
+    let cap = 2_000 in
+    let reads_as l q =
+      to_list q = l
+      &&
+      match back with
+      | None -> true
+      | Some (last, init) ->
+        List.rev (drain_with ~is_empty:C.is_empty ~head:last ~tail:init q) = l
+    in
+    all_of
+      (t
+         (Printf.sprintf
+            "every pair of sizes 0 to %d, each built by snocs or by catenating \
+             singletons, catenates to read %s, leaving both operands as they were"
+            max_size
+            (if Option.is_none back then "in order" else "the same from both ends")))
+      (fun note ->
+         List.iter
+           (fun n1 ->
+              List.iter
+                (fun n2 ->
+                   let xs = upto n1
+                   and ys = List.map (fun i -> 100 + i) (upto n2) in
+                   List.iter
+                     (fun (how, build) ->
+                        let a = build xs
+                        and b = build ys in
+                        if not (reads_as (xs @ ys) (a ++ b))
+                        then note (Printf.sprintf "%s, sizes %d and %d" how n1 n2)
+                        else if to_list a <> xs || to_list b <> ys
+                        then
+                          note
+                            (Printf.sprintf
+                               "%s, sizes %d and %d: an operand changed"
+                               how
+                               n1
+                               n2))
+                     [ "by snocs", by_snoc; "by catenations", cat_tree ])
+                (upto (max_size + 1)))
+           (upto (max_size + 1)));
+    Random.init seed;
+    all_of
+      (t
+         (Printf.sprintf
+            "300 random runs over a pool of six %s, catenated with each other and with \
+             themselves, agree with a list model after every operation, and every \
+             version reads back whole at the end"
+            noun))
+      (fun note ->
+         for run = 1 to 300 do
+           let pool = Array.make 6 (C.empty, []) in
+           let versions = ref [] in
+           let next = ref 0 in
+           try
+             for _ = 1 to 150 do
+               let i = Random.int 6 in
+               let q, m = pool.(i) in
+               incr next;
+               let x = !next in
+               (* cons, snoc, the removals, two draws in a catenation, and a snoc for
+                  the last draw and for a removal from nothing *)
+               let q', m' =
+                 match Random.int (if Option.is_none back then 6 else 7), back with
+                 | 0, _ -> C.cons x q, x :: m
+                 | 1, _ -> C.snoc q x, m @ [ x ]
+                 | 2, _ when m <> [] -> C.tail q, List.tl m
+                 | 3, Some (_, init) when m <> [] ->
+                   init q, List.take (List.length m - 1) m
+                 | (3 | 4), None | (4 | 5), Some _ ->
+                   let q2, m2 = pool.(Random.int 6) in
+                   if List.length m + List.length m2 > cap then q, m else q ++ q2, m @ m2
+                 | _ -> C.snoc q x, m @ [ x ]
+               in
+               pool.(i) <- q', m';
+               versions := (q', m') :: !versions;
+               if C.is_empty q' <> (m' = [])
+               then failwith "is_empty"
+               else if m' <> [] && C.head q' <> List.hd m'
+               then failwith "head"
+               else (
+                 match back with
+                 | Some (last, _)
+                   when m' <> [] && last q' <> List.nth m' (List.length m' - 1) ->
+                   failwith "last"
+                 | _ -> ())
+             done;
+             if List.exists (fun (q, m) -> not (reads_as m q)) !versions
+             then failwith "a version read back wrong"
+           with
+           | Failure what -> note (Printf.sprintf "run %d: %s" run what)
+           | e -> note (Printf.sprintf "run %d: raised %s" run (Printexc.to_string e))
+         done)
+  ;;
 
   (* What a catenation adds to a workload that goes [m] elements deep: k copies of a
      forced balanced c-deque of 2^14 folded on from the left, then m tails of the result,
@@ -671,7 +771,7 @@ module Catenable_builds (C : CATENABLE_LIST) = struct
     let a = lazy (cat_tree (upto (1 lsl 14))) in
     fun m ->
       let a = Lazy.force a in
-      ignore (cat_front a);
+      ignore (to_list a);
       let run k =
         allocated (fun () ->
           let q = ref a in
@@ -734,83 +834,12 @@ struct
   let cat_back q = Deque_contract.drain_back q
 
   let test_contract name =
-    let t label = Printf.sprintf "%s: %s" name label in
-    all_of
-      (t
-         (Printf.sprintf
-            "every pair of sizes 0 to %d, each built by snocs or by catenating \
-             singletons, catenates to read the same from both ends, leaving both \
-             operands as they were"
-            P.max_size))
-      (fun note ->
-         List.iter
-           (fun n1 ->
-              List.iter
-                (fun n2 ->
-                   let xs = upto n1
-                   and ys = List.map (fun i -> 100 + i) (upto n2) in
-                   List.iter
-                     (fun (how, build) ->
-                        let a = build xs
-                        and b = build ys in
-                        let c = a ++ b in
-                        if cat_front c <> xs @ ys || cat_back c <> xs @ ys
-                        then note (Printf.sprintf "%s, sizes %d and %d" how n1 n2)
-                        else if cat_front a <> xs || cat_front b <> ys
-                        then
-                          note
-                            (Printf.sprintf
-                               "%s, sizes %d and %d: an operand changed"
-                               how
-                               n1
-                               n2))
-                     [ "by snocs", cat_of_list; "by catenations", cat_tree ])
-                (upto (P.max_size + 1)))
-           (upto (P.max_size + 1)));
-    Random.init 20261016;
-    all_of
-      (t
-         "300 random runs over a pool of six c-deques, catenated with each other and \
-          with themselves, agree with a list model after every operation, and every \
-          version reads back whole at the end")
-      (fun note ->
-         for run = 1 to 300 do
-           let pool = Array.make 6 (C.empty, []) in
-           let versions = ref [] in
-           let next = ref 0 in
-           try
-             for _ = 1 to 150 do
-               let i = Random.int 6 in
-               let q, m = pool.(i) in
-               incr next;
-               let x = !next in
-               let q', m' =
-                 match Random.int 7 with
-                 | 0 -> C.cons x q, x :: m
-                 | 1 -> C.snoc q x, m @ [ x ]
-                 | 2 when m <> [] -> C.tail q, List.tl m
-                 | 3 when m <> [] -> C.init q, List.take (List.length m - 1) m
-                 | 4 | 5 ->
-                   let q2, m2 = pool.(Random.int 6) in
-                   q ++ q2, m @ m2
-                 | _ -> C.snoc q x, m @ [ x ]
-               in
-               pool.(i) <- q', m';
-               versions := (q', m') :: !versions;
-               if C.is_empty q' <> (m' = [])
-               then failwith "is_empty"
-               else if
-                 m' <> []
-                 && (C.head q' <> List.hd m'
-                     || C.last q' <> List.nth m' (List.length m' - 1))
-               then failwith "head or last"
-             done;
-             if List.exists (fun (q, m) -> cat_front q <> m || cat_back q <> m) !versions
-             then failwith "a version read back wrong"
-           with
-           | Failure what -> note (Printf.sprintf "run %d: %s" run what)
-           | e -> note (Printf.sprintf "run %d: raised %s" run (Printexc.to_string e))
-         done)
+    test_model
+      ~back:(C.last, C.init)
+      name
+      ~noun:"c-deques"
+      ~max_size:P.max_size
+      ~seed:20261016
   ;;
 
   (* A workload: what it costs, built and drained, against its budget. [build] returns
@@ -887,7 +916,7 @@ struct
                      (Printf.sprintf "%d triples, %s, drained from %s" m shape from)
                      build
                      (fun q -> ignore (drain q)))
-                [ "the front", cat_front; "the back", cat_back ])
+                [ "the front", to_list; "the back", cat_back ])
            [ "a left fold", left_fold m
            ; "a right fold", right_fold m
            ; ("a balanced tree", fun () -> balanced_triples 0 m)
@@ -897,7 +926,7 @@ struct
       t
       "fourteen self-catenations of a triple, drained from the front"
       (self_catenations 14)
-      (fun q -> ignore (cat_front q))
+      (fun q -> ignore (to_list q))
   ;;
 
   (* Every version of a drain of [q] from one end. *)
@@ -1102,12 +1131,27 @@ module Icat_tests =
 (* What a catenation adds to a drain 16 deep and to one 2^16 deep may grow by at most
    this factor. *)
 let depth_growth_limit = 1.5
+let growth at = at 16, at (1 lsl 16)
+
+(* The guard of the depth check: under the same workload, Figure 11.3's catenation has to
+   grow with the depth of the drain, or the measure cannot see the difference. *)
+let test_depth_guard () =
+  let shallow, deep = growth Cat_tests.catenation_at_depth in
+  check
+    (Printf.sprintf
+       "guard: the same workload sees Figure 11.3's catenation grow with the depth of \
+        the drain, %.0f words a catenation 16 deep and %.0f 2^16 deep, %.1f times"
+       shallow
+       deep
+       (deep /. shallow))
+    (deep /. shallow > depth_growth_limit)
+;;
 
 (* What the implicit recursive slowdown of Figure 11.4 claims beyond the contracts, for its
    deque and for the catenable list of Exercise 11.4 alike: catenations of every shape of
    operand, a catenation that costs the same however deep a later drain goes, and
    insertions that are O(1) worst-case. The two differ in the ends a removal takes, the
-   thresholds that tell their shapes apart, and the words those are put in. *)
+   threshold that tells their shapes apart, and the words those are put in. *)
 module Implicit_checks
     (C : CATENABLE_LIST)
     (P : sig
@@ -1117,25 +1161,56 @@ module Implicit_checks
        (* What one of them is called. *)
        val noun : string
 
-       (* The removals, by name, tail first; what a run of them is called, and a drain by
-          each of them. *)
-       val removals : (string * (int C.cat -> int C.cat)) list
-       val removals_name : string
-       val drains_name : string
+       (* A c-deque's init, removing from the back as tail does from the front. *)
+       val init : (int C.cat -> int C.cat) option
 
-       (* The operands at size n, with their sizes, and what the list of them is called. *)
-       val shapes : int -> (int * string * int C.cat) list
-       val shapes_name : string
+       (* The fewest elements ++ keeps whole in a shallow operand rather than move them
+          over on their own. *)
+       val threshold : int
      end) =
 struct
   include Catenable_builds (C)
+
+  let removals =
+    ("tail", C.tail) :: List.map (fun init -> "init", init) (Option.to_list P.init)
+  ;;
+
+  let removals_name = String.concat " and " (List.map (fun (r, _) -> r ^ "s") removals)
+  let drains_name = if Option.is_none P.init then "from the front" else "from either end"
+
+  (* The operands a catenation can be given, by the threshold k: shallow of k - 1, which
+     ++ moves over element by element; shallow of k and of n, which it keeps whole; and
+     deep, balanced or with a long front or a long rear, what ++ files away whole and a
+     later removal borrows back. With their sizes. *)
+  let shapes n =
+    let k = P.threshold in
+    let deep () = by_snoc (upto k) ++ by_snoc (upto k) in
+    [ k - 1, Printf.sprintf "shallow of %d" (k - 1), by_snoc (upto (k - 1))
+    ; k, Printf.sprintf "shallow of %d" k, by_snoc (upto k)
+    ; n, Printf.sprintf "shallow of %d" n, by_snoc (upto n)
+    ; n, Printf.sprintf "balanced of %d" n, cat_tree (upto n)
+    ; ( n + (2 * k)
+      , Printf.sprintf "deep with a front of %d" n
+      , List.fold_left (fun q x -> C.cons x q) (deep ()) (upto n) )
+    ; ( n + (2 * k)
+      , Printf.sprintf "deep with a rear of %d" n
+      , List.fold_left C.snoc (deep ()) (upto n) )
+    ]
+  ;;
+
+  let shapes_name =
+    Printf.sprintf
+      "shallow of %d, %d and n, balanced, and deep with a long front or rear"
+      (P.threshold - 1)
+      P.threshold
+  ;;
 
   (* [q] run down by [remove] to the end, so that what it owes is paid. *)
   let exhaust remove q =
     ignore (drain_with ~is_empty:C.is_empty ~head:ignore ~tail:remove q)
   ;;
 
-  let round q = List.fold_left (fun q (_, remove) -> remove q) q P.removals
+  let round q = List.fold_left (fun q (_, remove) -> remove q) q removals
 
   (* A catenation of every pair of shapes at two sizes, with as many removals after it as
      force what it suspended and borrow back what it filed away, up to 64 rounds. Every
@@ -1143,12 +1218,12 @@ struct
      clock starts. *)
   let test_shapes name =
     let worst = ref (0.0, "") in
-    let per_round = List.length P.removals in
+    let per_round = List.length removals in
     List.iter
       (fun n ->
-         let shapes = P.shapes n in
+         let shapes = shapes n in
          List.iter
-           (fun (_, _, q) -> List.iter (fun (_, remove) -> exhaust remove q) P.removals)
+           (fun (_, _, q) -> List.iter (fun (_, remove) -> exhaust remove q) removals)
            shapes;
          List.iter
            (fun (n1, s1, q1) ->
@@ -1175,8 +1250,8 @@ struct
          "%s: a catenation of every pair of shapes, %s, at n = 2^10 and 2^16, then up to \
           64 %s, within %.0f words a unit: the dearest %s, %.1f a unit"
          name
-         P.shapes_name
-         P.removals_name
+         shapes_name
+         removals_name
          P.constant
          at
          r)
@@ -1184,16 +1259,7 @@ struct
   ;;
 
   let test_depth name =
-    let growth at = at 16, at (1 lsl 16) in
-    let shallow, deep = growth Cat_tests.catenation_at_depth in
-    check
-      (Printf.sprintf
-         "guard: the same workload sees Figure 11.3's catenation grow with the depth of \
-          the drain, %.0f words a catenation 16 deep and %.0f 2^16 deep, %.1f times"
-         shallow
-         deep
-         (deep /. shallow))
-      (deep /. shallow > depth_growth_limit);
+    test_depth_guard ();
     let shallow, deep = growth catenation_at_depth in
     check
       (Printf.sprintf
@@ -1232,7 +1298,7 @@ struct
            q := remove !q;
            probe (Printf.sprintf "%s #%d" which k) !q
          done)
-      P.removals;
+      removals;
     List.iter
       (fun (which, step) ->
          let q = ref C.empty in
@@ -1251,7 +1317,7 @@ struct
           words, %s"
          name
          n
-         P.drains_name
+         drains_name
          Queues.constant
          c
          at)
@@ -1265,40 +1331,17 @@ struct
   ;;
 end
 
-(* The operands a catenation can be given, by the size thresholds of Figure 11.4: shallow
-   under four elements, which ++ merges element by element; shallow of four and of n,
-   which it keeps whole; and deep, balanced or with a long front or a long rear, the
-   deque that ++ files away whole in a or b and a later tail or init borrows back. *)
-let icat_shapes n =
-  let module T = Icat_tests in
-  let deep8 () = Icat.( ++ ) (T.cat_of_list (upto 4)) (T.cat_of_list (upto 4)) in
-  [ 3, "shallow of 3", T.cat_of_list (upto 3)
-  ; 4, "shallow of 4", T.cat_of_list (upto 4)
-  ; n, Printf.sprintf "shallow of %d" n, T.cat_of_list (upto n)
-  ; n, Printf.sprintf "balanced of %d" n, T.cat_tree (upto n)
-  ; ( n + 8
-    , Printf.sprintf "deep with a front of %d" n
-    , List.fold_left (fun q x -> Icat.cons x q) (deep8 ()) (upto n) )
-  ; ( n + 8
-    , Printf.sprintf "deep with a rear of %d" n
-    , List.fold_left Icat.snoc (deep8 ()) (upto n) )
-  ]
-;;
-
 module Icat_checks =
   Implicit_checks
     (Icat)
     (struct
       let constant = icat_constant
       let noun = "c-deque"
-      let removals = [ "tail", Icat.tail; "init", Icat.init ]
-      let removals_name = "tails and inits"
-      let drains_name = "from either end"
-      let shapes = icat_shapes
+      let init = Some Icat.init
 
-      let shapes_name =
-        "shallow of 3, 4 and n, balanced, and deep with a long front or rear"
-      ;;
+      (* Figure 11.4's: ++ merges a shallow c-deque of fewer than four element by
+         element, and files a deeper one's deques away whole in a or b. *)
+      let threshold = 4
     end)
 
 let test_icat () =
@@ -1351,7 +1394,7 @@ module Ilist = ImplicitCatenableList (ImplicitDeque)
    list. The dearest reading is a catenation, 79 words with what it suspends; a list that
    did at once what the exercise suspends, in its catenations or its tails, reads no more
    than 35 anywhere else. *)
-let ilist_constant = 128.0
+let ilist_constant = Catenables.constant
 
 module Ilist_contract =
   Catenables.Contract
@@ -1361,124 +1404,23 @@ module Ilist_contract =
       let refusal op = op ^ ": empty queue"
     end)
 
-(* Catenation against a list model, as for the deques above but from the front only:
-   every pair of sizes, each operand built by snocs or as a balanced catenation of
-   singletons, which nests deep lists inside the middles of deep lists; and random runs
-   over a pool of lists catenated with each other and with themselves. *)
-let test_ilist_catenation name =
-  let module T = Catenable_builds (Ilist) in
-  let t label = Printf.sprintf "%s: %s" name label in
-  let ( ++ ) = Ilist.( ++ ) in
-  all_of
-    (t
-       "every pair of sizes 0 to 40, each built by snocs or by catenating singletons, \
-        catenates to read in order, leaving both operands as they were")
-    (fun note ->
-       List.iter
-         (fun n1 ->
-            List.iter
-              (fun n2 ->
-                 let xs = upto n1
-                 and ys = List.map (fun i -> 100 + i) (upto n2) in
-                 List.iter
-                   (fun (how, build) ->
-                      let a = build xs
-                      and b = build ys in
-                      if T.cat_front (a ++ b) <> xs @ ys
-                      then note (Printf.sprintf "%s, sizes %d and %d" how n1 n2)
-                      else if T.cat_front a <> xs || T.cat_front b <> ys
-                      then
-                        note
-                          (Printf.sprintf
-                             "%s, sizes %d and %d: an operand changed"
-                             how
-                             n1
-                             n2))
-                   [ "by snocs", T.cat_of_list; "by catenations", T.cat_tree ])
-              (upto 41))
-         (upto 41));
-  Random.init 20261018;
-  all_of
-    (t
-       "300 random runs over a pool of six lists, catenated with each other and with \
-        themselves, agree with a list model after every operation, and every version \
-        reads back whole at the end")
-    (fun note ->
-       for run = 1 to 300 do
-         let pool = Array.make 6 (Ilist.empty, []) in
-         let versions = ref [] in
-         let next = ref 0 in
-         try
-           for _ = 1 to 150 do
-             let i = Random.int 6 in
-             let q, m = pool.(i) in
-             incr next;
-             let x = !next in
-             let q', m' =
-               match Random.int 6 with
-               | 0 -> Ilist.cons x q, x :: m
-               | 1 -> Ilist.snoc q x, m @ [ x ]
-               | 2 when m <> [] -> Ilist.tail q, List.tl m
-               | 3 | 4 ->
-                 let q2, m2 = pool.(Random.int 6) in
-                 q ++ q2, m @ m2
-               | _ -> Ilist.snoc q x, m @ [ x ]
-             in
-             pool.(i) <- q', m';
-             versions := (q', m') :: !versions;
-             if Ilist.is_empty q' <> (m' = [])
-             then failwith "is_empty"
-             else if m' <> [] && Ilist.head q' <> List.hd m'
-             then failwith "head"
-           done;
-           if List.exists (fun (q, m) -> T.cat_front q <> m) !versions
-           then failwith "a version read back wrong"
-         with
-         | Failure what -> note (Printf.sprintf "run %d: %s" run what)
-         | e -> note (Printf.sprintf "run %d: raised %s" run (Printexc.to_string e))
-       done)
-;;
-
-(* The operands a catenation can be given, by the one threshold of Exercise 11.4: shallow
-   of one element, which ++ moves over on its own; shallow of two and of n, which it
-   keeps whole; and deep, balanced or with a long front or a long rear, the deque that
-   ++ files away whole and a later tail borrows back. *)
-let ilist_shapes n =
-  let module T = Catenable_builds (Ilist) in
-  let deep4 () = Ilist.( ++ ) (T.cat_of_list (upto 2)) (T.cat_of_list (upto 2)) in
-  [ 1, "shallow of 1", T.cat_of_list (upto 1)
-  ; 2, "shallow of 2", T.cat_of_list (upto 2)
-  ; n, Printf.sprintf "shallow of %d" n, T.cat_of_list (upto n)
-  ; n, Printf.sprintf "balanced of %d" n, T.cat_tree (upto n)
-  ; ( n + 4
-    , Printf.sprintf "deep with a front of %d" n
-    , List.fold_left (fun q x -> Ilist.cons x q) (deep4 ()) (upto n) )
-  ; ( n + 4
-    , Printf.sprintf "deep with a rear of %d" n
-    , List.fold_left Ilist.snoc (deep4 ()) (upto n) )
-  ]
-;;
-
 module Ilist_checks =
   Implicit_checks
     (Ilist)
     (struct
       let constant = ilist_constant
       let noun = "list"
-      let removals = [ "tail", Ilist.tail ]
-      let removals_name = "tails"
-      let drains_name = "from the front"
-      let shapes = ilist_shapes
+      let init = None
 
-      let shapes_name =
-        "shallow of 1, 2 and n, balanced, and deep with a long front or rear"
-      ;;
+      (* Exercise 11.4's one threshold: an operand of fewer than two elements has them
+         moved over on their own. *)
+      let threshold = 2
     end)
 
 let test_ilist () =
   let name = "ImplicitCatenableList (ImplicitDeque)" in
   Ilist_contract.run_contract name;
-  test_ilist_catenation name;
+  Ilist_checks.test_model name ~noun:"lists" ~max_size:40 ~seed:20261018;
   Ilist_contract.run_sequences name;
   Ilist_contract.run_versions name;
   Ilist_checks.run name

@@ -6,6 +6,20 @@
 
 open Harness
 
+(* The most any clock may read over a catenable list, in words an operation: twice the
+   dearest Chapter 10 measured, as its preamble says. Exercise 11.4's list is held to it
+   too. *)
+let constant = 128.0
+
+(* What a catenable list is built and read with, here and in Chapter 11. *)
+module Builds (C : Okasaki.Ch10.CATENABLE_LIST) = struct
+  let ( ++ ) = C.( ++ )
+  let to_list xs = drain_with ~is_empty:C.is_empty ~head:C.head ~tail:C.tail xs
+  let by_cons l = List.fold_right C.cons l C.empty
+  let by_snoc l = List.fold_left C.snoc C.empty l
+  let singleton x = C.cons x C.empty
+end
+
 module Contract
     (C : Okasaki.Ch10.CATENABLE_LIST)
     (P : sig
@@ -16,11 +30,7 @@ module Contract
        val refusal : string -> string
      end) =
 struct
-  let ( ++ ) = C.( ++ )
-  let to_list xs = drain_with ~is_empty:C.is_empty ~head:C.head ~tail:C.tail xs
-  let by_cons l = List.fold_right C.cons l C.empty
-  let by_snoc l = List.fold_left C.snoc C.empty l
-  let singleton x = C.cons x C.empty
+  include Builds (C)
 
   (* ((s0 ++ s1) ++ s2) ++ ...: one root with every other element a child of it. *)
   let fat_of l = List.fold_left (fun acc x -> acc ++ singleton x) C.empty l
@@ -28,7 +38,6 @@ struct
   (* s0 ++ (s1 ++ (s2 ++ ...)): a chain, every node with one child. *)
   let chain_of l = List.fold_right (fun x acc -> singleton x ++ acc) l C.empty
   let fat n = fat_of (upto n)
-  let chain n = chain_of (upto n)
   let shifted n = List.init n (fun i -> 100 + i)
 
   (* xs ++ xs, k times over: 2^k copies of one shared tree. *)
