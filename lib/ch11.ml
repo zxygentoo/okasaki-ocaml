@@ -391,3 +391,159 @@ module SimpleCatenableDeque (D : DEQUE) : CATENABLE_DEQUE = struct
       Deep (f1, lazy (snoc (Lazy.force m1) r1 ++ cons f2 (Lazy.force m2)), r2)
   ;;
 end
+
+(* Figure 11.4 *)
+
+module type DEQUE_WITH_SIZE = sig
+  include DEQUE
+
+  val size : 'a queue -> int
+end
+
+module ImplicitCatenableDeque (D : DEQUE_WITH_SIZE) : CATENABLE_DEQUE = struct
+  type 'a cat =
+    | Shallow of 'a D.queue
+    | Deep of
+        'a D.queue
+        * 'a cmpd_elem cat lazy_t
+        * 'a D.queue
+        * 'a cmpd_elem cat lazy_t
+        * 'a D.queue
+
+  and 'a cmpd_elem =
+    | Simple of 'a D.queue
+    | Cmpd of 'a D.queue * 'a cmpd_elem cat lazy_t * 'a D.queue
+
+  let empty = Shallow D.empty
+
+  let is_empty = function
+    | Shallow d -> D.is_empty d
+    | _ -> false
+  ;;
+
+  let cons x = function
+    | Shallow d -> Shallow (D.cons x d)
+    | Deep (f, a, m, b, r) -> Deep (D.cons x f, a, m, b, r)
+  ;;
+
+  let snoc q x =
+    match q with
+    | Shallow d -> Shallow (D.snoc d x)
+    | Deep (f, a, m, b, r) -> Deep (f, a, m, b, D.snoc r x)
+  ;;
+
+  let head = function
+    | Shallow d -> D.head d
+    | Deep (f, _, _, _, _) -> D.head f
+  ;;
+
+  let last = function
+    | Shallow d -> D.last d
+    | Deep (_, _, _, _, r) -> D.last r
+  ;;
+
+  let share f r =
+    let m = D.cons (D.last f) (D.cons (D.head r) D.empty) in
+    D.init f, m, D.tail r
+  ;;
+
+  let rec dappendl d1 d2 =
+    if D.is_empty d1 then d2 else dappendl (D.init d1) (D.cons (D.last d1) d2)
+  ;;
+
+  let rec dappendr d1 d2 =
+    if D.is_empty d2 then d1 else dappendr (D.snoc d1 (D.head d2)) (D.tail d2)
+  ;;
+
+  let ( ++ ) : 'a. 'a cat -> 'a cat -> 'a cat =
+    fun q1 q2 ->
+    match q1, q2 with
+    | Shallow d1, Shallow d2 ->
+      if D.size d1 < 4
+      then Shallow (dappendl d1 d2)
+      else if D.size d2 < 4
+      then Shallow (dappendr d1 d2)
+      else (
+        let f, m, r = share d1 d2 in
+        Deep (f, lazy empty, m, lazy empty, r))
+    | Shallow d, Deep (f, a, m, b, r) ->
+      if D.size d < 4
+      then Deep (dappendl d f, a, m, b, r)
+      else Deep (d, lazy (cons (Simple f) (Lazy.force a)), m, b, r)
+    | Deep (f, a, m, b, r), Shallow d ->
+      if D.size d < 4
+      then Deep (f, a, m, b, dappendr r d)
+      else Deep (f, a, m, lazy (snoc (Lazy.force b) (Simple r)), d)
+    | Deep (f1, a1, m1, b1, r1), Deep (f2, a2, m2, b2, r2) ->
+      let r1', m, f2' = share r1 f2 in
+      let a1' = lazy (snoc (Lazy.force a1) (Cmpd (m1, b1, r1'))) in
+      let b2' = lazy (cons (Cmpd (f2', a2, m2)) (Lazy.force b2)) in
+      Deep (f1, a1', m, b2', r2)
+  ;;
+
+  let replace_head x = function
+    | Shallow d -> Shallow (D.cons x (D.tail d))
+    | Deep (f, a, m, b, r) -> Deep (D.cons x (D.tail f), a, m, b, r)
+  ;;
+
+  let rec tail : 'a. 'a cat -> 'a cat = function
+    | Shallow d -> Shallow (D.tail d)
+    | Deep (f, a, m, b, r) ->
+      if D.size f > 3
+      then Deep (D.tail f, a, m, b, r)
+      else if not (is_empty (Lazy.force a))
+      then (
+        match head (Lazy.force a) with
+        | Simple d ->
+          let f' = dappendl (D.tail f) d in
+          Deep (f', lazy (tail (Lazy.force a)), m, b, r)
+        | Cmpd (f', c', r') ->
+          let f'' = dappendl (D.tail f) f' in
+          let a'' = lazy (Lazy.force c' ++ replace_head (Simple r') (Lazy.force a)) in
+          Deep (f'', a'', m, b, r))
+      else if not (is_empty (Lazy.force b))
+      then (
+        match head (Lazy.force b) with
+        | Simple d ->
+          let f' = dappendl (D.tail f) m in
+          Deep (f', lazy empty, d, lazy (tail (Lazy.force b)), r)
+        | Cmpd (f', c', r') ->
+          let f'' = dappendl (D.tail f) m in
+          let a'' = lazy (cons (Simple f') (Lazy.force c')) in
+          Deep (f'', a'', r', lazy (tail (Lazy.force b)), r))
+      else Shallow (dappendl (D.tail f) m) ++ Shallow r
+  ;;
+
+  let replace_last x = function
+    | Shallow d -> Shallow (D.snoc (D.init d) x)
+    | Deep (f, a, m, b, r) -> Deep (f, a, m, b, D.snoc (D.init r) x)
+  ;;
+
+  let rec init : 'a. 'a cat -> 'a cat = function
+    | Shallow d -> Shallow (D.init d)
+    | Deep (f, a, m, b, r) ->
+      if D.size r > 3
+      then Deep (f, a, m, b, D.init r)
+      else if not (is_empty (Lazy.force b))
+      then (
+        match last (Lazy.force b) with
+        | Simple d ->
+          let r' = dappendr d (D.init r) in
+          Deep (f, a, m, lazy (init (Lazy.force b)), r')
+        | Cmpd (f', c', r') ->
+          let r'' = dappendr r' (D.init r) in
+          let b'' = lazy (replace_last (Simple f') (Lazy.force b) ++ Lazy.force c') in
+          Deep (f, a, m, b'', r''))
+      else if not (is_empty (Lazy.force a))
+      then (
+        match last (Lazy.force a) with
+        | Simple d ->
+          let r' = dappendr m (D.init r) in
+          Deep (f, lazy (init (Lazy.force a)), d, lazy empty, r')
+        | Cmpd (f', c', r') ->
+          let r'' = dappendr m (D.init r) in
+          let b'' = lazy (snoc (Lazy.force c') (Simple r')) in
+          Deep (f, lazy (init (Lazy.force a)), f', b'', r''))
+      else Shallow f ++ Shallow (dappendr m (D.init r))
+  ;;
+end
