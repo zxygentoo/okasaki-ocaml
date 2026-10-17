@@ -19,7 +19,7 @@
    chapter says its bounds hold "even when used persistently".
 
    Two instruments. QUEUE seals the representation, so the first is allocation, measured
-   from outside as in test_ch5, with the streams of Figure 4.1 (Okasaki.Ch4.Stream)
+   from outside as in test_ch5, with the streams of Figure 4.1 (Okasaki.Ch04.Stream)
    underneath. The second exists because the port is a functor over STREAM: a stream whose
    ++ and reverse count their steps, one per cell of the first stream appended and one per
    cell reversed, which is exactly what the chapter's debits stand for. In that unit
@@ -32,7 +32,7 @@
    same QUEUE signature; the constant is not, since every step of a lazy stream allocates
    a suspension where a list allocated a cons. *)
 
-open Okasaki.Ch6
+open Okasaki.Ch06
 open Harness
 open Queues
 
@@ -58,7 +58,7 @@ let theorem_6_1 =
 
 (* ------------------------------------------------------- BankersQueue (6.3.2) *)
 
-module Q = BankersQueue (Okasaki.Ch4.Stream)
+module Q = BankersQueue (Okasaki.Ch04.Stream)
 module Qc = BankersQueue (Counting_stream)
 module Words_tests = Amortised (Q)
 module Steps_tests = Amortised (Qc)
@@ -1599,7 +1599,7 @@ module Extract_tests (S : SORTABLE_WITH_EXTRACT with type Element.t = int) = str
   ;;
 end
 
-module Stream_mergesort = StreamBottomUpMergeSort (Counting_int) (Okasaki.Ch4.Stream)
+module Stream_mergesort = StreamBottomUpMergeSort (Counting_int) (Okasaki.Ch04.Stream)
 
 module Stream_sortable_checks =
   Sortable_tests

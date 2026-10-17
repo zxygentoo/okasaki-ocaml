@@ -30,7 +30,7 @@
    The behavioural contract is that of test_ch5 and test_ch6, since this is the same QUEUE
    signature. *)
 
-open Okasaki.Ch7
+open Okasaki.Ch07
 open Harness
 
 (* The most a single operation may allocate, in words. Outside the schedule an operation
@@ -72,7 +72,7 @@ module Worst_case (Q : QUEUE) =
    built by n snocs, the last rotation moved at least a sixth of the elements and the
    drain reverses them in a single tail, three words a cons. Without this, every check on
    the real-time queue could pass by measuring nothing. *)
-module Control = Worst_case (Okasaki.Ch6.BankersQueue (Okasaki.Ch4.Stream))
+module Control = Worst_case (Okasaki.Ch06.BankersQueue (Okasaki.Ch04.Stream))
 
 let test_guard () =
   let n = 1_000 in
@@ -90,7 +90,7 @@ let test_guard () =
 
 (* -------------------------------------------------------- RealTimeQueue (7.2) *)
 
-module Q = RealTimeQueue (Okasaki.Ch4.Stream)
+module Q = RealTimeQueue (Okasaki.Ch04.Stream)
 module Contract = Queue_tests (Q)
 module Costs = Worst_case (Q)
 
@@ -633,7 +633,7 @@ end
    into the all-ones heap of 2^k - 1 elements links k times on the spot, and the same
    clocks must see every one of them. Without this, the insert checks above could pass on
    a probe that sees nothing. *)
-module Strict_heap = Okasaki.Ch3.BinomialHeap (Counting_int)
+module Strict_heap = Okasaki.Ch03.BinomialHeap (Counting_int)
 module Strict = Heap_tests (Strict_heap)
 
 let test_heap_guard () =
@@ -651,7 +651,7 @@ let test_heap_guard () =
 
 (* ------------------------------------------------ ScheduledBinomialHeap, run *)
 
-module Scheduled = ScheduledBinomialHeap (Counting_int) (Okasaki.Ch4.Stream)
+module Scheduled = ScheduledBinomialHeap (Counting_int) (Okasaki.Ch04.Stream)
 module Heap_checks = Heap_tests (Scheduled)
 
 (* Costs only once the contract and the structure hold, and merges and persistence only
@@ -904,7 +904,7 @@ end
    mergesort itself: every merge of two runs of m compares at least m times, and the
    segments of a collection with every bit set add up to at least (n/2)(k - 2) of those.
    That is n log n in one operation, and must show as over the O(n) budget. *)
-module Lazy_sortable = Okasaki.Ch6.BottomUpMergeSort (Counting_int)
+module Lazy_sortable = Okasaki.Ch06.BottomUpMergeSort (Counting_int)
 
 let test_sortable_guard () =
   let k = 16 in
@@ -926,7 +926,9 @@ let test_sortable_guard () =
 
 (* -------------------------------------------- ScheduledBottomUpMergeSort, run *)
 
-module Scheduled_sortable = ScheduledBottomUpMergeSort (Counting_int) (Okasaki.Ch4.Stream)
+module Scheduled_sortable =
+  ScheduledBottomUpMergeSort (Counting_int) (Okasaki.Ch04.Stream)
+
 module Sortable_checks = Sortable_tests (Scheduled_sortable)
 
 (* Costs only once the contract holds, and persistence only once the budgets hold in one

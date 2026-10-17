@@ -47,7 +47,7 @@
    batched queue of Figure 5.2, which section 8.1 presents as the batched-rebuilding
    version of this very design. *)
 
-open Okasaki.Ch8
+open Okasaki.Ch08
 open Harness
 
 (* A refusal on the empty structure: Failure "<op>: empty queue", or "<op>: empty deque"
@@ -257,7 +257,7 @@ module Worst_case (Q : QUEUE) =
    in a drain of a queue built by n snocs it reverses n - 1 elements in one go, three
    words a cons. Without this, every check on the Hood-Melville queue could pass by
    measuring nothing. *)
-module Control = Worst_case (Okasaki.Ch5.BatchedQueue)
+module Control = Worst_case (Okasaki.Ch05.BatchedQueue)
 
 let test_guard () =
   let n = 1_000 in
@@ -738,7 +738,7 @@ module Cons_tests (Q : QUEUE_WITH_CONS) = struct
   ;;
 end
 
-module Over_batched = ConstantTimeConsQueue (Okasaki.Ch5.BatchedQueue)
+module Over_batched = ConstantTimeConsQueue (Okasaki.Ch05.BatchedQueue)
 module Over_batched_tests = Cons_tests (Over_batched)
 
 (* "Any implementation of queues": over Figure 5.2's batched queue, cons is constant
@@ -1372,10 +1372,10 @@ module C3 = struct
   let c = 3
 end
 
-module Deque2 = BankersDeque (C2) (Okasaki.Ch4.Stream)
+module Deque2 = BankersDeque (C2) (Okasaki.Ch04.Stream)
 module Deque2_counting = BankersDeque (C2) (Counting_stream)
 module Deque2_strict = BankersDeque (C2) (Strict_stream)
-module Deque3 = BankersDeque (C3) (Okasaki.Ch4.Stream)
+module Deque3 = BankersDeque (C3) (Okasaki.Ch04.Stream)
 module Deque2_tests = Deque_tests (Deque2)
 module Deque2_counting_tests = Deque_tests (Deque2_counting)
 module Deque2_strict_tests = Deque_tests (Deque2_strict)
@@ -1824,10 +1824,10 @@ module Real_time_tests (D : DEQUE) = struct
   ;;
 end
 
-module Rt2 = RealTimeDeque (C2) (Okasaki.Ch4.Stream)
+module Rt2 = RealTimeDeque (C2) (Okasaki.Ch04.Stream)
 module Rt2_counting = RealTimeDeque (C2) (Counting_stream)
 module Rt2_strict = RealTimeDeque (C2) (Strict_stream)
-module Rt3 = RealTimeDeque (C3) (Okasaki.Ch4.Stream)
+module Rt3 = RealTimeDeque (C3) (Okasaki.Ch04.Stream)
 module Rt3_counting = RealTimeDeque (C3) (Counting_stream)
 
 (* One value of c: the contract over both streams, then the plans and the versions on both
@@ -2115,7 +2115,7 @@ module Rb = RedBlackSet (Counting_int)
 module Rb_tests = Set_tests (Rb)
 
 (* Chapter 3's original, for the gap-for-gap comparison. *)
-module Original = Okasaki.Ch3.RedBlackSet (Counting_int)
+module Original = Okasaki.Ch03.RedBlackSet (Counting_int)
 module Original_tests = Set_tests (Original)
 
 (* ---------------------------------------------------------- deletion (Exercise 8.1) *)

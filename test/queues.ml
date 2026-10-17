@@ -8,7 +8,7 @@ open Harness
 
 (* ------------------------------------------------------- the queue contract *)
 
-module Contract (Q : Okasaki.Ch5.QUEUE) = struct
+module Contract (Q : Okasaki.Ch05.QUEUE) = struct
   let of_list xs = List.fold_left Q.snoc Q.empty xs
 
   (* head/tail to exhaustion. That this returns the elements in the order they were
@@ -116,7 +116,7 @@ end
 (* A DEQUE is a QUEUE, so the queue contract applies to it unchanged; what it adds is the
    other end. *)
 module Deque_contract
-    (D : Okasaki.Ch5.DEQUE)
+    (D : Okasaki.Ch05.DEQUE)
     (P : sig
        (* [refused name op f]: [f], [op] on an empty deque, refuses as the deque should. *)
        val refused : string -> string -> (unit -> 'a) -> unit
@@ -331,7 +331,7 @@ let describe = function
 ;;
 
 module Worst_case
-    (Q : Okasaki.Ch5.QUEUE)
+    (Q : Okasaki.Ch05.QUEUE)
     (P : sig
        (* The most a single operation may allocate, in words. *)
        val constant : float
@@ -648,7 +648,7 @@ let amortised_words =
   }
 ;;
 
-module Amortised (Q : Okasaki.Ch5.QUEUE) = struct
+module Amortised (Q : Okasaki.Ch05.QUEUE) = struct
   include Contract (Q)
 
   (* ---------------------------------------- sequences: one thread, from empty *)

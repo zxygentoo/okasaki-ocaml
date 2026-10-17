@@ -17,7 +17,7 @@
    bound, O(log n) for merge, insert and delete_min, O(1) for find_min, and 3.3's O(n) for
    from_list -- which is the whole point of merging in log n passes instead of folding. *)
 
-open Okasaki.Ch3
+open Okasaki.Ch03
 open Harness
 
 (* The bound Exercises 3.1 and 3.4(a) both put on a right spine. *)

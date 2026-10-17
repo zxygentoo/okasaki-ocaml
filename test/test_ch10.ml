@@ -256,10 +256,10 @@ let prim_words prim =
 ;;
 
 module Prim_real_time =
-  Bootstrapped (BootstrappedQueuePrimQ (Okasaki.Ch7.RealTimeQueue (Okasaki.Ch4.Stream)))
+  Bootstrapped (BootstrappedQueuePrimQ (Okasaki.Ch07.RealTimeQueue (Okasaki.Ch04.Stream)))
 
 module Prim_hood_melville =
-  Bootstrapped (BootstrappedQueuePrimQ (Okasaki.Ch8.HoodMelvilleQueue))
+  Bootstrapped (BootstrappedQueuePrimQ (Okasaki.Ch08.HoodMelvilleQueue))
 
 module Prim_figure = Bootstrapped (BootstrappedQueuePrimQ (BootstrappedQueueFigure))
 
@@ -320,7 +320,7 @@ module Cat (C : CATENABLE_LIST) =
    queue, which is not persistent, must find the root's children reversed again by every
    repeat of the tail, three words a child. Without this the checks above could pass on
    a Q that never shares anything. *)
-module Cat_batched = Cat (CatenableList (Okasaki.Ch5.BatchedQueue))
+module Cat_batched = Cat (CatenableList (Okasaki.Ch05.BatchedQueue))
 
 let test_cat_guard () =
   let n = 1_000
@@ -342,9 +342,10 @@ let test_cat_guard () =
 
 module Cat_bootstrapped =
   Cat
-    (CatenableList (BootstrappedQueuePrimQ (Okasaki.Ch7.RealTimeQueue (Okasaki.Ch4.Stream))))
+    (CatenableList
+       (BootstrappedQueuePrimQ (Okasaki.Ch07.RealTimeQueue (Okasaki.Ch04.Stream))))
 
-module Cat_bankers = Cat (CatenableList (Okasaki.Ch6.BankersQueue (Okasaki.Ch4.Stream)))
+module Cat_bankers = Cat (CatenableList (Okasaki.Ch06.BankersQueue (Okasaki.Ch04.Stream)))
 
 let test_cat () =
   Cat_bootstrapped.run "CatenableList (BootstrappedQueuePrimQ (RealTimeQueue))";
@@ -676,10 +677,11 @@ end
 
 module Flatten_bootstrapped =
   Flatten
-    (CatenableList (BootstrappedQueuePrimQ (Okasaki.Ch7.RealTimeQueue (Okasaki.Ch4.Stream))))
+    (CatenableList
+       (BootstrappedQueuePrimQ (Okasaki.Ch07.RealTimeQueue (Okasaki.Ch04.Stream))))
 
 module Flatten_bankers =
-  Flatten (CatenableList (Okasaki.Ch6.BankersQueue (Okasaki.Ch4.Stream)))
+  Flatten (CatenableList (Okasaki.Ch06.BankersQueue (Okasaki.Ch04.Stream)))
 
 let test_flatten () =
   Flatten_bootstrapped.run "flatten over BootstrappedQueuePrimQ (RealTimeQueue)";
@@ -995,21 +997,21 @@ module Boot (MakeH : functor (E : ORDERED) -> HEAP with type Element.t = E.t) = 
   ;;
 end
 
-module Boot_skew = Boot (Okasaki.Ch9.SkewBinomialHeap)
+module Boot_skew = Boot (Okasaki.Ch09.SkewBinomialHeap)
 
 (* The scheduled binomial heap takes its stream functor too. *)
 module Scheduled (E : ORDERED) =
-  Okasaki.Ch7.ScheduledBinomialHeap (E) (Okasaki.Ch4.Stream)
+  Okasaki.Ch07.ScheduledBinomialHeap (E) (Okasaki.Ch04.Stream)
 
 module Boot_scheduled = Boot (Scheduled)
-module Boot_lazy = Boot (Okasaki.Ch6.LazyBinomialHeap)
+module Boot_lazy = Boot (Okasaki.Ch06.LazyBinomialHeap)
 
 (* Whether the insert clock can tell O(1) from O(log n): over Chapter 3's binomial heap,
    an insert into a primitive heap of 2^k - 1 elements, the all-ones heap, links k times.
    Not an insert of a new minimum, which goes into an empty primitive heap under the new
    root whatever PrimH is: the element after 2^k ascending ones, whose primitive heap
    under the root holds the other 2^k - 1. *)
-module Boot_strict = BootstrapFigure (Okasaki.Ch3.BinomialHeap) (Counting_int)
+module Boot_strict = BootstrapFigure (Okasaki.Ch03.BinomialHeap) (Counting_int)
 
 let test_boot_guard () =
   let k = 17 in
@@ -1342,9 +1344,9 @@ end
 
 let explode s = List.init (String.length s) (String.get s)
 
-module Chars = TrieFigure (Okasaki.Ch2.UnbalancedMap (Char_ordered))
+module Chars = TrieFigure (Okasaki.Ch02.UnbalancedMap (Char_ordered))
 module Words = TrieFigure (Chars)
-module Ints = TrieFigure (Okasaki.Ch2.UnbalancedMap (Counting_int))
+module Ints = TrieFigure (Okasaki.Ch02.UnbalancedMap (Counting_int))
 
 (* A trie as a finite map: what lookup and bind alone can show, over a key universe the
    workloads draw from. *)
@@ -1515,7 +1517,7 @@ let rec keys b l =
   else List.concat_map (fun k -> List.init b (fun d -> d :: k)) (keys b (l - 1))
 ;;
 
-module Base = Okasaki.Ch2.UnbalancedMap (Counting_int)
+module Base = Okasaki.Ch02.UnbalancedMap (Counting_int)
 
 (* What one level of the complete trie costs the base map: its lookup and its bind of the
    last child of a spine of b, comparisons and words. *)
@@ -1657,8 +1659,8 @@ let test_trie () =
    where no option is kept, and three less at the leaf, an Entry where Figure 10.10 has a
    node and a Some. *)
 
-module Chars_entry = EntryTrie (Okasaki.Ch2.UnbalancedMap (Char_ordered))
-module Ints_entry = EntryTrie (Okasaki.Ch2.UnbalancedMap (Counting_int))
+module Chars_entry = EntryTrie (Okasaki.Ch02.UnbalancedMap (Char_ordered))
+module Ints_entry = EntryTrie (Okasaki.Ch02.UnbalancedMap (Counting_int))
 module Chars_entry_contract = Trie_contract (Chars_entry)
 module Ints_entry_contract = Trie_contract (Ints_entry)
 module Ints_entry_clocks = Trie_clocks (Ints_entry)
@@ -1825,8 +1827,8 @@ let test_entry_trie () =
 
 (* Chapter 2's map widened to what Exercise 10.10 asks of a base map, counting the calls
    made to it. *)
-module Widened (K : Okasaki.Ch2.ORDERED) = struct
-  module B = Okasaki.Ch2.UnbalancedMap (K)
+module Widened (K : Okasaki.Ch02.ORDERED) = struct
+  module B = Okasaki.Ch02.UnbalancedMap (K)
 
   type key = K.t
   type 'a map = 'a B.map option
@@ -2876,7 +2878,7 @@ module Unit_map = struct
   let bind () x _ = Some x
 end
 
-module Chars_map = Okasaki.Ch2.UnbalancedMap (Char_ordered)
+module Chars_map = Okasaki.Ch02.UnbalancedMap (Char_ordered)
 module Pairs = ProductMap (Left_ints) (Right_ints)
 module Sums = SumMap (Left_ints) (Right_ints)
 module Options = SumMap (Unit_map) (Left_ints)

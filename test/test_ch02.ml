@@ -7,7 +7,7 @@
    instrumented ORDERED; allocation is measured with Gc.minor_words, which counts words
    allocated rather than words retained. *)
 
-open Okasaki.Ch2
+open Okasaki.Ch02
 open Harness
 
 let string_of_int_list_list l =

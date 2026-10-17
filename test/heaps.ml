@@ -6,7 +6,7 @@ open Harness
 
 (* -------------------------------------------------------- the heap contract *)
 
-module Contract (H : Okasaki.Ch5.HEAP with type Element.t = int) = struct
+module Contract (H : Okasaki.Ch05.HEAP with type Element.t = int) = struct
   let of_list xs = List.fold_left (fun h x -> H.insert x h) H.empty xs
 
   (* find_min/delete_min to exhaustion. That this comes out sorted is the whole
@@ -177,8 +177,8 @@ end
 (* Chapter 9's contract, written for the segmented heap and run on every heap since:
    [H] over ints, [K] over keyed pairs for the ties. *)
 module Heap_contract
-    (H : Okasaki.Ch9.HEAP with type Element.t = int)
-    (K : Okasaki.Ch9.HEAP with type Element.t = int * int) =
+    (H : Okasaki.Ch09.HEAP with type Element.t = int)
+    (K : Okasaki.Ch09.HEAP with type Element.t = int * int) =
 struct
   let of_list xs = List.fold_left (fun h x -> H.insert x h) H.empty xs
   let drain h = drain_with ~is_empty:H.is_empty ~head:H.find_min ~tail:H.delete_min h
@@ -314,7 +314,7 @@ end
 
 (* -------------------------------------------- the sortable collection contract *)
 
-module Sortable_contract (S : Okasaki.Ch6.SORTABLE with type Element.t = int) = struct
+module Sortable_contract (S : Okasaki.Ch06.SORTABLE with type Element.t = int) = struct
   let of_list xs = List.fold_left (fun s x -> S.add x s) S.empty xs
 
   let run_contract name =

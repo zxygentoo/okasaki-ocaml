@@ -46,7 +46,7 @@ let implicit_words =
 ;;
 
 (* The checks of an implicit queue, Figure 11.1's or one built on it. *)
-module Implicit_tests (Q : Okasaki.Ch5.QUEUE) = struct
+module Implicit_tests (Q : Okasaki.Ch05.QUEUE) = struct
   include Queues.Amortised (Q)
 
   (* The dearest snoc of a build of n, taken d times over from the version it was made
@@ -384,7 +384,7 @@ let test_indexed () =
 
 (* The deque read from the back: its cons a snoc, its last a head and its init a tail,
    refusing in a queue's words. *)
-module Mirror (D : Okasaki.Ch5.DEQUE) : Okasaki.Ch5.QUEUE = struct
+module Mirror (D : Okasaki.Ch05.DEQUE) : Okasaki.Ch05.QUEUE = struct
   type 'a queue = 'a D.queue
 
   let empty = D.empty
@@ -806,7 +806,7 @@ module Catenable_tests
      end) =
 struct
   (* Without ++, a deque. *)
-  module As_deque : Okasaki.Ch5.DEQUE with type 'a queue = 'a C.cat = struct
+  module As_deque : Okasaki.Ch05.DEQUE with type 'a queue = 'a C.cat = struct
     type 'a queue = 'a C.cat
 
     let empty = C.empty

@@ -4,8 +4,8 @@
 
    {v
    dune exec test/main.exe
-   dune exec test/main.exe -- test ch9
-   dune exec test/main.exe -- test ch9 3
+   dune exec test/main.exe -- test ch09
+   dune exec test/main.exe -- test ch09 3
    v}
 
    Run this way each case is printed as it starts and again as it ends. [dune test] runs
@@ -19,14 +19,14 @@
    them all. *)
 
 let chapters =
-  [ "ch2", Test_ch2.tests
-  ; "ch3", Test_ch3.tests
-  ; "ch4", Test_ch4.tests
-  ; "ch5", Test_ch5.tests
-  ; "ch6", Test_ch6.tests
-  ; "ch7", Test_ch7.tests
-  ; "ch8", Test_ch8.tests
-  ; "ch9", Test_ch9.tests
+  [ "ch02", Test_ch02.tests
+  ; "ch03", Test_ch03.tests
+  ; "ch04", Test_ch04.tests
+  ; "ch05", Test_ch05.tests
+  ; "ch06", Test_ch06.tests
+  ; "ch07", Test_ch07.tests
+  ; "ch08", Test_ch08.tests
+  ; "ch09", Test_ch09.tests
   ; "ch10", Test_ch10.tests
   ; "ch11", Test_ch11.tests
   ]

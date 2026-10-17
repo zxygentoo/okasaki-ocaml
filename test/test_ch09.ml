@@ -25,7 +25,7 @@
    times apart. The contract, the clock and the per-digit budget are in rlists.ml, where
    Chapter 10 shares them. *)
 
-open Okasaki.Ch9
+open Okasaki.Ch09
 open Harness
 open Rlists
 
@@ -1085,7 +1085,7 @@ let test_zeroless_list () =
    position of the 3 (2^k - 1) elements built by cons, and by its borrow, which leaves a
    ONE at every position after 2 (2^k - 1) tails of that. *)
 
-module Redundant = Lite (ZerolessRedundantBinaryRandomAccessList (Okasaki.Ch4.Stream))
+module Redundant = Lite (ZerolessRedundantBinaryRandomAccessList (Okasaki.Ch04.Stream))
 
 let test_redundant () =
   let name = "ZerolessRedundantBinaryRandomAccessList" in
@@ -1112,7 +1112,7 @@ let test_redundant () =
    its share. *)
 
 module Scheduled =
-  Lite (ScheduledZerolessRedundantBinaryRandomAccessList (Okasaki.Ch4.Stream))
+  Lite (ScheduledZerolessRedundantBinaryRandomAccessList (Okasaki.Ch04.Stream))
 
 let test_scheduled () =
   let name = "ScheduledZerolessRedundantBinaryRandomAccessList" in
@@ -1909,7 +1909,7 @@ module SH_clocks =
 
 (* Whether the probe can tell O(1) from O(log n): Figure 3.4's insert into the all-ones
    heap of 2^16 - 1 links 16 times on the spot, and the same clock must see every link. *)
-module Strict_heap = Okasaki.Ch3.BinomialHeap (Counting_int)
+module Strict_heap = Okasaki.Ch03.BinomialHeap (Counting_int)
 
 let test_sh_guard () =
   let k = 16 in

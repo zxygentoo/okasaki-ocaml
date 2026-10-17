@@ -35,7 +35,7 @@
    lazy_t, and the runtime memoises those, so no implementation of STREAM can recompute a
    cell. *)
 
-open Okasaki.Ch4
+open Okasaki.Ch04
 open Stream
 open Harness
 

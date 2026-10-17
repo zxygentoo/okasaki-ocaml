@@ -44,7 +44,7 @@ let budget n = per_digit *. float_of_int (digits n + 1)
 
 (* ---------------------------------------------------- the random-access list *)
 
-module Contract (R : Okasaki.Ch9.RANDOM_ACCESS_LIST) = struct
+module Contract (R : Okasaki.Ch09.RANDOM_ACCESS_LIST) = struct
   (* The list whose index i holds List.nth xs i. *)
   let of_list xs = List.fold_right R.cons xs R.empty
   let to_list r = drain_with ~is_empty:R.is_empty ~head:R.head ~tail:R.tail r
@@ -324,7 +324,7 @@ end
    contract asks for behaviour and nothing else, and its update copies the whole prefix,
    which is the lump the clock has to be able to see. Without this, every cost check above
    could pass by measuring nothing. *)
-module Plain : Okasaki.Ch9.RANDOM_ACCESS_LIST = struct
+module Plain : Okasaki.Ch09.RANDOM_ACCESS_LIST = struct
   type 'a rlist = 'a list
 
   let empty = []
@@ -398,7 +398,7 @@ let test_guard () =
    For a worst-case bound (Exercise 9.10) the same sequences run with every operation on
    its own clock, run_worst_costs, and the dearest single one is held to a constant. *)
 
-module Lite (R : Okasaki.Ch9.RANDOM_ACCESS_LIST_LITE) = struct
+module Lite (R : Okasaki.Ch09.RANDOM_ACCESS_LIST_LITE) = struct
   let of_list xs = List.fold_right R.cons xs R.empty
   let to_list r = drain_with ~is_empty:R.is_empty ~head:R.head ~tail:R.tail r
   let rec tails k r = if k = 0 then r else tails (k - 1) (R.tail r)

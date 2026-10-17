@@ -23,7 +23,7 @@
    The behavioural tests are written against QUEUE alone, in a functor, since this
    signature is about to be implemented many more times. *)
 
-open Okasaki.Ch5
+open Okasaki.Ch05
 open Harness
 
 (* The most a cheap operation may allocate, in words, and the most a sequence may average
