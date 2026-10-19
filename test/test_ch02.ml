@@ -233,22 +233,15 @@ let test_set () =
     (fun x -> check (Printf.sprintf "member %d (absent)" x) (not (S.member x s)))
     [ -1; 0; 8; 100 ];
   check "member on empty" (not (S.member 1 S.empty));
-  (* Randomised: member agrees with List.mem for every query, over many shapes. *)
-  Random.init 20260917;
-  let ok = ref true in
-  for trial = 0 to 299 do
-    let n = 1 + Random.int 25 in
-    let xs =
-      if trial mod 3 = 0
-      then upto n (* degenerate *)
-      else List.init n (fun _ -> Random.int 40)
-    in
-    let s = List.fold_left (fun s x -> S.insert x s) S.empty xs in
-    for q = -2 to 42 do
-      if S.member q s <> List.mem q xs then ok := false
-    done
-  done;
-  check "member agrees with List.mem over 300 random trees" !ok;
+  (* Randomised: member agrees with List.mem for every query, over many shapes, a third of
+     them the degenerate right spine. *)
+  member_agrees
+    ~seed:20260917
+    ~size:25
+    ~below:40
+    "member agrees with List.mem over 300 random trees"
+    (List.fold_left (fun s x -> S.insert x s) S.empty)
+    S.member;
   (* Persistence: inserting into a set leaves the original alone. *)
   let s1 = S.insert 99 s in
   check
@@ -481,23 +474,29 @@ let test_map () =
     ~expect:"1->3 2->2 3->1 4->_"
     ~actual:(show_tally tally)
     Fun.id;
-  (* Randomised against an assoc-list reference. *)
-  Random.init 20260917;
-  let ok = ref true in
-  for _ = 0 to 299 do
-    let ops = List.init (1 + Random.int 40) (fun _ -> Random.int 20, Random.int 100) in
-    let m = List.fold_left (fun m (k, v) -> M.bind k v m) M.empty ops in
-    let reference =
-      List.fold_left (fun a (k, v) -> (k, v) :: List.remove_assoc k a) [] ops
-    in
-    (* Sweep the whole key universe: a bound key must yield its latest value, and an
-       unbound one must raise. Together those pin the map exactly, with no need to see
-       inside it. *)
-    for k = 0 to 19 do
-      if lookup_opt k m <> List.assoc_opt k reference then ok := false
-    done
-  done;
-  check "map agrees with an assoc-list reference over 300 random workloads" !ok;
+  (* Randomised against an assoc-list reference: a workload is a list of binds. *)
+  check_prop
+    ~count:300
+    ~seed:20260917
+    "map agrees with an assoc-list reference over 300 random workloads"
+    QCheck.(list_size Gen.(int_range 1 40) (pair (int_bound 19) (int_bound 99)))
+    (fun ops ->
+       let m = List.fold_left (fun m (k, v) -> M.bind k v m) M.empty ops in
+       let reference =
+         List.fold_left (fun a (k, v) -> (k, v) :: List.remove_assoc k a) [] ops
+       in
+       (* Sweep the whole key universe: a bound key must yield its latest value, and an
+          unbound one must raise. Together those pin the map exactly, with no need to see
+          inside it. *)
+       List.for_all
+         (fun k ->
+            agrees
+              "lookup %d"
+              k
+              ~expect:(List.assoc_opt k reference)
+              ~actual:(lookup_opt k m)
+              QCheck.Print.(option int))
+         (upto 20));
   (* Values are unconstrained: no comparison is ever performed on them. *)
   let fm = M.bind 1 (fun x -> x * 10) M.empty in
   check_int "a map can hold closures" ~expect:50 ~actual:(M.lookup 1 fm 5)

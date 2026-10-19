@@ -19,5 +19,9 @@
    (and
     :with-test
     (>= 1.9)))
+  (qcheck-core
+   (and
+    :with-test
+    (>= 0.91)))
   (ocamlformat :with-dev-setup)
   (ocaml-lsp-server :with-dev-setup)))

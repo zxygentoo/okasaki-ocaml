@@ -65,8 +65,54 @@ module type WITH_DROP = sig
   val drop : int -> 'a rlist -> 'a rlist
 end
 
-module Drop_tests (R : WITH_DROP) = struct
+(* The random runs of Drop_tests and Create_tests, with drops among the operations. *)
+module Drop_run (R : WITH_DROP) = struct
   module Base = Contract (R)
+
+  let replay ~after ~looked ~at_end r model ops =
+    Base.replay ~drop:R.drop ~after ~looked ~at_end r model ops
+  ;;
+
+  (* What every run is held to: no operation raises, and everything the list says agrees
+     with the model, after every operation and at the end. *)
+  let raises_nothing =
+    replay
+      ~after:(fun r model ->
+        ignore (R.is_empty r);
+        if model <> [] then ignore (R.head r);
+        true)
+      ~looked:(fun k r _ ->
+        ignore (R.lookup k r);
+        true)
+      ~at_end:(fun r model ->
+        ignore (Base.to_list r);
+        ignore (Base.lookups (List.length model) r);
+        true)
+  ;;
+
+  let agrees_with_model =
+    replay
+      ~after:(fun r model ->
+        agrees "is_empty" ~expect:(model = []) ~actual:(R.is_empty r) string_of_bool
+        &&
+        match model with
+        | [] -> true
+        | x :: _ -> agrees "head" ~expect:x ~actual:(R.head r) string_of_int)
+      ~looked:(fun k r x ->
+        agrees "lookup %d" k ~expect:x ~actual:(R.lookup k r) string_of_int)
+      ~at_end:(fun r model ->
+        agrees "read back" ~expect:model ~actual:(Base.to_list r) string_of_int_list
+        && agrees
+             "looked up"
+             ~expect:model
+             ~actual:(Base.lookups (List.length model) r)
+             string_of_int_list)
+  ;;
+end
+
+module Drop_tests (R : WITH_DROP) = struct
+  module Drops = Drop_run (R)
+  module Base = Drops.Base
 
   let of_list = Base.of_list
   let to_list = Base.to_list
@@ -223,51 +269,16 @@ module Drop_tests (R : WITH_DROP) = struct
              | (n, what) :: _ -> Printf.sprintf " -- n=%d: %s" n what)))
       (!bad = []);
     (* Randomised, against a list, with drop among the operations. *)
-    Random.init 20260927;
-    let bad_model = ref 0
-    and raised = ref 0 in
-    for _ = 0 to 299 do
-      let r = ref R.empty
-      and model = ref [] in
-      try
-        for i = 0 to 59 do
-          let n = List.length !model in
-          (match if n = 0 then 0 else Random.int 6 with
-           | 0 | 1 ->
-             r := R.cons i !r;
-             model := i :: !model
-           | 2 ->
-             r := R.tail !r;
-             model := List.tl !model
-           | 3 ->
-             let k = Random.int n in
-             r := R.update k (1000 + i) !r;
-             model := List.mapi (fun j x -> if j = k then 1000 + i else x) !model
-           | 4 ->
-             let k = Random.int n in
-             if R.lookup k !r <> List.nth !model k then incr bad_model
-           | _ ->
-             let k = Random.int (n + 1) in
-             r := R.drop k !r;
-             model := List.drop k !model);
-          if R.is_empty !r <> (!model = []) then incr bad_model;
-          match !model with
-          | x :: _ when R.head !r <> x -> incr bad_model
-          | _ -> ()
-        done;
-        if to_list !r <> !model || lookups (List.length !model) !r <> !model
-        then incr bad_model
-      with
-      | _ -> incr raised
-    done;
-    check_int
-      (t "no operation raises on valid arguments, 300 random runs with drop")
-      ~expect:0
-      ~actual:!raised;
-    check_int
-      (t "everything agrees with a list model, 300 random runs with drop")
-      ~expect:0
-      ~actual:!bad_model;
+    let prop label check =
+      check_prop ~count:300 ~seed:20260927 (t label) (Run.runs ~drops:true) (fun draw ->
+        check R.empty [] (Run.plan 0 draw))
+    in
+    prop
+      "no operation raises on valid arguments, 300 random runs with drop"
+      Drops.raises_nothing;
+    prop
+      "everything agrees with a list model, 300 random runs with drop"
+      Drops.agrees_with_model;
     (* Persistence: a drop leaves the version it came from as it was, and both go on. *)
     let v = of_list (upto 10) in
     eq
@@ -366,7 +377,8 @@ end
 let replicate n x = List.init n (fun _ -> x)
 
 module Create_tests (R : WITH_CREATE) = struct
-  module Base = Contract (R)
+  module Drops = Drop_run (R)
+  module Base = Drops.Base
 
   let to_list = Base.to_list
   let lookups = Base.lookups
@@ -469,53 +481,27 @@ module Create_tests (R : WITH_CREATE) = struct
              | [] -> ""
              | (n, what) :: _ -> Printf.sprintf " -- n=%d: %s" n what)))
       (!bad = []);
-    (* Randomised, against a list, from a created list of a random size. *)
-    Random.init 20260927;
-    let bad_model = ref 0
-    and raised = ref 0 in
-    for run = 0 to 299 do
-      try
-        let n0 = Random.int 40 in
-        let r = ref (R.create n0 (-1 - run))
-        and model = ref (replicate n0 (-1 - run)) in
-        for i = 0 to 59 do
-          let n = List.length !model in
-          (match if n = 0 then 0 else Random.int 6 with
-           | 0 | 1 ->
-             r := R.cons i !r;
-             model := i :: !model
-           | 2 ->
-             r := R.tail !r;
-             model := List.tl !model
-           | 3 ->
-             let k = Random.int n in
-             r := R.update k (1000 + i) !r;
-             model := List.mapi (fun j x -> if j = k then 1000 + i else x) !model
-           | 4 ->
-             let k = Random.int n in
-             if R.lookup k !r <> List.nth !model k then incr bad_model
-           | _ ->
-             let k = Random.int (n + 1) in
-             r := R.drop k !r;
-             model := List.drop k !model);
-          if R.is_empty !r <> (!model = []) then incr bad_model;
-          match !model with
-          | x :: _ when R.head !r <> x -> incr bad_model
-          | _ -> ()
-        done;
-        if to_list !r <> !model || lookups (List.length !model) !r <> !model
-        then incr bad_model
-      with
-      | _ -> incr raised
-    done;
-    check_int
-      (t "no operation raises on valid arguments, 300 random runs from a created list")
-      ~expect:0
-      ~actual:!raised;
-    check_int
-      (t "everything agrees with a list model, 300 random runs from a created list")
-      ~expect:0
-      ~actual:!bad_model;
+    (* Randomised, against a list, from a created list of a random size, under 40. *)
+    let created =
+      QCheck.make
+        ~print:(fun (n0, draw) ->
+          Printf.sprintf
+            "create %d (-1), then %s"
+            n0
+            (QCheck.Print.list Run.describe (Run.plan n0 draw)))
+        ~shrink:(QCheck.Shrink.pair QCheck.Shrink.int shrink_run)
+        QCheck.Gen.(pair (int_bound 39) (Run.draws ~drops:true))
+    in
+    let prop label check =
+      check_prop ~count:300 ~seed:20260927 (t label) created (fun (n0, draw) ->
+        check (R.create n0 (-1)) (replicate n0 (-1)) (Run.plan n0 draw))
+    in
+    prop
+      "no operation raises on valid arguments, 300 random runs from a created list"
+      Drops.raises_nothing;
+    prop
+      "everything agrees with a list model, 300 random runs from a created list"
+      Drops.agrees_with_model;
     (* Persistence: a created list is a version like any other. Each check makes its own. *)
     eq
       "an updated version reads the update"
@@ -1637,6 +1623,73 @@ module SH_contract = Heap_contract (SH) (SK)
 
 (* -------------------------------------------------------------------- shape *)
 
+(* A random trace of 6000 inserts, merges and delete_mins over earlier versions of a heap
+   whose shape follows from its size, the size being all the model there is. An insert
+   puts in the number of the version it makes, and is printed as "insert into" the one it
+   works on; [merges a b] says whether the trace merges
+   versions of a and b elements; what the trace cannot take, a merge it does not want or
+   a delete_min of an empty version, is an insert into the version it would have worked
+   on. [each i op size h] checks version [i], made by [op], of [size i] elements. Shared by
+   the segmented, skew and trinomial heaps. *)
+module Size_trace (H : HEAP with type Element.t = int) = struct
+  module Op = struct
+    type t =
+      | Insert of int
+      | Merge of int * int
+      | Delete_min of int
+
+    let rename f = function
+      | Insert v -> Insert (f v)
+      | Merge (v, w) -> Merge (f v, f w)
+      | Delete_min v -> Delete_min (f v)
+    ;;
+
+    let describe = function
+      | Insert v -> Printf.sprintf "insert into v%d" v
+      | Merge (v, w) -> Printf.sprintf "merge v%d v%d" v w
+      | Delete_min v -> Printf.sprintf "delete_min v%d" v
+    ;;
+  end
+
+  (* The ops of a draw, and the size of every version they make. *)
+  let sized ~merges =
+    plan_trace ~rename:Op.rename ~start:0 (fun size op ->
+      match op with
+      | Op.Merge (v, w) when merges (size v) (size w) -> op, size v + size w
+      | Op.Delete_min v when size v > 0 -> op, size v - 1
+      | Op.Insert v | Op.Merge (v, _) | Op.Delete_min v -> Op.Insert v, size v + 1)
+  ;;
+
+  let check ~seed ~merges name each =
+    let plan draw = fst (sized ~merges draw) in
+    check_prop
+      ~count:1
+      ~seed
+      name
+      (trace_of ~length:6_000 ~plan ~show:Op.describe (fun i st ->
+         let open QCheck.Gen in
+         let v = int_bound (i - 1) st in
+         match int_bound 3 st with
+         | 2 -> Op.Merge (v, int_bound (i - 1) st)
+         | 3 -> Op.Delete_min v
+         | _ -> Op.Insert v))
+      (fun draw ->
+         let ops, size = sized ~merges draw in
+         let v = Array.make (Array.length size) H.empty in
+         List.for_all
+           (fun (i, op) ->
+              v.(i)
+              <- (match op with
+                  | Op.Insert p -> H.insert i v.(p)
+                  | Op.Merge (p, q) -> H.merge v.(p) v.(q)
+                  | Op.Delete_min p -> H.delete_min v.(p));
+              each i op (fun j -> size.(j)) v.(i))
+           (List.mapi (fun i op -> i + 1, op) ops))
+  ;;
+end
+
+module SH_trace = Size_trace (SH)
+
 let test_sh_shape () =
   let t label = "SegmentedBinomialHeap, shape: " ^ label in
   let module N = SegmentedRepresentationTwo in
@@ -1662,41 +1715,24 @@ let test_sh_shape () =
          and want = units !num in
          if got <> want then note (Printf.sprintf "n=%d: %d trees, want %d" n got want)
        done);
-  all_of
+  SH_trace.check
+    ~seed:20260930
+    ~merges:(fun a b -> a > 0 && b > 0 && a + b <= 1 lsl 20)
     (t
        "after every merge of two non-empty heaps in a random trace of 6000 operations, \
         one tree per 1 bit of n")
-    (fun note ->
-       Random.init 20260930;
-       let n = 6_000 in
-       let v = Array.make (n + 1) SH.empty
-       and size = Array.make (n + 1) 0 in
-       for i = 1 to n do
-         let p = Random.int i
-         and q = Random.int i in
-         match Random.int 4 with
-         | 2 when size.(p) > 0 && size.(q) > 0 && size.(p) + size.(q) <= 1 lsl 20 ->
-           let s = size.(p) + size.(q) in
-           v.(i) <- SH.merge v.(p) v.(q);
-           size.(i) <- s;
-           let got = sh_trees v.(i) in
-           if got <> popcount s
-           then
-             note
-               (Printf.sprintf
-                  "merge %d, of %d and %d: %d trees, want %d"
-                  i
-                  size.(p)
-                  size.(q)
-                  got
-                  (popcount s))
-         | 3 when size.(p) > 0 ->
-           v.(i) <- SH.delete_min v.(p);
-           size.(i) <- size.(p) - 1
-         | _ ->
-           v.(i) <- SH.insert i v.(p);
-           size.(i) <- size.(p) + 1
-       done)
+    (fun i op size h ->
+       match op with
+       | SH_trace.Op.Merge (p, q) ->
+         agrees
+           "trees in v%d, the merge of %d and %d"
+           i
+           (size p)
+           (size q)
+           ~expect:(popcount (size i))
+           ~actual:(sh_trees h)
+           string_of_int
+       | _ -> true)
 ;;
 
 (* ------------------------------------------- every operation on its own clock *)
@@ -3061,6 +3097,8 @@ let skew_inc = function
 let skew_weights n = List.fold_left (fun ws _ -> skew_inc ws) [] (upto n)
 let rank_weight ws = List.fold_left (fun s w -> s + ((w + 1) / 2)) 0 ws
 
+module Skew_trace = Size_trace (SBH)
+
 let test_skew_heap_shape () =
   let t label = "SkewBinomialHeap, shape: " ^ label in
   all_of
@@ -3092,39 +3130,21 @@ let test_skew_heap_shape () =
            then note (Printf.sprintf "merge of %d and %d: %d trees, want %d" a b got want)
          done
        done);
-  all_of
+  Skew_trace.check
+    ~seed:20261006
+    ~merges:(fun a b -> a + b <= 1 lsl 20)
     (t
        "at most floor (log2 n) + 1 trees at every version of a random trace of 6000 \
         inserts, merges and delete_mins")
-    (fun note ->
-       Random.init 20261006;
-       let n = 6_000 in
-       let v = Array.make (n + 1) SBH.empty
-       and size = Array.make (n + 1) 0 in
-       for i = 1 to n do
-         let p = Random.int i
-         and q = Random.int i in
-         (match Random.int 4 with
-          | 2 when size.(p) + size.(q) <= 1 lsl 20 ->
-            v.(i) <- SBH.merge v.(p) v.(q);
-            size.(i) <- size.(p) + size.(q)
-          | 3 when size.(p) > 0 ->
-            v.(i) <- SBH.delete_min v.(p);
-            size.(i) <- size.(p) - 1
-          | _ ->
-            v.(i) <- SBH.insert i v.(p);
-            size.(i) <- size.(p) + 1);
-         let got = skew_trees v.(i) in
-         if size.(i) > 0 && got > floor_log2 size.(i) + 1
-         then
-           note
-             (Printf.sprintf
-                "version %d of %d elements: %d trees, at most %d"
-                i
-                size.(i)
-                got
-                (floor_log2 size.(i) + 1))
-       done)
+    (fun i _ size h ->
+       let got = skew_trees h in
+       holds
+         "v%d of %d elements: %d trees, at most %d"
+         i
+         (size i)
+         got
+         (floor_log2 (size i) + 1)
+         (size i = 0 || got <= floor_log2 (size i) + 1))
 ;;
 
 (* What it returns, then its shape, then its costs, the large size only after the small. *)
@@ -3445,59 +3465,116 @@ struct
            "delete (3, 99) twice, then insert (3, 5)"
            [ 1; 2; 2; 2 ]
            (h |> K.delete (3, 99) |> K.delete (3, 99) |> K.insert (3, 5)));
-    all_of
+    (* A delete takes a present element half the time and any element the other half:
+       the present one is drawn as a place in the version's elements, which [plan] reads
+       off the model. What the model cannot take, a merge over 600 or a delete_min of an
+       empty version, keeps the version it would have worked on. *)
+    let module Op = struct
+      type t =
+        | Insert of int * int
+        | Delete of int * int
+        | Delete_present of int * int * int
+        | Merge of int * int
+        | Delete_min of int
+        | Same of int
+
+      let rename f = function
+        | Insert (x, v) -> Insert (x, f v)
+        | Delete (x, v) -> Delete (x, f v)
+        | Delete_present (k, x, v) -> Delete_present (k, x, f v)
+        | Merge (v, w) -> Merge (f v, f w)
+        | Delete_min v -> Delete_min (f v)
+        | Same v -> Same (f v)
+      ;;
+
+      let describe = function
+        | Insert (x, v) -> Printf.sprintf "insert %d v%d" x v
+        | Delete (x, v) -> Printf.sprintf "delete %d v%d" x v
+        | Delete_present (k, _, v) -> Printf.sprintf "delete element #%d of v%d" k v
+        | Merge (v, w) -> Printf.sprintf "merge v%d v%d" v w
+        | Delete_min v -> Printf.sprintf "delete_min v%d" v
+        | Same v -> Printf.sprintf "v%d" v
+      ;;
+    end
+    in
+    (* The ops of a draw, every one the model can take, and the model of every version. *)
+    let modelled =
+      plan_trace ~rename:Op.rename ~start:Model.empty (fun model op ->
+        match op with
+        | Op.Merge (p, q) when Model.size (model p) + Model.size (model q) <= 600 ->
+          op, Model.merge (model p) (model q)
+        | Op.Delete_min p when not (Model.is_empty (model p)) ->
+          op, Model.delete_min (model p)
+        | Op.Delete_present (k, x, p) ->
+          let x =
+            match Model.drain (model p) with
+            | [] -> x
+            | live -> List.nth live (k mod List.length live)
+          in
+          Op.Delete (x, p), Model.delete x (model p)
+        | Op.Delete (x, p) -> op, Model.delete x (model p)
+        | Op.Insert (x, p) -> op, Model.insert x (model p)
+        | Op.Merge (p, _) | Op.Delete_min p | Op.Same p -> Op.Same p, model p)
+    in
+    check_prop
+      ~count:1
+      ~seed:20261008
       (t
          "a random trace of 6000 inserts, deletes, merges and delete_mins over earlier \
           versions, against the book's description on sorted lists")
-      (fun note ->
-         Random.init 20261008;
-         let n = 6_000 in
-         let v = Array.make (n + 1) D.empty
-         and model = Array.make (n + 1) Model.empty in
-         for i = 1 to n do
-           let p = Random.int i
-           and q = Random.int i in
-           let what, h, m =
-             match Random.int 6 with
-             | 0 when Model.size model.(p) + Model.size model.(q) <= 600 ->
-               "merge", D.merge v.(p) v.(q), Model.merge model.(p) model.(q)
-             | 1 when not (Model.is_empty model.(p)) ->
-               "delete_min", D.delete_min v.(p), Model.delete_min model.(p)
-             | 2 | 3 ->
-               (* A present element half the time, any element the other half. *)
-               let live = Model.drain model.(p) in
-               let x =
-                 if live <> [] && Random.bool ()
-                 then List.nth live (Random.int (List.length live))
-                 else Random.int 64
-               in
-               "delete", D.delete x v.(p), Model.delete x model.(p)
-             | _ ->
-               let x = Random.int 64 in
-               "insert", D.insert x v.(p), Model.insert x model.(p)
-           in
-           v.(i) <- h;
-           model.(i) <- m;
-           if Model.is_empty m
-           then (
-             if not (D.is_empty h) then note (Printf.sprintf "%s %d is not empty" what i))
-           else if D.is_empty h
-           then note (Printf.sprintf "%s %d is empty" what i)
-           else if D.find_min h <> Model.find_min m
-           then
-             note
-               (Printf.sprintf
-                  "%s %d: find_min %d, want %d"
-                  what
-                  i
-                  (D.find_min h)
-                  (Model.find_min m))
-         done;
-         for i = 0 to n do
-           if i mod 200 = 0
-           then
-             drains_to note (Printf.sprintf "version %d" i) (Model.drain model.(i)) v.(i)
-         done)
+      (trace_of
+         ~length:6_000
+         ~plan:(fun draw -> fst (modelled draw))
+         ~show:Op.describe
+         (fun i st ->
+            let open QCheck.Gen in
+            let p = int_bound (i - 1) st in
+            match int_bound 5 st with
+            | 0 -> Op.Merge (p, int_bound (i - 1) st)
+            | 1 -> Op.Delete_min p
+            | 2 | 3 ->
+              if bool st
+              then Op.Delete_present (int_bound 9999 st, int_bound 63 st, p)
+              else Op.Delete (int_bound 63 st, p)
+            | _ -> Op.Insert (int_bound 63 st, p)))
+      (fun draw ->
+         let ops, model = modelled draw in
+         let v = Array.make (Array.length model) D.empty in
+         List.for_all
+           (fun (i, op) ->
+              let h =
+                match op with
+                | Op.Insert (x, p) -> D.insert x v.(p)
+                | Op.Delete (x, p) | Op.Delete_present (_, x, p) -> D.delete x v.(p)
+                | Op.Merge (p, q) -> D.merge v.(p) v.(q)
+                | Op.Delete_min p -> D.delete_min v.(p)
+                | Op.Same p -> v.(p)
+              in
+              v.(i) <- h;
+              let m = model.(i) in
+              agrees
+                "is_empty v%d"
+                i
+                ~expect:(Model.is_empty m)
+                ~actual:(D.is_empty h)
+                string_of_bool
+              && (Model.is_empty m
+                  || agrees
+                       "find_min v%d"
+                       i
+                       ~expect:(Model.find_min m)
+                       ~actual:(D.find_min h)
+                       string_of_int))
+           (List.mapi (fun i op -> i + 1, op) ops)
+         && List.for_all
+              (fun i ->
+                 agrees
+                   "drain of v%d"
+                   i
+                   ~expect:(Model.drain model.(i))
+                   ~actual:(drain v.(i))
+                   string_of_int_list)
+              (List.filter (fun i -> i mod 200 = 0) (upto (Array.length model))))
   ;;
 end
 
@@ -3781,6 +3858,8 @@ let th_counts h =
   , count_only (fun () -> TH.insert (-1) h) )
 ;;
 
+module Trinomial_trace = Size_trace (TH)
+
 let test_trinomial_shape () =
   let t label = "TrinomialHeap, shape: " ^ label in
   let digits_of note what size h =
@@ -3832,30 +3911,20 @@ let test_trinomial_shape () =
              (TH.merge heaps.(a) heaps.(b))
          done
        done);
-  all_of
+  Trinomial_trace.check
+    ~seed:20261010
+    ~merges:(fun a b -> a + b <= 1 lsl 20)
     (t
        "those of its size at every version of a random trace of 6000 inserts, merges and \
         delete_mins")
-    (fun note ->
-       Random.init 20261010;
-       let n = 6_000 in
-       let v = Array.make (n + 1) TH.empty
-       and size = Array.make (n + 1) 0 in
-       for i = 1 to n do
-         let p = Random.int i
-         and q = Random.int i in
-         (match Random.int 4 with
-          | 2 when size.(p) + size.(q) <= 1 lsl 20 ->
-            v.(i) <- TH.merge v.(p) v.(q);
-            size.(i) <- size.(p) + size.(q)
-          | 3 when size.(p) > 0 ->
-            v.(i) <- TH.delete_min v.(p);
-            size.(i) <- size.(p) - 1
-          | _ ->
-            v.(i) <- TH.insert i v.(p);
-            size.(i) <- size.(p) + 1);
-         digits_of note (Printf.sprintf "version %d" i) size.(i) v.(i)
-       done)
+    (fun i _ size h ->
+       agrees
+         "v%d, %d elements: find_min's comparisons and the insert of a minimum's"
+         i
+         (size i)
+         ~expect:(find_min_count (trinary (size i)), insert_min_count (trinary (size i)))
+         ~actual:(th_counts h)
+         (fun (f, m) -> Printf.sprintf "%d and %d" f m))
 ;;
 
 (* The all-twos heap of 3^k - 1 elements, where an insert carries through every digit, k

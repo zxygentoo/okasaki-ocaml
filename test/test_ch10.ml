@@ -467,38 +467,21 @@ module Flatten (C : CATENABLE_LIST_WITH_FLATTEN) = struct
     check
       (t "the parts are what they were after a flatten, a tail and a snoc of it")
       (List.map to_list cats = ls);
-    (* a random trace over earlier versions, every version against a list model *)
-    let steps = 600
-    and cap = 2_000 in
-    let v = Array.make (steps + 1) (C.empty, []) in
-    Random.init 20261016;
-    all_of
+    (* the random trace of the contract, a flatten in place of every ++ *)
+    check_trace
+      ~seed:20261016
+      ~join:flatten
+      ~show_join:(fun vs ->
+        Printf.sprintf
+          "flatten [%s]"
+          (String.concat "; " (List.map (Printf.sprintf "v%d") vs)))
+      ~parts:(fun i _ st ->
+        QCheck.Gen.(List.init (int_bound 4 st) (fun _ -> int_bound (i - 1) st)))
       (t
          (Printf.sprintf
             "a random trace of %d cons, snoc, flatten of up to four random earlier \
              versions, tail and head, every version against a list model"
-            steps))
-      (fun note ->
-         for i = 1 to steps do
-           let a, la = v.(Random.int i) in
-           v.(i)
-           <- (match Random.int 5 with
-               | 0 -> C.cons i a, i :: la
-               | 1 -> C.snoc a i, la @ [ i ]
-               | 2 ->
-                 let picked = List.init (Random.int 5) (fun _ -> v.(Random.int i)) in
-                 let cats, ls = List.split picked in
-                 let l = List.concat ls in
-                 if List.length l > cap then a, la else flatten cats, l
-               | 3 -> if la = [] then a, la else C.tail a, List.tl la
-               | _ ->
-                 if la <> [] && C.head a <> List.hd la
-                 then note (Printf.sprintf "head at step %d" i);
-                 a, la)
-         done;
-         Array.iteri
-           (fun i (c, l) -> if to_list c <> l then note (Printf.sprintf "version #%d" i))
-           v)
+            trace_steps))
   ;;
 
   (* ------------------------------------------------------------------ clocks *)
@@ -755,13 +738,39 @@ end
 module Heap_clocks (H : HEAP with type Element.t = int) (B : HEAP_BUDGETS) = struct
   let of_list xs = List.fold_left (fun h x -> H.insert x h) H.empty xs
 
-  (* One operation's clock: the dearest call as a fraction of its budget and what it was,
-     and the totals spent and allowed. *)
+  (* A call as its clock saw it: its number, the size of its heap, the comparisons and
+     words it spent and its budget for them. Kept as numbers and only made a string when
+     it is reported: a clock sees hundreds of thousands of calls, and every one of a run
+     of equally dear calls becomes the dearest in turn. *)
+  type call =
+    { at : int
+    ; size : int
+    ; c : float
+    ; w : float
+    ; cb : float
+    ; wb : float
+    }
+
+  let no_call = { at = 0; size = 0; c = 0.0; w = 0.0; cb = 0.0; wb = 0.0 }
+
+  let show_call { at; size; c; w; cb; wb } =
+    Printf.sprintf
+      "#%d on %d elements at %.0f comparisons and %.0f words, budget %.0f and %.0f"
+      at
+      size
+      c
+      w
+      cb
+      wb
+  ;;
+
+  (* One operation's clock: the dearest call as a fraction of its budget and the call
+     itself, and the totals spent and allowed. *)
   type clock =
     { op : string
     ; budget : float -> float * float
     ; mutable ratio : float
-    ; mutable what : string
+    ; mutable dearest : call
     ; mutable spent : float * float
     ; mutable allowed : float * float
     ; mutable calls : int
@@ -771,7 +780,7 @@ module Heap_clocks (H : HEAP with type Element.t = int) (B : HEAP_BUDGETS) = str
     { op
     ; budget
     ; ratio = 0.0
-    ; what = ""
+    ; dearest = no_call
     ; spent = 0.0, 0.0
     ; allowed = 0.0, 0.0
     ; calls = 0
@@ -789,7 +798,7 @@ module Heap_clocks (H : HEAP with type Element.t = int) (B : HEAP_BUDGETS) = str
     List.iter
       (fun k ->
          k.ratio <- 0.0;
-         k.what <- "";
+         k.dearest <- no_call;
          k.spent <- 0.0, 0.0;
          k.allowed <- 0.0, 0.0;
          k.calls <- 0)
@@ -812,15 +821,7 @@ module Heap_clocks (H : HEAP with type Element.t = int) (B : HEAP_BUDGETS) = str
     if ratio >= k.ratio
     then (
       k.ratio <- ratio;
-      k.what
-      <- Printf.sprintf
-           "#%d on %d elements at %.0f comparisons and %.0f words, budget %.0f and %.0f"
-           at
-           size
-           c
-           w
-           cb
-           wb);
+      k.dearest <- { at; size; c; w; cb; wb });
     r
   ;;
 
@@ -850,7 +851,11 @@ module Heap_clocks (H : HEAP with type Element.t = int) (B : HEAP_BUDGETS) = str
                (c <= cb && w <= wb))
            else
              check
-               (Printf.sprintf "%s: %s, the dearest is %s" name k.op k.what)
+               (Printf.sprintf
+                  "%s: %s, the dearest is %s"
+                  name
+                  k.op
+                  (show_call k.dearest))
                (k.ratio <= 1.0))
       clocks
   ;;
@@ -1101,21 +1106,30 @@ module Info (H : HEAP_WITH_INFO with type Priority.t = int) = struct
   let run_contract name =
     Contract.run name;
     let n = 200 in
-    Random.init 20261019;
-    let h =
-      List.fold_left
-        (fun h p -> H.insert p (string_of_int p) h)
-        H.empty
-        (List.init n (fun _ -> Random.int 50))
-    in
-    let pairs = drain_with ~is_empty:H.is_empty ~head:H.find_min ~tail:H.delete_min h in
-    check
+    check_prop
+      ~count:1
+      ~seed:20261019
       (Printf.sprintf
          "%s: the payload comes back with its priority, %d random inserts drained"
          name
          n)
-      (List.for_all (fun (p, x) -> x = string_of_int p) pairs
-       && List.map fst pairs = List.sort compare (List.map fst pairs))
+      QCheck.(list_size (Gen.return n) (int_bound 49))
+      (fun ps ->
+         let h = List.fold_left (fun h p -> H.insert p (string_of_int p) h) H.empty ps in
+         let pairs =
+           drain_with ~is_empty:H.is_empty ~head:H.find_min ~tail:H.delete_min h
+         in
+         List.for_all
+           (fun (p, x) ->
+              agrees "the payload of %d" p ~expect:(string_of_int p) ~actual:x Fun.id)
+           pairs
+         &&
+         let ps = List.map fst pairs in
+         agrees
+           "the priorities drained"
+           ~expect:(List.sort compare ps)
+           ~actual:ps
+           string_of_int_list)
   ;;
 end
 
@@ -1343,6 +1357,9 @@ module Char_ordered = struct
 end
 
 let explode s = List.init (String.length s) (String.get s)
+let implode k = String.of_seq (List.to_seq k)
+let show_chars k = Printf.sprintf "%S" (implode k)
+let show_words = QCheck.Print.list show_chars
 
 module Chars = TrieFigure (Okasaki.Ch02.UnbalancedMap (Char_ordered))
 module Words = TrieFigure (Chars)
@@ -1360,34 +1377,59 @@ module Trie_contract (T : FINITE_MAP) = struct
   let of_list kvs = List.fold_left (fun m (k, v) -> T.bind k v m) T.empty kvs
 
   (* Every key of [universe] against the assoc list [reference]. *)
-  let agrees universe m reference =
+  let matches universe m reference =
     List.for_all (fun k -> lookup_opt k m = List.assoc_opt k reference) universe
   ;;
 
-  let run name ~universe =
+  let reference_of kvs =
+    List.fold_left (fun a (k, v) -> (k, v) :: List.remove_assoc k a) [] kvs
+  ;;
+
+  (* A key is shown as [show_key] has it, or else by its place in the universe. *)
+  let run ?show_key name ~universe =
     let t label = name ^ ": " ^ label in
-    Random.init 20261014;
     let n = List.length universe in
-    let pick () = List.nth universe (Random.int n) in
+    let keys = Array.of_list universe in
+    let shown i =
+      match show_key with
+      | Some show -> show keys.(i)
+      | None -> Printf.sprintf "key #%d" i
+    in
     check
       (t "the empty map has no key of the universe")
       (List.for_all (fun k -> lookup_opt k T.empty = None) universe);
-    let ok = ref true in
-    for _ = 1 to 300 do
-      let ops = List.init (1 + Random.int 40) (fun _ -> pick (), Random.int 100) in
-      let reference =
-        List.fold_left (fun a (k, v) -> (k, v) :: List.remove_assoc k a) [] ops
-      in
-      if not (agrees universe (of_list ops) reference) then ok := false
-    done;
-    check
+    (* A workload is up to 40 binds, a key of the universe drawn by its place in it. *)
+    let workloads =
+      QCheck.make
+        ~print:(QCheck.Print.list (fun (i, v) -> Printf.sprintf "bind %s %d" (shown i) v))
+        ~shrink:shrink_run
+        QCheck.Gen.(list_size (int_range 1 40) (pair (int_bound (n - 1)) (int_bound 99)))
+    in
+    check_prop
+      ~count:300
+      ~seed:20261014
       (t
          (Printf.sprintf
             "agrees with an assoc-list reference over 300 random workloads, the %d keys \
              of the universe swept"
             n))
-      !ok;
+      workloads
+      (fun ops ->
+         let kvs = List.map (fun (i, v) -> keys.(i), v) ops in
+         let m = of_list kvs
+         and reference = reference_of kvs in
+         List.for_all
+           (fun i ->
+              agrees
+                "lookup %s"
+                (shown i)
+                ~expect:(List.assoc_opt keys.(i) reference)
+                ~actual:(lookup_opt keys.(i) m)
+                QCheck.Print.(option int))
+           (upto n));
     (* A chain of binds, every version answering afterwards as it did when made. *)
+    Random.init 20261014;
+    let pick () = List.nth universe (Random.int n) in
     let _, _, versions =
       List.fold_left
         (fun (m, reference, vs) i ->
@@ -1400,7 +1442,7 @@ module Trie_contract (T : FINITE_MAP) = struct
     in
     check
       (t "every version of 60 binds still answers as it did")
-      (List.for_all (fun (m, reference) -> agrees universe m reference) versions)
+      (List.for_all (fun (m, reference) -> matches universe m reference) versions)
   ;;
 end
 
@@ -1421,12 +1463,15 @@ let rec lists_upto alphabet l =
 
 let test_trie_contract () =
   Chars_contract.run
+    ~show_key:show_chars
     "TrieFigure (UnbalancedMap (char))"
     ~universe:(lists_upto [ 'a'; 'b'; 'c' ] 3);
   Words_contract.run
+    ~show_key:show_words
     "TrieFigure (TrieFigure (UnbalancedMap (char)))"
     ~universe:(lists_upto (List.map explode [ "a"; "an"; "cat"; "dog" ]) 2);
   Ints_contract.run
+    ~show_key:string_of_int_list
     "TrieFigure (UnbalancedMap (int))"
     ~universe:(lists_upto [ 0; 1; 2 ] 3)
 ;;
@@ -1885,15 +1930,19 @@ let compressed_node_words = 12.0
 
 let test_compressed_contract () =
   Chars_compressed_contract.run
+    ~show_key:show_chars
     "PathCompressionTrie (UnbalancedMap (char))"
     ~universe:(lists_upto [ 'a'; 'b'; 'c' ] 3);
   Chars_compressed_contract.run
+    ~show_key:show_chars
     "PathCompressionTrie (UnbalancedMap (char)), keys of up to six over a and b"
     ~universe:(lists_upto [ 'a'; 'b' ] 6);
   Words_compressed_contract.run
+    ~show_key:show_words
     "PathCompressionTrie (PathCompressionTrie (UnbalancedMap (char)))"
     ~universe:(lists_upto (List.map explode [ "a"; "an"; "cat"; "dog" ]) 2);
   Ints_compressed_contract.run
+    ~show_key:string_of_int_list
     "PathCompressionTrie (UnbalancedMap (int))"
     ~universe:(lists_upto [ 0; 1; 2 ] 3)
 ;;
@@ -1934,63 +1983,56 @@ let test_compressed_shape () =
   let name =
     "PathCompressionTrie (UnbalancedMap (char)), keys of up to six over a and b"
   in
-  let universe = lists_upto [ 'a'; 'b' ] 6 in
-  let pick () = List.nth universe (Random.int (List.length universe)) in
-  let show k = Printf.sprintf "%S" (String.of_seq (List.to_seq k)) in
-  let lookups_off = ref []
-  and binds_off = ref [] in
-  Random.init 20261015;
-  for _ = 1 to 200 do
-    let m = ref Chars_compressed.empty
-    and keys = ref [] in
-    for i = 1 to 30 do
-      let k = pick () in
-      if not (List.mem k !keys) then keys := k :: !keys;
-      let sites = sites !keys in
-      let e = edges sites k in
-      let _, b, _ = Chars_wide.calls (fun () -> m := Chars_compressed.bind k i !m) in
-      if b < e || b > e + 1
-      then
-        binds_off
-        := Printf.sprintf
-             "bound %s in %d base-map binds, %d edges on its way"
-             (show k)
-             b
-             e
-           :: !binds_off;
-      List.iter
-        (fun k ->
-           let l, _, c = Chars_wide.calls (fun () -> Chars_compressed.lookup k !m) in
-           let e = edges sites k in
-           if l <> e || c > List.length k - e
-           then
-             lookups_off
-             := Printf.sprintf
-                  "found %s in %d base-map lookups and %d comparisons, %d edges on its \
-                   way"
-                  (show k)
-                  l
-                  c
-                  e
-                :: !lookups_off)
-        !keys
-    done
-  done;
-  check
-    (Printf.sprintf
-       "%s: after every bind of 200 random workloads, every key bound is found in one \
-        base-map lookup for every node of the compressed trie above it, its other \
-        elements compared once each%s"
-       name
-       (first_of Fun.id !lookups_off))
-    (!lookups_off = []);
-  check
-    (Printf.sprintf
-       "%s: and every bind remakes the edges on its key's way, and one more when it \
-        hangs an old node under a new one%s"
-       name
-       (first_of Fun.id !binds_off))
-    (!binds_off = [])
+  (* A workload is 30 binds, the i-th of a key drawn from the universe to i. [check]
+     sees, after every bind, the trie, the sites of the nodes of the keys bound so far,
+     the key just bound and the base-map binds that took. *)
+  let workloads =
+    run_of
+      ~length:30
+      ~plan:Fun.id
+      ~show:show_chars
+      [ 1, QCheck.Gen.oneof_list (lists_upto [ 'a'; 'b' ] 6) ]
+  in
+  let replay check draw =
+    let rec go i m keys = function
+      | [] -> true
+      | k :: ks ->
+        let keys = if List.mem k keys then keys else k :: keys in
+        let m' = ref m in
+        let _, b, _ = Chars_wide.calls (fun () -> m' := Chars_compressed.bind k i m) in
+        check !m' keys (sites keys) k b && go (i + 1) !m' keys ks
+    in
+    go 1 Chars_compressed.empty [] draw
+  in
+  let prop label = check_prop ~count:200 ~seed:20261015 (name ^ ": " ^ label) workloads in
+  prop
+    "after every bind of 200 random workloads, every key bound is found in one base-map \
+     lookup for every node of the compressed trie above it, its other elements compared \
+     once each"
+    (replay (fun m keys sites _ _ ->
+       List.for_all
+         (fun k ->
+            let l, _, c = Chars_wide.calls (fun () -> Chars_compressed.lookup k m) in
+            let e = edges sites k in
+            holds
+              "found %s in %d base-map lookups and %d comparisons, %d edges on its way"
+              (show_chars k)
+              l
+              c
+              e
+              (l = e && c <= List.length k - e))
+         keys));
+  prop
+    "and every bind remakes the edges on its key's way, and one more when it hangs an \
+     old node under a new one"
+    (replay (fun _ _ sites k b ->
+       let e = edges sites k in
+       holds
+         "bound %s in %d base-map binds, %d edges on its way"
+         (show_chars k)
+         b
+         e
+         (e <= b && b <= e + 1)))
 ;;
 
 (* A key of [n] elements, [head] and then zeros. *)
@@ -2189,7 +2231,6 @@ module By_length_contract = Trie_contract (By_length)
 module By_spread_contract = Trie_contract (By_spread)
 module One_bucket_contract = Trie_contract (One_bucket)
 
-let implode k = String.of_seq (List.to_seq k)
 let hash_universe = List.map implode (lists_upto [ 'a'; 'b'; 'c' ] 3)
 
 let test_hash_contract () =

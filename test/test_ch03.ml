@@ -101,21 +101,29 @@ module Heap_tests (H : HEAP with type Element.t = int) = struct
       string_of_int_list;
     check (t "merge of two empties is empty") (H.is_empty (H.merge H.empty H.empty));
     (* Randomised, against List.sort as the reference. *)
-    Random.init 20260918;
-    let bad_insert = ref 0
-    and bad_merge = ref 0 in
-    for _ = 0 to 299 do
-      let n = Random.int 40 in
-      let xs = List.init n (fun _ -> Random.int 50) in
-      let sorted = List.sort compare xs in
-      if drain (of_list xs) <> sorted then incr bad_insert;
-      let m = Random.int 40 in
-      let ys = List.init m (fun _ -> Random.int 50) in
-      if drain (H.merge (of_list xs) (of_list ys)) <> List.sort compare (xs @ ys)
-      then incr bad_merge
-    done;
-    check_int (t "insert then drain, 300 random lists") ~expect:0 ~actual:!bad_insert;
-    check_int (t "merge then drain, 300 random pairs") ~expect:0 ~actual:!bad_merge;
+    let list = QCheck.(list_size Gen.(int_bound 39) (int_bound 49)) in
+    check_prop
+      ~count:300
+      ~seed:20260918
+      (t "insert then drain, 300 random lists")
+      list
+      (fun xs ->
+         agrees
+           "drain"
+           ~expect:(List.sort compare xs)
+           ~actual:(drain (of_list xs))
+           string_of_int_list);
+    check_prop
+      ~count:300
+      ~seed:20260918
+      (t "merge then drain, 300 random pairs")
+      (QCheck.pair list list)
+      (fun (xs, ys) ->
+         agrees
+           "drain of the merge"
+           ~expect:(List.sort compare (xs @ ys))
+           ~actual:(drain (H.merge (of_list xs) (of_list ys)))
+           string_of_int_list);
     (* Persistence: no operation may disturb its operands. *)
     let h = of_list [ 5; 3; 8; 1 ] in
     let expect = [ 1; 3; 5; 8 ] in
@@ -258,14 +266,17 @@ module From_list_tests (H : HEAP_WITH_FROM_LIST with type Element.t = int) = str
       string_of_int_list;
     (* Randomised against List.sort. Sizes straddle the powers of two where the pairwise
        passes leave an odd heap over. *)
-    Random.init 20260918;
-    let bad = ref 0 in
-    for _ = 0 to 299 do
-      let n = Random.int 40 in
-      let xs = List.init n (fun _ -> Random.int 50) in
-      if drain (H.from_list xs) <> List.sort compare xs then incr bad
-    done;
-    check_int (t "from_list then drain, 300 random lists") ~expect:0 ~actual:!bad
+    check_prop
+      ~count:300
+      ~seed:20260918
+      (t "from_list then drain, 300 random lists")
+      QCheck.(list_size Gen.(int_bound 39) (int_bound 49))
+      (fun xs ->
+         agrees
+           "drain of from_list"
+           ~expect:(List.sort compare xs)
+           ~actual:(drain (H.from_list xs))
+           string_of_int_list)
   ;;
 
   (* ------------------------------------------------------- 3.3: from_list is O(n) *)
@@ -495,22 +506,19 @@ let drains : (string * (int list -> int list)) list =
 ;;
 
 let test_agreement () =
-  Random.init 20260918;
-  let bad = ref [] in
-  for _ = 0 to 299 do
-    let n = Random.int 60 in
-    let xs = List.init n (fun _ -> Random.int 100) in
-    let sorted = List.sort compare xs in
-    List.iter (fun (nm, drain) -> if drain xs <> sorted then bad := nm :: !bad) drains
-  done;
-  check
+  check_prop
+    ~count:300
+    ~seed:20260918
     (Printf.sprintf
-       "all %d implementations drain identically, 300 random lists%s"
-       (List.length drains)
-       (match !bad with
-        | [] -> ""
-        | b :: _ -> " -- " ^ b ^ " disagrees"))
-    (!bad = [])
+       "all %d implementations drain identically, 300 random lists"
+       (List.length drains))
+    QCheck.(list_size Gen.(int_bound 59) (int_bound 99))
+    (fun xs ->
+       let sorted = List.sort compare xs in
+       List.for_all
+         (fun (nm, drain) ->
+            agrees "%s" nm ~expect:sorted ~actual:(drain xs) string_of_int_list)
+         drains)
 ;;
 
 (* ------------------------------------------ red-black trees (3.3) and 3.9 *)
@@ -580,24 +588,14 @@ let test_redblack () =
   (* Against an independent oracle, over many shapes. Everything above builds sets whose
      contents the test already knows by construction; this asks instead that whatever tree
      an arbitrary insertion order produced still answers like the list it came from. *)
-  Random.init 20260919;
-  let disagrees = ref 0 in
-  for trial = 0 to 299 do
-    let n = 1 + Random.int 40 in
-    let xs =
-      if trial mod 3 = 0
-      then upto n (* ascending: the order that rebalances most *)
-      else List.init n (fun _ -> Random.int 60)
-    in
-    let s = rb_of_list xs in
-    for q = -2 to 62 do
-      if Rb.member q s <> List.mem q xs then incr disagrees
-    done
-  done;
-  check_int
+  (* A third of them ascending, the order that rebalances most. *)
+  member_agrees
+    ~seed:20260919
+    ~size:40
+    ~below:60
     "member agrees with List.mem over 300 random trees"
-    ~expect:0
-    ~actual:!disagrees;
+    rb_of_list
+    Rb.member;
   (* Re-inserting an element must leave the set alone. An [ins] whose equal case returns
      the whole tree rather than the current subtree grafts the tree into itself here,
      dropping elements and duplicating the rest. *)

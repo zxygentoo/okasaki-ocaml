@@ -81,6 +81,8 @@ let constant = 96.0
 (* ---------------------------------------------------- shared queue contract *)
 
 module Queue_tests (Q : QUEUE) = struct
+  module Runs = Queues.Contract (Q)
+
   let of_list xs = List.fold_left Q.snoc Q.empty xs
 
   (* That this returns the elements in the order they were snoc'ed is the whole
@@ -151,53 +153,8 @@ module Queue_tests (Q : QUEUE) = struct
       ~expect:[]
       ~actual:(List.rev !late)
       string_of_int_list;
-    (* Randomised, against the obvious model: a list, snoc at the back, tail at the front.
-       Checked after every operation and not only at the end, because a lost invariant
-       shows up as a wrong is_empty or head long before it shows up in a drain. *)
-    Random.init 20260925;
-    let bad_empty = ref 0
-    and bad_head = ref 0
-    and bad_drain = ref 0
-    and raised = ref 0 in
-    for _ = 0 to 299 do
-      let q = ref Q.empty
-      and model = ref [] in
-      (* The model is never asked for the head or tail of nothing, so any Failure in here
-         is the queue refusing an operation it owes. *)
-      try
-        for i = 0 to 59 do
-          if !model = [] || Random.int 3 > 0
-          then (
-            q := Q.snoc !q i;
-            model := !model @ [ i ])
-          else (
-            q := Q.tail !q;
-            model := List.tl !model);
-          if Q.is_empty !q <> (!model = []) then incr bad_empty;
-          match !model with
-          | x :: _ when Q.head !q <> x -> incr bad_head
-          | _ -> ()
-        done;
-        if drain !q <> !model then incr bad_drain
-      with
-      | Failure _ -> incr raised
-    done;
-    check_int
-      (t "no operation raises on a non-empty queue, 300 random runs")
-      ~expect:0
-      ~actual:!raised;
-    check_int
-      (t "is_empty agrees with a list model, 300 random runs")
-      ~expect:0
-      ~actual:!bad_empty;
-    check_int
-      (t "head agrees with a list model, 300 random runs")
-      ~expect:0
-      ~actual:!bad_head;
-    check_int
-      (t "drain agrees with a list model, 300 random runs")
-      ~expect:0
-      ~actual:!bad_drain;
+    (* Randomised, against a list model, as every queue is. *)
+    Runs.check_runs ~seed:20260925 t Queues.runs Runs.replay;
     (* Persistence: no operation may disturb its operand, so every version ever built
        stays correct, and two futures of one queue do not see each other. A rotation in
        progress is the case that matters: two futures of a queue caught mid-rotation each
@@ -413,11 +370,28 @@ let test_delegation () =
 ;;
 
 module Cons_tests (Q : QUEUE_WITH_CONS) = struct
+  module Runs = Queues.Contract (Q)
+
   let of_list xs = List.fold_left Q.snoc Q.empty xs
   let drain q = drain_with ~is_empty:Q.is_empty ~head:Q.head ~tail:Q.tail q
 
   (* The elements cons'ed onto the empty queue in order, so the last is in front. *)
   let cons_list xs = List.fold_left (fun q x -> Q.cons x q) Q.empty xs
+
+  (* An operation as data. A random run of the contract is a list of them, and so is a
+     sequence the clock below measures. *)
+  type op =
+    | Cons of int
+    | Snoc of int
+    | Tail
+    | Head
+
+  let describe = function
+    | Cons x -> Printf.sprintf "cons %d" x
+    | Snoc x -> Printf.sprintf "snoc %d" x
+    | Tail -> "tail"
+    | Head -> "head"
+  ;;
 
   let run_contract name =
     let t label = Printf.sprintf "%s: %s" name label in
@@ -464,54 +438,43 @@ module Cons_tests (Q : QUEUE_WITH_CONS) = struct
       "head"
       (fun () -> Q.head (Q.tail (Q.cons 1 Q.empty)));
     (* Randomised, against the obvious model: a list, cons at the front, snoc at the back,
-       tail at the front. Checked after every operation, as the queue contract does. *)
-    Random.init 20260926;
-    let bad_empty = ref 0
-    and bad_head = ref 0
-    and bad_drain = ref 0
-    and raised = ref 0 in
-    for _ = 0 to 299 do
-      let q = ref Q.empty
-      and model = ref [] in
-      (* The model is never asked for the head or tail of nothing, so any Failure in here
-         is the queue refusing an operation it owes. *)
-      try
-        for i = 0 to 59 do
-          (match if !model = [] then Random.int 2 else Random.int 3 with
-           | 0 ->
-             q := Q.cons i !q;
-             model := i :: !model
-           | 1 ->
-             q := Q.snoc !q i;
-             model := !model @ [ i ]
-           | _ ->
-             q := Q.tail !q;
-             model := List.tl !model);
-          if Q.is_empty !q <> (!model = []) then incr bad_empty;
-          match !model with
-          | x :: _ when Q.head !q <> x -> incr bad_head
-          | _ -> ()
-        done;
-        if drain !q <> !model then incr bad_drain
-      with
-      | Failure _ -> incr raised
-    done;
-    check_int
-      (t "no operation raises on a non-empty queue, 300 random runs with cons")
-      ~expect:0
-      ~actual:!raised;
-    check_int
-      (t "is_empty agrees with a list model, 300 random runs with cons")
-      ~expect:0
-      ~actual:!bad_empty;
-    check_int
-      (t "head agrees with a list model, 300 random runs with cons")
-      ~expect:0
-      ~actual:!bad_head;
-    check_int
-      (t "drain agrees with a list model, 300 random runs with cons")
-      ~expect:0
-      ~actual:!bad_drain;
+       tail at the front. Checked after every operation, as the queue contract does. A run
+       is 60 operations drawn alike, less the tails of an empty model, so the model is
+       never asked for the head or tail of nothing, and any Failure is the queue refusing
+       an operation it owes. *)
+    let plan draw =
+      let rec go n = function
+        | [] -> []
+        | ((Cons _ | Snoc _) as op) :: ops -> op :: go (n + 1) ops
+        | Tail :: ops when n > 0 -> Tail :: go (n - 1) ops
+        | _ :: ops -> go n ops
+      in
+      go 0 draw
+    in
+    let runs =
+      run_of
+        ~length:60
+        ~plan
+        ~show:describe
+        QCheck.Gen.
+          [ 1, map (fun x -> Cons x) (int_bound 99)
+          ; 1, map (fun x -> Snoc x) (int_bound 99)
+          ; 1, return Tail
+          ]
+    in
+    (* [after] sees the queue and the model after every operation, [at_end] after the
+       last; the run stops at the first that does not hold. *)
+    let replay ?(after = fun _ _ -> true) ?(at_end = fun _ _ -> true) draw =
+      let rec go q model = function
+        | [] -> at_end q model
+        | Cons x :: ops -> step (Q.cons x q) (x :: model) ops
+        | Snoc x :: ops -> step (Q.snoc q x) (model @ [ x ]) ops
+        | Tail :: ops -> step (Q.tail q) (List.tl model) ops
+        | Head :: ops -> go q model ops
+      and step q model ops = after q model && go q model ops in
+      go Q.empty [] (plan draw)
+    in
+    Runs.check_runs ~suffix:" with cons" ~seed:20260926 t runs replay;
     (* Persistence: a cons may not disturb its operand, and a tail taken from a cons'ed
        queue in one future leaves the element in place in the other. *)
     let q = of_list [ 1; 2; 3 ] in
@@ -541,19 +504,6 @@ module Cons_tests (Q : QUEUE_WITH_CONS) = struct
   ;;
 
   (* ------------------------------------------------------------- on the clock *)
-
-  type op =
-    | Cons of int
-    | Snoc of int
-    | Tail
-    | Head
-
-  let describe = function
-    | Cons x -> Printf.sprintf "cons %d" x
-    | Snoc x -> Printf.sprintf "snoc %d" x
-    | Tail -> "tail"
-    | Head -> "head"
-  ;;
 
   (* Runs [ops] from the empty queue with every operation on the clock by itself, and
      returns what each one cost. *)
@@ -1956,25 +1906,14 @@ module Set_tests (S : SET with type elem = int) = struct
       (t "membership is independent of insertion order")
       (List.init 103 (fun i -> i - 1)
        |> List.for_all (fun x -> S.member x s = S.member x s'));
-    (* Against an independent oracle, over many shapes. *)
-    Random.init 20260926;
-    let disagrees = ref 0 in
-    for trial = 0 to 299 do
-      let n = 1 + Random.int 40 in
-      let xs =
-        if trial mod 3 = 0
-        then List.init n Fun.id
-        else List.init n (fun _ -> Random.int 60)
-      in
-      let s = of_list xs in
-      for q = -2 to 62 do
-        if S.member q s <> List.mem q xs then incr disagrees
-      done
-    done;
-    check_int
+    (* Against an independent oracle, over many shapes, a third of them ascending. *)
+    member_agrees
+      ~seed:20260926
+      ~size:40
+      ~below:60
       (t "member agrees with List.mem over 300 random trees")
-      ~expect:0
-      ~actual:!disagrees;
+      of_list
+      S.member;
     (* Re-inserting an element must leave the set alone. An ins whose equal case returns
        the whole tree rather than the current subtree grafts the tree into itself here,
        dropping elements and duplicating the rest. *)
@@ -2205,36 +2144,54 @@ module Delete_tests (S : SET_WITH_DELETE with type elem = int) = struct
       (t "every version of a drain stays correct, across rebuilds")
       ~expect:0
       ~actual:!stale;
-    (* Against a model, a table of who is in, checked after every operation, with runs
-       long enough to cross the rebuild threshold many times over. *)
-    Random.init 20260929;
-    let bad = ref 0
-    and raised = ref 0 in
-    for _ = 0 to 299 do
-      let s = ref S.empty
-      and model = Array.make 42 false in
-      try
-        for _ = 1 to 200 do
-          let x = Random.int 40 in
-          if Random.int 5 < 3
-          then (
-            s := S.insert x !s;
-            model.(x + 1) <- true)
-          else (
-            s := S.delete x !s;
-            model.(x + 1) <- false);
-          for q = -1 to 40 do
-            if S.member q !s <> model.(q + 1) then incr bad
-          done
-        done
-      with
-      | _ -> incr raised
-    done;
-    check_int
-      (t "member agrees with a model after every operation, 300 random runs")
-      ~expect:0
-      ~actual:!bad;
-    check_int (t "no operation raises, 300 random runs") ~expect:0 ~actual:!raised
+    (* Against a model, the list of who is in, checked after every operation, with runs
+       long enough to cross the rebuild threshold many times over: 200 operations, three
+       inserts to two deletes, of elements 0 to 39, every one of which can be taken at
+       any point. *)
+    let module Op = struct
+      type t =
+        | Insert of int
+        | Delete of int
+
+      let describe = function
+        | Insert x -> Printf.sprintf "insert %d" x
+        | Delete x -> Printf.sprintf "delete %d" x
+      ;;
+    end
+    in
+    let runs =
+      run_of
+        ~length:200
+        ~plan:Fun.id
+        ~show:Op.describe
+        QCheck.Gen.
+          [ 3, map (fun x -> Op.Insert x) (int_bound 39)
+          ; 2, map (fun x -> Op.Delete x) (int_bound 39)
+          ]
+    in
+    (* [after] sees the set and the model, who is in in ascending order, after every
+       operation; the run stops at the first that does not hold. *)
+    let replay after ops =
+      let rec go s model = function
+        | [] -> true
+        | Op.Insert x :: ops ->
+          step (S.insert x s) (List.sort_uniq compare (x :: model)) ops
+        | Op.Delete x :: ops -> step (S.delete x s) (List.filter (( <> ) x) model) ops
+      and step s model ops = after s model && go s model ops in
+      go S.empty [] ops
+    in
+    let prop label = check_prop ~count:300 ~seed:20260929 (t label) runs in
+    (* Who member says is in, of -1 to 40: the model, if they agree on every one. *)
+    let members s = List.filter (fun q -> S.member q s) (range (-1) 40) in
+    prop
+      "no operation raises, 300 random runs"
+      (replay (fun s _ ->
+         ignore (members s);
+         true));
+    prop
+      "member agrees with a model after every operation, 300 random runs"
+      (replay (fun s model ->
+         agrees "members of -1 to 40" ~expect:model ~actual:(members s) string_of_int_list))
   ;;
 
   (* The most a delete may allocate without having rebuilt: a path of at most depth_bound

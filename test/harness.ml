@@ -251,3 +251,207 @@ module Counting_stream = struct
 end
 
 let stream_steps () = !Counting_stream.steps
+
+(* ------------------------------------------------------------- properties *)
+
+(* What [agrees] raises: the property does not hold, for the reason given. *)
+exception Disagrees of string
+
+(* A property as one check: [prop] must hold on [count] inputs drawn from [arb]. The seed
+   fixes the inputs, so every run draws the same ones. When an input fails, QCheck shrinks
+   it to a smaller one that still fails, and that is the one the check reports, printed by
+   [arb]'s printer, with what [agrees] said about it. A property that raises fails the same
+   way, saying what it raised. That is said and not left to QCheck, which on an exception
+   met while shrinking stops and reports the input it started from as the one that
+   raised.
+
+   The inputs are QCheck's arbitraries and not QCheck2's generators. An input here is
+   mostly a workload, a list of operations. QCheck2 shrinks a list of bounded length only
+   to a prefix of it, so the operations that do not matter stay in the counterexample;
+   QCheck drops elements before the end too, and takes a shrinker of our own, which
+   [run_of] below gives it. *)
+let check_prop ~count ~seed name arb prop =
+  let law x =
+    match prop x with
+    | holds -> holds
+    | exception Disagrees why -> QCheck.Test.fail_report why
+    | exception e -> QCheck.Test.fail_reportf "raised %s" (Printexc.to_string e)
+  in
+  let cell = QCheck.Test.make_cell ~count ~name arb law in
+  let shown (c : _ QCheck.TestResult.counter_ex) =
+    let input = QCheck.Test.print_instance cell c.instance in
+    String.concat
+      "; "
+      ((if c.shrink_steps > 0
+        then Printf.sprintf "%s (shrunk in %d steps)" input c.shrink_steps
+        else input)
+       :: c.msg_l)
+  in
+  match
+    QCheck.TestResult.get_state
+      (QCheck.Test.check_cell ~rand:(Random.State.make [| seed |]) cell)
+  with
+  | Success -> pass name
+  | Failed { instances = c :: _ } -> Alcotest.failf "%s -- fails on %s" name (shown c)
+  | Failed_other { msg } -> Alcotest.failf "%s -- %s" name msg
+  (* Neither comes about: QCheck records the input that failed, and [law] raises nothing
+     but its failures. *)
+  | Failed { instances = [] } | Error _ -> Alcotest.failf "%s -- fails" name
+;;
+
+(* Shrinking a run. First its prefixes, shortest first, which cut it off where it first
+   fails: every one of them for a short run, and for a long one the half, three quarters
+   and so on, which comes near in a few steps. Then the run with stretches of it dropped,
+   halves first: at every position for a short run, which takes out a pair of operations
+   that only fail together, and at a few for a long one. Last, for a short run, one
+   operation dropped at a time. QCheck's own list shrinker halves a list and shrinks only
+   the front half, so it can neither cut a run short of its end nor drop an operation from
+   the back half. *)
+let shrink_run ops yield =
+  let n = List.length ops in
+  let short = n <= 128 in
+  let without i c = List.filteri (fun j _ -> j < i || j >= i + c) ops in
+  if short
+  then
+    for k = 0 to n - 1 do
+      yield (List.take k ops)
+    done
+  else (
+    let k = ref (n / 2) in
+    while !k < n do
+      yield (List.take !k ops);
+      k := !k + max 1 ((n - !k) / 2)
+    done);
+  let c = ref (n / 2) in
+  while !c >= if short then 2 else max 1 (n / 64) do
+    let step = if short then 1 else !c in
+    let i = ref 0 in
+    while !i + !c <= n do
+      yield (without !i !c);
+      i := !i + step
+    done;
+    c := !c / 2
+  done;
+  if short
+  then
+    for i = 0 to n - 1 do
+      yield (without i 1)
+    done
+;;
+
+(* A random run: [length] operations drawn from [ops] by weight. What a property runs is
+   [plan] of the draw, which drops or adjusts what the model cannot take at that point (a
+   removal from nothing, an index past the end), and that is what a counterexample prints,
+   each operation by [show]. The draw shrinks by [shrink_run]; the operations themselves
+   stay as drawn. *)
+let run_of ~length ~plan ~show ops =
+  QCheck.make
+    ~print:(fun draw -> QCheck.Print.list show (plan draw))
+    ~shrink:shrink_run
+    QCheck.Gen.(list_size (return length) (oneof_weighted ops))
+;;
+
+(* A random trace over versions, for persistence. Version 0 is the empty structure and
+   step i makes version i by an operation on versions made before it. A draw is the steps
+   with the numbers they were drawn as, and [gen i] draws step i, naming the versions it
+   works on by those numbers, all below i. A draw shrinks as a run does; a step dropped
+   takes its version with it, and a step that worked on that version works on the one
+   drawn before it instead, so that nothing else in the trace moves. [plan] makes the
+   trace that is run, and printed, from a draw, most often by [plan_trace]. *)
+let trace_of ~length ~plan ~show gen =
+  QCheck.make
+    ~print:(fun draw ->
+      String.concat
+        "; "
+        (List.mapi (fun i op -> Printf.sprintf "v%d = %s" (i + 1) (show op)) (plan draw)))
+    ~shrink:shrink_run
+    (fun st -> List.init length (fun i -> i + 1, gen (i + 1) st))
+;;
+
+(* The steps of a draw, with the versions they work on numbered as the steps that are
+   left make them. [rename f op] is [op] working on version [f v] for each [v] it names. *)
+let renumber ~rename draw =
+  let kept = Array.of_list (List.map fst draw) in
+  (* The new number of the latest step drawn as [v] or before: how many of them are left. *)
+  let now v =
+    let rec go lo hi =
+      if lo = hi
+      then lo
+      else (
+        let mid = (lo + hi) / 2 in
+        if kept.(mid) <= v then go (mid + 1) hi else go lo mid)
+    in
+    go 0 (Array.length kept)
+  in
+  List.map (fun (_, op) -> rename now op) draw
+;;
+
+(* The trace a draw makes, [renumber]ed, with what the model cannot take adjusted, and the
+   state of the model at every version, version 0's [start]. Step by step, [admit state op]
+   says what [op] becomes and the state of the version it makes, [state v] being that of
+   a version made before it. *)
+let plan_trace ~rename ~start admit draw =
+  let ops = renumber ~rename draw in
+  let state = Array.make (List.length ops + 1) start in
+  let ops =
+    List.mapi
+      (fun i op ->
+         let op, s = admit (Array.get state) op in
+         state.(i + 1) <- s;
+         op)
+      ops
+  in
+  ops, state
+;;
+
+(* Inside a property, what check_eq is outside one: [expect] and [actual] agree, or the
+   property fails on the input at hand, saying how. [what] is a format, followed by its
+   arguments, and is only formatted when they do not agree: a property makes thousands of
+   these checks, nearly all of which hold. *)
+let agrees what =
+  Format.kdprintf
+    (fun what ~expect ~actual to_string ->
+       expect = actual
+       || raise
+            (Disagrees
+               (Format.asprintf
+                  "%t: expected %s, got %s"
+                  what
+                  (to_string expect)
+                  (to_string actual))))
+    what
+;;
+
+(* And what check is: [cond], the last argument, holds, or the property fails, saying
+   [what]. *)
+let holds what =
+  Format.kdprintf
+    (fun what cond -> cond || raise (Disagrees (Format.asprintf "%t" what)))
+    what
+;;
+
+(* member agrees with List.mem, for every query from -2 to [below] + 2, over 300 random
+   lists of 1 to [size] elements under [below], a third of them ascending, each made a set
+   by [of_list]. The random lists come first: their printer and shrinker serve both. *)
+let member_agrees ~seed ~size ~below name of_list member =
+  check_prop
+    ~count:300
+    ~seed
+    name
+    QCheck.(
+      oneof_weighted
+        [ 2, list_size Gen.(int_range 1 size) (int_bound (below - 1))
+        ; 1, map upto (int_range 1 size)
+        ])
+    (fun xs ->
+       let s = of_list xs in
+       List.for_all
+         (fun q ->
+            agrees
+              "member %d"
+              q
+              ~expect:(List.mem q xs)
+              ~actual:(member q s)
+              string_of_bool)
+         (List.init (below + 5) (fun i -> i - 2)))
+;;

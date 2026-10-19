@@ -44,12 +44,93 @@ let budget n = per_digit *. float_of_int (digits n + 1)
 
 (* ---------------------------------------------------- the random-access list *)
 
+(* A random run of a list, against a list: 60 operations, less what the model cannot
+   take. On the empty list that is all but a cons; an index is drawn at large and taken
+   modulo the length it meets, and a drop modulo one more than that. Drops are drawn only
+   for a list that has one, Exercise 9.1's and 9.2's, and conses then come twice as
+   often. *)
+module Run = struct
+  type op =
+    | Cons of int
+    | Tail
+    | Update of int * int
+    | Lookup of int
+    | Drop of int
+
+  let describe = function
+    | Cons x -> Printf.sprintf "cons %d" x
+    | Tail -> "tail"
+    | Update (k, x) -> Printf.sprintf "update %d %d" k x
+    | Lookup k -> Printf.sprintf "lookup %d" k
+    | Drop k -> Printf.sprintf "drop %d" k
+  ;;
+
+  (* The run a draw makes from a list of [n] elements. *)
+  let plan n draw =
+    let rec go n = function
+      | [] -> []
+      | Cons x :: ops -> Cons x :: go (n + 1) ops
+      | _ :: ops when n = 0 -> go n ops
+      | Tail :: ops -> Tail :: go (n - 1) ops
+      | Update (k, x) :: ops -> Update (k mod n, x) :: go n ops
+      | Lookup k :: ops -> Lookup (k mod n) :: go n ops
+      | Drop k :: ops ->
+        let k = k mod (n + 1) in
+        Drop k :: go (n - k) ops
+    in
+    go n draw
+  ;;
+
+  let length = 60
+
+  let ops ~drops =
+    QCheck.Gen.(
+      [ (if drops then 2 else 1), map (fun x -> Cons x) (int_bound 99)
+      ; 1, return Tail
+      ; 1, map2 (fun k x -> Update (k, 1000 + x)) (int_bound 9999) (int_bound 99)
+      ; 1, map (fun k -> Lookup k) (int_bound 9999)
+      ]
+      @ if drops then [ 1, map (fun k -> Drop k) (int_bound 9999) ] else [])
+  ;;
+
+  let draws ~drops = QCheck.Gen.(list_size (return length) (oneof_weighted (ops ~drops)))
+  let runs ~drops = run_of ~length ~plan:(plan 0) ~show:describe (ops ~drops)
+end
+
 module Contract (R : Okasaki.Ch09.RANDOM_ACCESS_LIST) = struct
   (* The list whose index i holds List.nth xs i. *)
   let of_list xs = List.fold_right R.cons xs R.empty
   let to_list r = drain_with ~is_empty:R.is_empty ~head:R.head ~tail:R.tail r
   let lookups n r = List.init n (fun i -> R.lookup i r)
   let rec tails k r = if k = 0 then r else tails (k - 1) (R.tail r)
+
+  (* A run from [r], which [model] describes: [after] sees the list and the model after
+     every operation, [at_end] after the last, and [looked] every lookup with the model's
+     answer; the run stops at the first that does not hold. [drop] makes the drops of a
+     run that has them. *)
+  let replay
+        ?drop
+        ?(after = fun _ _ -> true)
+        ?(at_end = fun _ _ -> true)
+        ?(looked = fun _ _ _ -> true)
+        r
+        model
+        ops
+    =
+    let rec go r model = function
+      | [] -> at_end r model
+      | Run.Cons x :: ops -> step (R.cons x r) (x :: model) ops
+      | Run.Tail :: ops -> step (R.tail r) (List.tl model) ops
+      | Run.Update (k, x) :: ops ->
+        step (R.update k x r) (List.mapi (fun j y -> if j = k then x else y) model) ops
+      | Run.Lookup k :: ops -> looked k r (List.nth model k) && step r model ops
+      | Run.Drop k :: ops ->
+        (match drop with
+         | Some drop -> step (drop k r) (List.drop k model) ops
+         | None -> invalid_arg "replay: a drop in the run of a list without one")
+    and step r model ops = after r model && go r model ops in
+    go r model ops
+  ;;
 
   let run_contract name =
     let t label = Printf.sprintf "%s: %s" name label in
@@ -168,55 +249,49 @@ module Contract (R : Okasaki.Ch09.RANDOM_ACCESS_LIST) = struct
              | [] -> ""
              | (n, what) :: _ -> Printf.sprintf " -- n=%d: %s" n what)))
       (!bad = []);
-    (* Randomised, against the obvious model: a list. Checked after every operation, with
-       a lookup at a random index each time. *)
-    Random.init 20260926;
-    let bad_empty = ref 0
-    and bad_head = ref 0
-    and bad_lookup = ref 0
-    and bad_final = ref 0
-    and raised = ref 0 in
-    for _ = 0 to 299 do
-      let r = ref R.empty
-      and model = ref [] in
-      try
-        for i = 0 to 59 do
-          let n = List.length !model in
-          (match if n = 0 then 0 else Random.int 4 with
-           | 0 ->
-             r := R.cons i !r;
-             model := i :: !model
-           | 1 ->
-             r := R.tail !r;
-             model := List.tl !model
-           | 2 ->
-             let k = Random.int n in
-             r := R.update k (1000 + i) !r;
-             model := List.mapi (fun j x -> if j = k then 1000 + i else x) !model
-           | _ ->
-             let k = Random.int n in
-             if R.lookup k !r <> List.nth !model k then incr bad_lookup);
-          if R.is_empty !r <> (!model = []) then incr bad_empty;
-          match !model with
-          | x :: _ when R.head !r <> x -> incr bad_head
-          | _ -> ()
-        done;
-        if to_list !r <> !model || lookups (List.length !model) !r <> !model
-        then incr bad_final
-      with
-      | _ -> incr raised
-    done;
-    check_int
-      (t "no operation raises on a valid index of a non-empty list, 300 random runs")
-      ~expect:0
-      ~actual:!raised;
-    check_int (t "is_empty agrees with a list model") ~expect:0 ~actual:!bad_empty;
-    check_int (t "head agrees with a list model") ~expect:0 ~actual:!bad_head;
-    check_int (t "lookup agrees with a list model") ~expect:0 ~actual:!bad_lookup;
-    check_int
-      (t "the whole list agrees with the model at the end of each run")
-      ~expect:0
-      ~actual:!bad_final;
+    (* Randomised, against the obvious model: a list. Checked after every operation. *)
+    let replay ?after ?at_end ?looked draw =
+      replay ?after ?at_end ?looked R.empty [] (Run.plan 0 draw)
+    in
+    let prop label =
+      check_prop ~count:300 ~seed:20260926 (t label) (Run.runs ~drops:false)
+    in
+    prop
+      "no operation raises on a valid index of a non-empty list, 300 random runs"
+      (replay
+         ~after:(fun r model ->
+           ignore (R.is_empty r);
+           if model <> [] then ignore (R.head r);
+           true)
+         ~looked:(fun k r _ ->
+           ignore (R.lookup k r);
+           true)
+         ~at_end:(fun r model ->
+           ignore (to_list r);
+           ignore (lookups (List.length model) r);
+           true));
+    prop
+      "is_empty agrees with a list model"
+      (replay ~after:(fun r model ->
+         agrees "is_empty" ~expect:(model = []) ~actual:(R.is_empty r) string_of_bool));
+    prop
+      "head agrees with a list model"
+      (replay ~after:(fun r -> function
+         | [] -> true
+         | x :: _ -> agrees "head" ~expect:x ~actual:(R.head r) string_of_int));
+    prop
+      "lookup agrees with a list model"
+      (replay ~looked:(fun k r x ->
+         agrees "lookup %d" k ~expect:x ~actual:(R.lookup k r) string_of_int));
+    prop
+      "the whole list agrees with the model at the end of each run"
+      (replay ~at_end:(fun r model ->
+         agrees "read back" ~expect:model ~actual:(to_list r) string_of_int_list
+         && agrees
+              "looked up"
+              ~expect:model
+              ~actual:(lookups (List.length model) r)
+              string_of_int_list));
     (* Persistence: an update copies its path and leaves the version it came from as it
        was, and so do cons and tail. *)
     let v = of_list (upto 10) in
@@ -553,37 +628,87 @@ module Lite (R : Okasaki.Ch09.RANDOM_ACCESS_LIST_LITE) = struct
     (* Random steps over a pool of versions: each takes a version at random, old or new,
        conses onto it or takes its tail, checks the result against a list model, and puts
        it in the pool in place of one at random. Every version left in the pool is read
-       back at the end. *)
-    all_of
+       back at the end. A step names the places in the pool it reads and writes, so a step
+       dropped in shrinking moves no other; a tail of an empty version is dropped. *)
+    let size = 64 in
+    let module Op = struct
+      type t =
+        | Cons of int * int * int
+        | Tail of int * int
+
+      let describe = function
+        | Cons (x, from, into) -> Printf.sprintf "p%d <- cons %d p%d" into x from
+        | Tail (from, into) -> Printf.sprintf "p%d <- tail p%d" into from
+      ;;
+    end
+    in
+    let plan draw =
+      let len = Array.make size 0 in
+      List.filter
+        (function
+          | Op.Cons (_, from, into) ->
+            len.(into) <- len.(from) + 1;
+            true
+          | Op.Tail (from, into) when len.(from) > 0 ->
+            len.(into) <- len.(from) - 1;
+            true
+          | Op.Tail _ -> false)
+        draw
+    in
+    check_prop
+      ~count:1
+      ~seed:20260930
       (t
          "5000 random steps over a pool of versions, old ones used again: is_empty and \
           head after each, and every version read back at the end")
-      (fun note ->
-         Random.init 20260930;
-         let size = 64 in
+      (run_of
+         ~length:5000
+         ~plan
+         ~show:Op.describe
+         QCheck.Gen.
+           [ ( 2
+             , map3
+                 (fun x from into -> Op.Cons (x, from, into))
+                 (int_bound 999)
+                 (int_bound (size - 1))
+                 (int_bound (size - 1)) )
+           ; ( 1
+             , map2
+                 (fun from into -> Op.Tail (from, into))
+                 (int_bound (size - 1))
+                 (int_bound (size - 1)) )
+           ])
+      (fun draw ->
          let pool = Array.make size (R.empty, []) in
-         for i = 1 to 5000 do
-           let r, model = pool.(Random.int size) in
-           try
-             let r', model' =
-               if model = [] || Random.int 3 > 0
-               then R.cons i r, i :: model
-               else R.tail r, List.tl model
-             in
-             if R.is_empty r' <> (model' = [])
-             then note (Printf.sprintf "step %d: is_empty is wrong" i);
-             (match model' with
-              | x :: _ when R.head r' <> x ->
-                note (Printf.sprintf "step %d: head %d, want %d" i (R.head r') x)
-              | _ -> ());
-             pool.(Random.int size) <- r', model'
-           with
-           | e -> note (Printf.sprintf "step %d: raised %s" i (Printexc.to_string e))
-         done;
-         Array.iteri
-           (fun j (r, model) ->
-              reads note (Printf.sprintf "pool version %d" j) model (fun () -> r))
-           pool);
+         List.for_all
+           (fun op ->
+              let into, (r', model') =
+                match op with
+                | Op.Cons (x, from, into) ->
+                  let r, model = pool.(from) in
+                  into, (R.cons x r, x :: model)
+                | Op.Tail (from, into) ->
+                  let r, model = pool.(from) in
+                  into, (R.tail r, List.tl model)
+              in
+              pool.(into) <- r', model';
+              agrees
+                "is_empty p%d"
+                into
+                ~expect:(model' = [])
+                ~actual:(R.is_empty r')
+                string_of_bool
+              &&
+              match model' with
+              | [] -> true
+              | x :: _ ->
+                agrees "head p%d" into ~expect:x ~actual:(R.head r') string_of_int)
+           (plan draw)
+         && List.for_all
+              (fun j ->
+                 let r, model = pool.(j) in
+                 agrees "p%d read back" j ~expect:model ~actual:(to_list r) show_list)
+              (upto size));
     (* Persistence, plainly: every version of a build of 40, and of the drain after it,
        reads as it did once all of them have been cons'ed onto and tailed. *)
     all_of

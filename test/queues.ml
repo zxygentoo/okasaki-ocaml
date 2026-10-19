@@ -8,12 +8,101 @@ open Harness
 
 (* ------------------------------------------------------- the queue contract *)
 
+(* A queue operation as data. A random run of the contract is a list of them, and so is
+   a sequence the clocks below measure, built before anything is measured so that building
+   it cannot land on the clock. *)
+type op =
+  | Snoc of int
+  | Tail
+  | Head
+
+let describe = function
+  | Snoc x -> Printf.sprintf "snoc %d" x
+  | Tail -> "tail"
+  | Head -> "head"
+;;
+
+(* A random run of a queue: 60 operations drawn two snocs to a tail, less the tails of an
+   empty model, so that the model is never asked for the head or tail of nothing. *)
+let plan draw =
+  let rec go n = function
+    | [] -> []
+    | Snoc x :: ops -> Snoc x :: go (n + 1) ops
+    | Tail :: ops when n > 0 -> Tail :: go (n - 1) ops
+    | _ :: ops -> go n ops
+  in
+  go 0 draw
+;;
+
+let runs =
+  run_of
+    ~length:60
+    ~plan
+    ~show:describe
+    QCheck.Gen.[ 2, map (fun x -> Snoc x) (int_bound 99); 1, return Tail ]
+;;
+
 module Contract (Q : Okasaki.Ch05.QUEUE) = struct
   let of_list xs = List.fold_left Q.snoc Q.empty xs
 
   (* head/tail to exhaustion. That this returns the elements in the order they were
      snoc'ed is the whole behavioural specification of a queue. *)
   let drain q = drain_with ~is_empty:Q.is_empty ~head:Q.head ~tail:Q.tail q
+
+  (* A draw of [runs] run from the empty queue, against a list model: [after] sees the
+     queue and the model after every operation, [at_end] after the last; the run stops at
+     the first that does not hold. *)
+  let replay ?(after = fun _ _ -> true) ?(at_end = fun _ _ -> true) draw =
+    let rec go q model = function
+      | [] -> at_end q model
+      | Snoc x :: ops -> step (Q.snoc q x) (model @ [ x ]) ops
+      | Tail :: ops -> step (Q.tail q) (List.tl model) ops
+      | Head :: ops -> go q model ops
+    and step q model ops = after q model && go q model ops in
+    go Q.empty [] (plan draw)
+  ;;
+
+  (* Randomised, against the obvious model: a list, snoc at the back, tail at the front.
+     Checked after every operation and not only at the end, because a lost invariant shows
+     up as a wrong is_empty or head long before it shows up in a drain. The model of a run
+     is never asked for the head or tail of nothing, so any Failure is the queue refusing
+     an operation it owes. [replay] runs a draw of [arb] as the one above does, and a queue
+     with more operations than these brings its own, with a [suffix] to its checks' names. *)
+  let check_runs
+        ?(suffix = "")
+        ~seed
+        t
+        arb
+        (replay :
+          ?after:(int Q.queue -> int list -> bool)
+          -> ?at_end:(int Q.queue -> int list -> bool)
+          -> _)
+    =
+    let prop label = check_prop ~count:300 ~seed (t (label ^ suffix)) arb in
+    prop
+      "no operation raises on a non-empty queue, 300 random runs"
+      (replay
+         ~after:(fun q model ->
+           ignore (Q.is_empty q);
+           if model <> [] then ignore (Q.head q);
+           true)
+         ~at_end:(fun q _ ->
+           ignore (drain q);
+           true));
+    prop
+      "is_empty agrees with a list model, 300 random runs"
+      (replay ~after:(fun q model ->
+         agrees "is_empty" ~expect:(model = []) ~actual:(Q.is_empty q) string_of_bool));
+    prop
+      "head agrees with a list model, 300 random runs"
+      (replay ~after:(fun q -> function
+         | [] -> true
+         | x :: _ -> agrees "head" ~expect:x ~actual:(Q.head q) string_of_int));
+    prop
+      "drain agrees with a list model, 300 random runs"
+      (replay ~at_end:(fun q model ->
+         agrees "drain" ~expect:model ~actual:(drain q) string_of_int_list))
+  ;;
 
   let run_contract name =
     let t label = Printf.sprintf "%s: %s" name label in
@@ -43,53 +132,7 @@ module Contract (Q : Okasaki.Ch05.QUEUE) = struct
     check_failure (t "head on a drained queue raises") "head: empty queue" (fun () ->
       Q.head drained);
     eq "a drained queue can be refilled" [ 8; 9 ] (Q.snoc (Q.snoc drained 8) 9);
-    (* Randomised, against the obvious model: a list, snoc at the back, tail at the front.
-       Checked after every operation and not only at the end, because a lost invariant
-       shows up as a wrong is_empty or head long before it shows up in a drain. *)
-    Random.init 20260921;
-    let bad_empty = ref 0
-    and bad_head = ref 0
-    and bad_drain = ref 0
-    and raised = ref 0 in
-    for _ = 0 to 299 do
-      let q = ref Q.empty
-      and model = ref [] in
-      (* The model is never asked for the head or tail of nothing, so any Failure in here
-         is the queue refusing an operation it owes. *)
-      try
-        for i = 0 to 59 do
-          if !model = [] || Random.int 3 > 0
-          then (
-            q := Q.snoc !q i;
-            model := !model @ [ i ])
-          else (
-            q := Q.tail !q;
-            model := List.tl !model);
-          if Q.is_empty !q <> (!model = []) then incr bad_empty;
-          match !model with
-          | x :: _ when Q.head !q <> x -> incr bad_head
-          | _ -> ()
-        done;
-        if drain !q <> !model then incr bad_drain
-      with
-      | Failure _ -> incr raised
-    done;
-    check_int
-      (t "no operation raises on a non-empty queue, 300 random runs")
-      ~expect:0
-      ~actual:!raised;
-    check_int
-      (t "is_empty agrees with a list model, 300 random runs")
-      ~expect:0
-      ~actual:!bad_empty;
-    check_int
-      (t "head agrees with a list model, 300 random runs")
-      ~expect:0
-      ~actual:!bad_head;
-    check_int
-      (t "drain agrees with a list model, 300 random runs")
-      ~expect:0
-      ~actual:!bad_drain;
+    check_runs ~seed:20260921 t runs replay;
     (* Persistence: no operation may disturb its operand, so every version ever built
        stays correct, and two futures of one queue do not see each other. *)
     let versions = List.init 20 (fun i -> of_list (upto i)) in
@@ -250,52 +293,99 @@ struct
                Printf.sprintf " -- built by %s, n=%d, read from %s: %s" build n drain got)))
       (!bad = []);
     (* Randomised against a list, with all four writers and all three readers, checked
-       after every operation. *)
-    Random.init P.seed;
-    let bad_empty = ref 0
-    and bad_head = ref 0
-    and bad_last = ref 0
-    and bad_drain = ref 0
-    and raised = ref 0 in
-    for run = 0 to 299 do
-      let q = ref D.empty
-      and model = ref [] in
-      try
-        for i = 0 to 59 do
-          (match Random.int 6 with
-           | 0 | 1 ->
-             q := D.snoc !q i;
-             model := !model @ [ i ]
-           | 2 | 3 ->
-             q := D.cons i !q;
-             model := i :: !model
-           | 4 when !model <> [] ->
-             q := D.tail !q;
-             model := List.tl !model
-           | 5 when !model <> [] ->
-             q := D.init !q;
-             model := List.rev (List.tl (List.rev !model))
-           | _ -> ());
-          if D.is_empty !q <> (!model = []) then incr bad_empty;
-          match !model with
-          | [] -> ()
-          | x :: _ ->
-            if D.head !q <> x then incr bad_head;
-            if D.last !q <> List.hd (List.rev !model) then incr bad_last
-        done;
-        let _, take = List.nth drains (run mod 3) in
-        if take !q <> !model then incr bad_drain
-      with
-      | Failure _ -> incr raised
-    done;
-    check_int
-      (t "no operation raises on a non-empty deque, 300 random runs")
-      ~expect:0
-      ~actual:!raised;
-    check_int (t "is_empty agrees with a list model") ~expect:0 ~actual:!bad_empty;
-    check_int (t "head agrees with a list model") ~expect:0 ~actual:!bad_head;
-    check_int (t "last agrees with a list model") ~expect:0 ~actual:!bad_last;
-    check_int (t "every drain agrees with a list model") ~expect:0 ~actual:!bad_drain;
+       after every operation. A run is 60 operations drawn two writes to a removal, less
+       the removals from an empty model. *)
+    let module Op = struct
+      type t =
+        | Snoc of int
+        | Cons of int
+        | Tail
+        | Init
+
+      let describe = function
+        | Snoc x -> Printf.sprintf "snoc %d" x
+        | Cons x -> Printf.sprintf "cons %d" x
+        | Tail -> "tail"
+        | Init -> "init"
+      ;;
+    end
+    in
+    let plan draw =
+      let rec go n = function
+        | [] -> []
+        | ((Op.Snoc _ | Op.Cons _) as op) :: ops -> op :: go (n + 1) ops
+        | ((Op.Tail | Op.Init) as op) :: ops when n > 0 -> op :: go (n - 1) ops
+        | _ :: ops -> go n ops
+      in
+      go 0 draw
+    in
+    let runs =
+      run_of
+        ~length:60
+        ~plan
+        ~show:Op.describe
+        QCheck.Gen.
+          [ 2, map (fun x -> Op.Snoc x) (int_bound 99)
+          ; 2, map (fun x -> Op.Cons x) (int_bound 99)
+          ; 1, return Op.Tail
+          ; 1, return Op.Init
+          ]
+    in
+    let replay ?(after = fun _ _ -> true) ?(at_end = fun _ _ -> true) draw =
+      let rec go q model = function
+        | [] -> at_end q model
+        | Op.Snoc x :: ops -> step (D.snoc q x) (model @ [ x ]) ops
+        | Op.Cons x :: ops -> step (D.cons x q) (x :: model) ops
+        | Op.Tail :: ops -> step (D.tail q) (List.tl model) ops
+        | Op.Init :: ops -> step (D.init q) (List.rev (List.tl (List.rev model))) ops
+      and step q model ops = after q model && go q model ops in
+      go D.empty [] (plan draw)
+    in
+    let prop label = check_prop ~count:300 ~seed:P.seed (t label) runs in
+    prop
+      "no operation raises on a non-empty deque, 300 random runs"
+      (replay
+         ~after:(fun q model ->
+           ignore (D.is_empty q);
+           if model <> []
+           then (
+             ignore (D.head q);
+             ignore (D.last q));
+           true)
+         ~at_end:(fun q _ ->
+           List.iter (fun (_, take) -> ignore (take q)) drains;
+           true));
+    prop
+      "is_empty agrees with a list model"
+      (replay ~after:(fun q model ->
+         agrees "is_empty" ~expect:(model = []) ~actual:(D.is_empty q) string_of_bool));
+    prop
+      "head agrees with a list model"
+      (replay ~after:(fun q -> function
+         | [] -> true
+         | x :: _ -> agrees "head" ~expect:x ~actual:(D.head q) string_of_int));
+    prop
+      "last agrees with a list model"
+      (replay ~after:(fun q model ->
+         model = []
+         || agrees
+              "last"
+              ~expect:(List.hd (List.rev model))
+              ~actual:(D.last q)
+              string_of_int));
+    (* Every reader at the end of every run. *)
+    prop
+      "every drain agrees with a list model"
+      (replay ~at_end:(fun q model ->
+         List.for_all
+           (fun (drain, take) ->
+              agrees
+                "drained from %s"
+                drain
+                ~expect:model
+                ~actual:(take q)
+                string_of_int_list)
+           drains));
     (* Persistence, with all four writers let loose on every version. *)
     let versions = List.init 20 (fun i -> snocs (upto i)) in
     List.iter
@@ -316,19 +406,6 @@ struct
 end
 
 (* ------------------------------------------ every operation on its own clock *)
-
-(* A sequence is data, built before anything is measured, so that building it cannot land
-   on the clock. *)
-type op =
-  | Snoc of int
-  | Tail
-  | Head
-
-let describe = function
-  | Snoc x -> Printf.sprintf "snoc %d" x
-  | Tail -> "tail"
-  | Head -> "head"
-;;
 
 module Worst_case
     (Q : Okasaki.Ch05.QUEUE)

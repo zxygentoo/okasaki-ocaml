@@ -20,6 +20,36 @@ module Builds (C : Okasaki.Ch10.CATENABLE_LIST) = struct
   let singleton x = C.cons x C.empty
 end
 
+(* A step of a random trace over versions, version i made from versions before it by
+   number. A join is ++ or a flatten, of any number of them. *)
+module Trace_op = struct
+  type t =
+    | Cons of int * int
+    | Snoc of int * int
+    | Join of int list
+    | Tail of int
+    | Head of int
+    | Same of int
+
+  let rename f = function
+    | Cons (x, v) -> Cons (x, f v)
+    | Snoc (v, x) -> Snoc (f v, x)
+    | Join vs -> Join (List.map f vs)
+    | Tail v -> Tail (f v)
+    | Head v -> Head (f v)
+    | Same v -> Same (f v)
+  ;;
+
+  let describe ~show_join = function
+    | Cons (x, v) -> Printf.sprintf "cons %d v%d" x v
+    | Snoc (v, x) -> Printf.sprintf "snoc v%d %d" v x
+    | Join vs -> show_join vs
+    | Tail v -> Printf.sprintf "tail v%d" v
+    | Head v -> Printf.sprintf "v%d, its head read" v
+    | Same v -> Printf.sprintf "v%d" v
+  ;;
+end
+
 module Contract
     (C : Okasaki.Ch10.CATENABLE_LIST)
     (P : sig
@@ -46,6 +76,76 @@ struct
 
   let builders =
     [ "cons", by_cons; "snoc", by_snoc; "a fat tree", fat_of; "a chain", chain_of ]
+  ;;
+
+  (* A random trace of [trace_steps] cons, snoc, joins, tail and head on random earlier
+     versions, every version against a list model, as the one check [name]. A join is
+     [join] of the versions [parts i v] draws for version [i], [v] the version drawn for
+     the step, printed by [show_join]; what the model cannot take, a tail of an empty
+     version or a join longer than the cap, keeps the version it would have worked on. *)
+  let trace_steps = 600
+
+  let check_trace ~seed ~join ~show_join ~parts name =
+    let cap = 2_000 in
+    let plan draw =
+      fst
+        (plan_trace
+           ~rename:Trace_op.rename
+           ~start:0
+           (fun len op ->
+              match op with
+              | Trace_op.Cons (_, v) | Trace_op.Snoc (v, _) -> op, len v + 1
+              | Trace_op.Join vs ->
+                let n = List.fold_left (fun n v -> n + len v) 0 vs in
+                if n <= cap then op, n else Trace_op.Same (List.hd vs), len (List.hd vs)
+              | Trace_op.Tail v when len v > 0 -> op, len v - 1
+              | Trace_op.Head v -> op, len v
+              | Trace_op.Tail v | Trace_op.Same v -> Trace_op.Same v, len v)
+           draw)
+    in
+    check_prop
+      ~count:1
+      ~seed
+      name
+      (trace_of
+         ~length:trace_steps
+         ~plan
+         ~show:(Trace_op.describe ~show_join)
+         (fun i st ->
+            let open QCheck.Gen in
+            let v = int_bound (i - 1) st in
+            match int_bound 4 st with
+            | 0 -> Trace_op.Cons (int_bound 999 st, v)
+            | 1 -> Trace_op.Snoc (v, int_bound 999 st)
+            | 2 -> Trace_op.Join (parts i v st)
+            | 3 -> Trace_op.Tail v
+            | _ -> Trace_op.Head v))
+      (fun draw ->
+         let ops = Array.of_list (plan draw) in
+         let v = Array.make (Array.length ops + 1) (C.empty, []) in
+         let made i =
+           let a, la =
+             match ops.(i - 1) with
+             | Trace_op.Cons (x, p) -> C.cons x (fst v.(p)), x :: snd v.(p)
+             | Trace_op.Snoc (p, x) -> C.snoc (fst v.(p)) x, snd v.(p) @ [ x ]
+             | Trace_op.Join ps ->
+               ( join (List.map (fun p -> fst v.(p)) ps)
+               , List.concat_map (fun p -> snd v.(p)) ps )
+             | Trace_op.Tail p -> C.tail (fst v.(p)), List.tl (snd v.(p))
+             | Trace_op.Head p | Trace_op.Same p -> v.(p)
+           in
+           v.(i) <- a, la;
+           match ops.(i - 1), la with
+           | Trace_op.Head _, x :: _ ->
+             agrees "head v%d" i ~expect:x ~actual:(C.head a) string_of_int
+           | _ -> true
+         in
+         List.for_all made (List.init (Array.length ops) (fun i -> i + 1))
+         && List.for_all
+              (fun i ->
+                 let c, l = v.(i) in
+                 agrees "v%d" i ~expect:l ~actual:(to_list c) string_of_int_list)
+              (upto (Array.length v)))
   ;;
 
   let run_contract name =
@@ -112,36 +212,18 @@ struct
     check
       (t "xs ++ xs squared ten times is 1024 copies of xs, one tree shared throughout")
       (to_list (squared 10 (by_cons (upto 10))) = copies 1024 (upto 10));
-    (* a random trace over earlier versions, every version against a list model *)
-    let steps = 600
-    and cap = 2_000 in
-    let v = Array.make (steps + 1) (C.empty, []) in
-    Random.init 20261013;
-    all_of
+    check_trace
+      ~seed:20261013
+      ~join:(function
+        | [] -> C.empty
+        | xs :: rest -> List.fold_left ( ++ ) xs rest)
+      ~show_join:(fun vs -> String.concat " ++ " (List.map (Printf.sprintf "v%d") vs))
+      ~parts:(fun i v st -> [ v; QCheck.Gen.int_bound (i - 1) st ])
       (t
          (Printf.sprintf
             "a random trace of %d cons, snoc, ++, tail and head on random earlier \
              versions, every version against a list model"
-            steps))
-      (fun note ->
-         for i = 1 to steps do
-           let a, la = v.(Random.int i) in
-           v.(i)
-           <- (match Random.int 5 with
-               | 0 -> C.cons i a, i :: la
-               | 1 -> C.snoc a i, la @ [ i ]
-               | 2 ->
-                 let b, lb = v.(Random.int i) in
-                 if List.length la + List.length lb > cap then a, la else a ++ b, la @ lb
-               | 3 -> if la = [] then a, la else C.tail a, List.tl la
-               | _ ->
-                 if la <> [] && C.head a <> List.hd la
-                 then note (Printf.sprintf "head at step %d" i);
-                 a, la)
-         done;
-         Array.iteri
-           (fun i (c, l) -> if to_list c <> l then note (Printf.sprintf "version #%d" i))
-           v)
+            trace_steps))
   ;;
 
   (* ------------------------------------------- sequences: one thread, from empty *)

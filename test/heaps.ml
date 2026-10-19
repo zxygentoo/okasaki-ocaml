@@ -75,27 +75,39 @@ module Contract (H : Okasaki.Ch05.HEAP with type Element.t = int) = struct
     check (t "merge of two empties is empty") (H.is_empty (H.merge H.empty H.empty));
     (* Randomised, against List.sort as the reference, with few distinct values so that
        equal elements are everywhere. *)
-    Random.init 20260922;
-    let bad_insert = ref 0
-    and bad_merge = ref 0
-    and raised = ref 0 in
-    for _ = 0 to 299 do
-      let xs = List.init (Random.int 40) (fun _ -> Random.int 25)
-      and ys = List.init (Random.int 40) (fun _ -> Random.int 25) in
-      match
-        if drain (of_list xs) <> List.sort compare xs then incr bad_insert;
-        if drain (H.merge (of_list xs) (of_list ys)) <> List.sort compare (xs @ ys)
-        then incr bad_merge
-      with
-      | () -> ()
-      | exception Failure _ -> incr raised
-    done;
-    check_int
+    let list = QCheck.(list_size Gen.(int_bound 39) (int_bound 24)) in
+    let pairs = QCheck.pair list list in
+    check_prop
+      ~count:300
+      ~seed:20260922
       (t "no operation raises on a non-empty heap, 300 random runs")
-      ~expect:0
-      ~actual:!raised;
-    check_int (t "insert then drain, 300 random lists") ~expect:0 ~actual:!bad_insert;
-    check_int (t "merge then drain, 300 random pairs") ~expect:0 ~actual:!bad_merge
+      pairs
+      (fun (xs, ys) ->
+         ignore (drain (of_list xs));
+         ignore (drain (H.merge (of_list xs) (of_list ys)));
+         true);
+    check_prop
+      ~count:300
+      ~seed:20260922
+      (t "insert then drain, 300 random lists")
+      list
+      (fun xs ->
+         agrees
+           "drain"
+           ~expect:(List.sort compare xs)
+           ~actual:(drain (of_list xs))
+           string_of_int_list);
+    check_prop
+      ~count:300
+      ~seed:20260922
+      (t "merge then drain, 300 random pairs")
+      pairs
+      (fun (xs, ys) ->
+         agrees
+           "drain of the merge"
+           ~expect:(List.sort compare (xs @ ys))
+           ~actual:(drain (H.merge (of_list xs) (of_list ys)))
+           string_of_int_list)
   ;;
 
   (* The core, and persistence with several futures of one heap. *)
@@ -239,51 +251,94 @@ struct
       drains_to note "delete_min" [ 3; 5; 8 ] c;
       drains_to note "merge with itself" [ 1; 1; 3; 3; 5; 5; 8; 8 ] d;
       drains_to note "the heap" [ 1; 3; 5; 8 ] h);
-    all_of
+    (* Every version is checked as it is made, against a sorted list, and every 200th is
+       drained at the end. A merge is held to 600 elements; what the model cannot take, a
+       merge over that or a delete_min of an empty version, keeps the version it would
+       have worked on. *)
+    let module Op = struct
+      type t =
+        | Insert of int * int
+        | Merge of int * int
+        | Delete_min of int
+        | Same of int
+
+      let rename f = function
+        | Insert (x, v) -> Insert (x, f v)
+        | Merge (v, w) -> Merge (f v, f w)
+        | Delete_min v -> Delete_min (f v)
+        | Same v -> Same (f v)
+      ;;
+
+      let describe = function
+        | Insert (x, v) -> Printf.sprintf "insert %d v%d" x v
+        | Merge (v, w) -> Printf.sprintf "merge v%d v%d" v w
+        | Delete_min v -> Printf.sprintf "delete_min v%d" v
+        | Same v -> Printf.sprintf "v%d" v
+      ;;
+    end
+    in
+    let n = 6_000 in
+    let plan draw =
+      fst
+        (plan_trace
+           ~rename:Op.rename
+           ~start:0
+           (fun size op ->
+              match op with
+              | Op.Insert (_, v) -> op, size v + 1
+              | Op.Merge (v, w) when size v + size w <= 600 -> op, size v + size w
+              | Op.Delete_min v when size v > 0 -> op, size v - 1
+              | Op.Merge (v, _) | Op.Delete_min v | Op.Same v -> Op.Same v, size v)
+           draw)
+    in
+    check_prop
+      ~count:1
+      ~seed:20260930
       (t
          "a random trace of 6000 inserts, merges and delete_mins over earlier versions, \
           against a sorted list")
-      (fun note ->
-         let n = 6_000 in
-         let v = Array.make (n + 1) H.empty
-         and model = Array.make (n + 1) []
-         and size = Array.make (n + 1) 0 in
-         for i = 1 to n do
-           let p = Random.int i
-           and q = Random.int i in
-           let what, h, m, s =
-             match Random.int 4 with
-             | 2 when size.(p) + size.(q) <= 600 ->
-               ( "merge"
-               , H.merge v.(p) v.(q)
-               , List.merge compare model.(p) model.(q)
-               , size.(p) + size.(q) )
-             | 3 when size.(p) > 0 ->
-               "delete_min", H.delete_min v.(p), List.tl model.(p), size.(p) - 1
-             | _ ->
-               let x = Random.int 1000 in
-               ( "insert"
-               , H.insert x v.(p)
-               , List.merge compare [ x ] model.(p)
-               , size.(p) + 1 )
+      (trace_of ~length:n ~plan ~show:Op.describe (fun i st ->
+         let open QCheck.Gen in
+         let v = int_bound (i - 1) st in
+         match int_bound 3 st with
+         | 2 -> Op.Merge (v, int_bound (i - 1) st)
+         | 3 -> Op.Delete_min v
+         | _ -> Op.Insert (int_bound 999 st, v)))
+      (fun draw ->
+         let ops = Array.of_list (plan draw) in
+         let k = Array.length ops in
+         let v = Array.make (k + 1) H.empty
+         and model = Array.make (k + 1) [] in
+         let made i =
+           let h, m =
+             match ops.(i - 1) with
+             | Op.Insert (x, p) -> H.insert x v.(p), List.merge compare [ x ] model.(p)
+             | Op.Merge (p, q) ->
+               H.merge v.(p) v.(q), List.merge compare model.(p) model.(q)
+             | Op.Delete_min p -> H.delete_min v.(p), List.tl model.(p)
+             | Op.Same p -> v.(p), model.(p)
            in
            v.(i) <- h;
            model.(i) <- m;
-           size.(i) <- s;
+           agrees "is_empty v%d" i ~expect:(m = []) ~actual:(H.is_empty h) string_of_bool
+           &&
            match m with
-           | [] ->
-             if not (H.is_empty h) then note (Printf.sprintf "%s %d is not empty" what i)
+           | [] -> true
            | x :: _ ->
-             if H.is_empty h
-             then note (Printf.sprintf "%s %d is empty" what i)
-             else if H.find_min h <> x
-             then
-               note (Printf.sprintf "%s %d: find_min %d, want %d" what i (H.find_min h) x)
-         done;
-         for i = 0 to n do
-           if i mod 200 = 0
-           then drains_to note (Printf.sprintf "version %d" i) model.(i) v.(i)
-         done);
+             agrees "find_min v%d" i ~expect:x ~actual:(H.find_min h) string_of_int
+         in
+         List.for_all made (List.init k (fun i -> i + 1))
+         && List.for_all
+              (fun i ->
+                 agrees
+                   "drain of v%d"
+                   i
+                   ~expect:model.(i)
+                   ~actual:(drain v.(i))
+                   string_of_int_list)
+              (List.filter (fun i -> i mod 200 = 0) (upto (k + 1))));
+    (* Its own seed: the trace above draws from QCheck's state, not this one. *)
+    Random.init 20261019;
     all_of
       (t "equal keys, distinct tags: every element comes out exactly once, in order")
       (fun note ->
@@ -334,18 +389,26 @@ module Sortable_contract (S : Okasaki.Ch06.SORTABLE with type Element.t = int) =
     eq "33 elements" (upto 33) (of_list (List.rev (upto 33)));
     (* Randomised, against List.sort, with few distinct values so that equal elements are
        everywhere. *)
-    Random.init 20260925;
-    let bad = ref 0
-    and raised = ref 0 in
-    for _ = 0 to 299 do
-      let xs = List.init (Random.int 200) (fun _ -> Random.int 50) in
-      match S.sort (of_list xs) = List.sort compare xs with
-      | true -> ()
-      | false -> incr bad
-      | exception Failure _ -> incr raised
-    done;
-    check_int (t "no sort raises, 300 random lists") ~expect:0 ~actual:!raised;
-    check_int (t "sort agrees with List.sort, 300 random lists") ~expect:0 ~actual:!bad;
+    let lists = QCheck.(list_size Gen.(int_bound 199) (int_bound 49)) in
+    check_prop
+      ~count:300
+      ~seed:20260925
+      (t "no sort raises, 300 random lists")
+      lists
+      (fun xs ->
+         ignore (S.sort (of_list xs));
+         true);
+    check_prop
+      ~count:300
+      ~seed:20260925
+      (t "sort agrees with List.sort, 300 random lists")
+      lists
+      (fun xs ->
+         agrees
+           "sort"
+           ~expect:(List.sort compare xs)
+           ~actual:(S.sort (of_list xs))
+           string_of_int_list);
     (* Persistence, in the section's own terms: xs' serves xs, x :: xs and y :: xs. *)
     let xs' = of_list [ 5; 3; 8; 1; 9; 2 ] in
     eq "xs" [ 1; 2; 3; 5; 8; 9 ] xs';

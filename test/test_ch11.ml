@@ -671,13 +671,29 @@ module Catenable_builds (C : CATENABLE_LIST) = struct
   let test_model ?back name ~noun ~max_size ~seed =
     let t label = Printf.sprintf "%s: %s" name label in
     let cap = 2_000 in
-    let reads_as l q =
-      to_list q = l
+    (* [q] reads [l] from the front, and from the back as well where it has one. *)
+    let reads what l q =
+      agrees
+        "%s read from the front"
+        what
+        ~expect:l
+        ~actual:(to_list q)
+        string_of_int_list
       &&
       match back with
       | None -> true
       | Some (last, init) ->
-        List.rev (drain_with ~is_empty:C.is_empty ~head:last ~tail:init q) = l
+        agrees
+          "%s read from the back"
+          what
+          ~expect:l
+          ~actual:(List.rev (drain_with ~is_empty:C.is_empty ~head:last ~tail:init q))
+          string_of_int_list
+    in
+    let reads_as l q =
+      match reads "" l q with
+      | holds -> holds
+      | exception Disagrees _ -> false
     in
     all_of
       (t
@@ -710,58 +726,127 @@ module Catenable_builds (C : CATENABLE_LIST) = struct
                      [ "by snocs", by_snoc; "by catenations", cat_tree ])
                 (upto (max_size + 1)))
            (upto (max_size + 1)));
-    Random.init seed;
-    all_of
+    (* A run is 150 operations, each on a place in the pool, its result put back there:
+       cons, snoc, the removals, and a catenation with what is in another place, or the
+       same. A step names the places it works on, so a step dropped in shrinking moves no
+       other; a removal from nothing, and a catenation that would pass [cap] elements,
+       are dropped. Every version a run makes is read back whole at its end. *)
+    let module Op = struct
+      type t =
+        | Cons of int * int
+        | Snoc of int * int
+        | Tail of int
+        | Init of int
+        | Cat of int * int
+
+      let describe = function
+        | Cons (x, p) -> Printf.sprintf "p%d <- cons %d p%d" p x p
+        | Snoc (p, x) -> Printf.sprintf "p%d <- snoc p%d %d" p p x
+        | Tail p -> Printf.sprintf "p%d <- tail p%d" p p
+        | Init p -> Printf.sprintf "p%d <- init p%d" p p
+        | Cat (p, q) -> Printf.sprintf "p%d <- p%d ++ p%d" p p q
+      ;;
+    end
+    in
+    let plan draw =
+      let len = Array.make 6 0 in
+      List.filter
+        (fun op ->
+           match op with
+           | Op.Cons (_, p) | Op.Snoc (p, _) ->
+             len.(p) <- len.(p) + 1;
+             true
+           | (Op.Tail p | Op.Init p) when len.(p) > 0 ->
+             len.(p) <- len.(p) - 1;
+             true
+           | Op.Cat (p, q) when len.(p) + len.(q) <= cap ->
+             len.(p) <- len.(p) + len.(q);
+             true
+           | Op.Tail _ | Op.Init _ | Op.Cat _ -> false)
+        draw
+    in
+    let place = QCheck.Gen.int_bound 5
+    and value = QCheck.Gen.int_bound 999 in
+    let runs =
+      run_of
+        ~length:150
+        ~plan
+        ~show:Op.describe
+        QCheck.Gen.(
+          [ 1, map2 (fun x p -> Op.Cons (x, p)) value place
+          ; 2, map2 (fun p x -> Op.Snoc (p, x)) place value
+          ; 1, map (fun p -> Op.Tail p) place
+          ; 2, map2 (fun p q -> Op.Cat (p, q)) place place
+          ]
+          @ if Option.is_none back then [] else [ 1, map (fun p -> Op.Init p) place ])
+    in
+    check_prop
+      ~count:300
+      ~seed
       (t
          (Printf.sprintf
             "300 random runs over a pool of six %s, catenated with each other and with \
              themselves, agree with a list model after every operation, and every \
              version reads back whole at the end"
             noun))
-      (fun note ->
-         for run = 1 to 300 do
-           let pool = Array.make 6 (C.empty, []) in
-           let versions = ref [] in
-           let next = ref 0 in
-           try
-             for _ = 1 to 150 do
-               let i = Random.int 6 in
-               let q, m = pool.(i) in
-               incr next;
-               let x = !next in
-               (* cons, snoc, the removals, two draws in a catenation, and a snoc for
-                  the last draw and for a removal from nothing *)
-               let q', m' =
-                 match Random.int (if Option.is_none back then 6 else 7), back with
-                 | 0, _ -> C.cons x q, x :: m
-                 | 1, _ -> C.snoc q x, m @ [ x ]
-                 | 2, _ when m <> [] -> C.tail q, List.tl m
-                 | 3, Some (_, init) when m <> [] ->
-                   init q, List.take (List.length m - 1) m
-                 | (3 | 4), None | (4 | 5), Some _ ->
-                   let q2, m2 = pool.(Random.int 6) in
-                   if List.length m + List.length m2 > cap then q, m else q ++ q2, m @ m2
-                 | _ -> C.snoc q x, m @ [ x ]
-               in
-               pool.(i) <- q', m';
-               versions := (q', m') :: !versions;
-               if C.is_empty q' <> (m' = [])
-               then failwith "is_empty"
-               else if m' <> [] && C.head q' <> List.hd m'
-               then failwith "head"
-               else (
-                 match back with
-                 | Some (last, _)
-                   when m' <> [] && last q' <> List.nth m' (List.length m' - 1) ->
-                   failwith "last"
-                 | _ -> ())
-             done;
-             if List.exists (fun (q, m) -> not (reads_as m q)) !versions
-             then failwith "a version read back wrong"
-           with
-           | Failure what -> note (Printf.sprintf "run %d: %s" run what)
-           | e -> note (Printf.sprintf "run %d: raised %s" run (Printexc.to_string e))
-         done)
+      runs
+      (fun draw ->
+         let pool = Array.make 6 (C.empty, []) in
+         let versions = ref [] in
+         List.for_all
+           (fun (k, op) ->
+              let p, (q', m') =
+                match op with
+                | Op.Cons (x, p) ->
+                  let q, m = pool.(p) in
+                  p, (C.cons x q, x :: m)
+                | Op.Snoc (p, x) ->
+                  let q, m = pool.(p) in
+                  p, (C.snoc q x, m @ [ x ])
+                | Op.Tail p ->
+                  let q, m = pool.(p) in
+                  p, (C.tail q, List.tl m)
+                | Op.Init p ->
+                  let q, m = pool.(p) in
+                  ( p
+                  , ( (match back with
+                       | Some (_, init) -> init q
+                       | None -> assert false)
+                    , List.take (List.length m - 1) m ) )
+                | Op.Cat (p, r) ->
+                  let q, m = pool.(p)
+                  and q2, m2 = pool.(r) in
+                  p, (q ++ q2, m @ m2)
+              in
+              pool.(p) <- q', m';
+              versions := (k, p, q', m') :: !versions;
+              agrees
+                "is_empty p%d"
+                p
+                ~expect:(m' = [])
+                ~actual:(C.is_empty q')
+                string_of_bool
+              && (m' = []
+                  || agrees
+                       "head p%d"
+                       p
+                       ~expect:(List.hd m')
+                       ~actual:(C.head q')
+                       string_of_int)
+              &&
+              match back with
+              | Some (last, _) when m' <> [] ->
+                agrees
+                  "last p%d"
+                  p
+                  ~expect:(List.nth m' (List.length m' - 1))
+                  ~actual:(last q')
+                  string_of_int
+              | _ -> true)
+           (List.mapi (fun i op -> i + 1, op) (plan draw))
+         && List.for_all
+              (fun (k, p, q, m) -> reads (Printf.sprintf "p%d after step %d" p k) m q)
+              (List.rev !versions))
   ;;
 
   (* What a catenation adds to a workload that goes [m] elements deep: k copies of a

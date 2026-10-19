@@ -188,33 +188,33 @@ module Size_tests (Q : QUEUE_WITH_SIZES) = struct
                  sr
                  fr)))
       (!wrong = []);
-    (* Random runs against the list model, as in the contract, both sizes checked after
-       every operation. *)
-    Random.init 20260924;
-    let bad = ref 0
-    and raised = ref 0 in
-    for _ = 0 to 299 do
-      let q = ref Q.empty
-      and size = ref 0 in
-      try
-        for i = 0 to 59 do
-          if !size = 0 || Random.int 3 > 0
-          then (
-            q := Q.snoc !q i;
-            incr size)
-          else (
-            q := Q.tail !q;
-            decr size);
-          if Q.size_sr !q <> !size || Q.size_fr !q <> !size then incr bad
-        done
-      with
-      | Failure _ -> incr raised
-    done;
-    check_int
-      (t "both sizes agree with a list model after every operation, 300 random runs")
-      ~expect:0
-      ~actual:!bad;
-    check_int (t "no operation raises in those runs") ~expect:0 ~actual:!raised;
+    (* Random runs against the list model, the contract's, both sizes checked after every
+       operation. *)
+    let prop label = check_prop ~count:300 ~seed:20260924 (t label) Queues.runs in
+    (* A run that raises is the next check's business, as it was before. *)
+    prop
+      "both sizes agree with a list model after every operation, 300 random runs"
+      (fun draw ->
+         match
+           Base.replay
+             ~after:(fun q model ->
+               let size = List.length model in
+               agrees "size from s and r" ~expect:size ~actual:(Q.size_sr q) string_of_int
+               && agrees
+                    "size from f and r"
+                    ~expect:size
+                    ~actual:(Q.size_fr q)
+                    string_of_int)
+             draw
+         with
+         | holds -> holds
+         | exception Failure _ -> true);
+    prop
+      "no operation raises in those runs"
+      (Base.replay ~after:(fun q _ ->
+         ignore (Q.size_sr q);
+         ignore (Q.size_fr q);
+         true));
     (* Persistence: every version of a build and of a drain keeps its own size after later
        versions have been made from it. *)
     let n = 64 in

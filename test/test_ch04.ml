@@ -146,33 +146,30 @@ let test_values () =
   eq "reverse of the empty stream" [] (reverse nil);
   eq "reverse of a singleton" [ 1 ] (reverse (of_list [ 1 ]));
   eq "reverse is an involution" l (reverse (reverse s));
-  (* Randomised, against the list functions each one mirrors. *)
-  Random.init 20260920;
-  let bad_append = ref 0
-  and bad_take = ref 0
-  and bad_drop = ref 0
-  and bad_reverse = ref 0
-  and bad_split = ref 0 in
-  for _ = 0 to 299 do
-    let xs = List.init (Random.int 30) (fun _ -> Random.int 100)
-    and ys = List.init (Random.int 30) (fun _ -> Random.int 100)
-    and n = Random.int 35 in
-    let s = of_list xs
-    and t = of_list ys in
-    if to_list (s ++ t) <> xs @ ys then incr bad_append;
-    if to_list (take n s) <> List.take n xs then incr bad_take;
-    if to_list (drop n s) <> List.drop n xs then incr bad_drop;
-    if to_list (reverse s) <> List.rev xs then incr bad_reverse;
-    if to_list (take n s ++ drop n s) <> xs then incr bad_split
-  done;
-  check_int "++ agrees with @, 300 random pairs" ~expect:0 ~actual:!bad_append;
-  check_int "take agrees with the list take, 300 random cases" ~expect:0 ~actual:!bad_take;
-  check_int "drop agrees with the list drop, 300 random cases" ~expect:0 ~actual:!bad_drop;
-  check_int
-    "reverse agrees with List.rev, 300 random lists"
-    ~expect:0
-    ~actual:!bad_reverse;
-  check_int "take n s ++ drop n s is s, 300 random cases" ~expect:0 ~actual:!bad_split
+  (* Randomised, against the list functions each one mirrors. Every check replays the same
+     300 cases: two lists and a count that runs past the end of the first. *)
+  let list = QCheck.(list_size Gen.(int_bound 29) (int_bound 99)) in
+  let prop name f =
+    check_prop
+      ~count:300
+      ~seed:20260920
+      name
+      (QCheck.triple list list (QCheck.int_bound 34))
+      (fun (xs, ys, n) -> f (of_list xs) (of_list ys) xs ys n)
+  in
+  let agree what ~expect actual =
+    agrees "%s" what ~expect ~actual:(to_list actual) string_of_int_list
+  in
+  prop "++ agrees with @, 300 random pairs" (fun s t xs ys _ ->
+    agree "s ++ t" ~expect:(xs @ ys) (s ++ t));
+  prop "take agrees with the list take, 300 random cases" (fun s _ xs _ n ->
+    agree "take n s" ~expect:(List.take n xs) (take n s));
+  prop "drop agrees with the list drop, 300 random cases" (fun s _ xs _ n ->
+    agree "drop n s" ~expect:(List.drop n xs) (drop n s));
+  prop "reverse agrees with List.rev, 300 random lists" (fun s _ xs _ _ ->
+    agree "reverse s" ~expect:(List.rev xs) (reverse s));
+  prop "take n s ++ drop n s is s, 300 random cases" (fun s _ xs _ n ->
+    agree "take n s ++ drop n s" ~expect:xs (take n s ++ drop n s))
 ;;
 
 (* ------------------------------------------ fun lazy: a call does no work *)
@@ -495,14 +492,20 @@ let test_sort () =
     ~actual:(to_list (sort by_key (of_list keyed)))
     string_of_pairs;
   (* Randomised, on keyed elements with few distinct keys, so that one oracle answers for
-     ordering, duplicates and stability together. *)
-  Random.init 20260920;
-  let bad = ref 0 in
-  for _ = 0 to 299 do
-    let xs = List.init (Random.int 40) (fun i -> Random.int 10, i) in
-    if to_list (sort by_key (of_list xs)) <> List.stable_sort by_key xs then incr bad
-  done;
-  check_int "sort agrees with List.stable_sort, 300 random lists" ~expect:0 ~actual:!bad;
+     ordering, duplicates and stability together. What is drawn is the keys; each is paired
+     with its position. *)
+  check_prop
+    ~count:300
+    ~seed:20260920
+    "sort agrees with List.stable_sort, 300 random lists"
+    QCheck.(list_size Gen.(int_bound 39) (int_bound 9))
+    (fun keys ->
+       let xs = List.mapi (fun i k -> k, i) keys in
+       agrees
+         "sort"
+         ~expect:(List.stable_sort by_key xs)
+         ~actual:(to_list (sort by_key (of_list xs)))
+         string_of_pairs);
   (* fun lazy, exactly as for the four functions of Figure 4.1. *)
   let s, opened = source (upto 5) in
   comparisons := 0;

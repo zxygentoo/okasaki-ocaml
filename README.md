@@ -4,7 +4,7 @@ Working through Chris Okasaki's [Purely Functional Data Structures](https://www.
 
 ## Requirements
 
-OCaml 5.3 or later, dune, and Alcotest for the tests. With opam:
+OCaml 5.3 or later, dune, Alcotest and QCheck (`qcheck-core`) for the tests. With opam:
 
 ```sh
 git clone https://github.com/zxygentoo/okasaki-ocaml

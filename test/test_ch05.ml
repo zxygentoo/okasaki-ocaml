@@ -699,13 +699,13 @@ let test_splay_sort () =
   eq "sort of a sorted list" [ 1; 2; 3; 4 ] [ 1; 2; 3; 4 ];
   eq "sort of a reversed list" [ 1; 2; 3; 4 ] [ 4; 3; 2; 1 ];
   eq "sort keeps duplicates" [ 1; 1; 2; 2; 3; 3 ] [ 2; 1; 3; 1; 2; 3 ];
-  Random.init 20260922;
-  let bad = ref 0 in
-  for _ = 0 to 299 do
-    let xs = List.init (Random.int 40) (fun _ -> Random.int 10) in
-    if sort xs <> List.sort compare xs then incr bad
-  done;
-  check_int "sort agrees with List.sort, 300 random lists" ~expect:0 ~actual:!bad;
+  check_prop
+    ~count:300
+    ~seed:20260922
+    "sort agrees with List.sort, 300 random lists"
+    QCheck.(list_size Gen.(int_bound 39) (int_bound 9))
+    (fun xs ->
+       agrees "sort" ~expect:(List.sort compare xs) ~actual:(sort xs) string_of_int_list);
   (* Cost per element, at two sizes a hundred apart. *)
   let per_element xs =
     let n = float_of_int (List.length xs) in
@@ -954,19 +954,17 @@ module Pairing_checks = Pairing_tests (Pairing)
 let test_pairing () =
   Pairing_contract.run_contract "PairingHeap";
   (* Two heaps of this chapter, two shapes in memory, one behaviour. *)
-  Random.init 20260930;
-  let disagree = ref 0 in
-  for _ = 0 to 299 do
-    let xs = List.init (Random.int 60) (fun _ -> Random.int 30) in
-    if
-      Pairing_contract.drain (Pairing_contract.of_list xs)
-      <> Splay_checks.drain (Splay_checks.of_list xs)
-    then incr disagree
-  done;
-  check_int
+  check_prop
+    ~count:300
+    ~seed:20260930
     "PairingHeap and SplayHeap drain identically, 300 random lists"
-    ~expect:0
-    ~actual:!disagree;
+    QCheck.(list_size Gen.(int_bound 59) (int_bound 29))
+    (fun xs ->
+       agrees
+         "PairingHeap's drain"
+         ~expect:(Splay_checks.drain (Splay_checks.of_list xs))
+         ~actual:(Pairing_contract.drain (Pairing_contract.of_list xs))
+         string_of_int_list);
   (* Costs only once the contract holds, and the worst case, on a heap of 100000 elements,
      only once the sequences do. *)
   Pairing_checks.run_amortised "PairingHeap";
@@ -1049,35 +1047,55 @@ let test_to_binary () =
     | T2 _ -> false
   in
   (* Random heap-ordered multiway trees: every child's element is at least its parent's,
-     and E never appears in a child list. *)
+     and E never appears in a child list. A tree shrinks to one of its children, to
+     itself less a child, or to itself with a child shrunk, and each of those is
+     heap-ordered again. Printed in the notation of the names above. *)
   let rec random_tree lo depth =
-    let x = lo + Random.int 4 in
-    let k = if depth = 0 then 0 else Random.int 4 in
-    T1 (x, List.init k (fun _ -> random_tree x (depth - 1)))
+    QCheck.Gen.(
+      int_bound 3
+      >>= fun d ->
+      let x = lo + d in
+      list_size (if depth = 0 then return 0 else int_bound 3) (random_tree x (depth - 1))
+      >|= fun hs -> T1 (x, hs))
   in
-  Random.init 20261002;
-  let not_bijective = ref 0
-  and lost = ref 0
-  and sibling_root = ref 0
-  and not_half = ref 0 in
-  for _ = 0 to 299 do
-    let h = random_tree 0 (Random.int 5) in
+  let rec shrink_tree h yield =
+    match h with
+    | E1 -> ()
+    | T1 (x, hs) ->
+      List.iter yield hs;
+      List.iteri (fun i _ -> yield (T1 (x, List.filteri (fun j _ -> j <> i) hs))) hs;
+      List.iteri
+        (fun i c ->
+           shrink_tree c (fun c' ->
+             yield (T1 (x, List.mapi (fun j c -> if j = i then c' else c) hs))))
+        hs
+  in
+  let rec show1 = function
+    | E1 -> "E"
+    | T1 (x, []) -> string_of_int x
+    | T1 (x, hs) -> Printf.sprintf "%d[%s]" x (String.concat ", " (List.map show1 hs))
+  in
+  let trees =
+    QCheck.make
+      ~print:show1
+      ~shrink:shrink_tree
+      QCheck.Gen.(int_bound 4 >>= random_tree 0)
+  in
+  let prop name = check_prop ~count:300 ~seed:20261002 name trees in
+  prop "converting and back gives the tree again, 300 random trees" (fun h ->
+    agrees "from_binary (to_binary h)" ~expect:h ~actual:(from_binary (to_binary h)) show1);
+  prop "every element survives, once" (fun h ->
+    agrees
+      "the elements"
+      ~expect:(List.sort compare (elements1 h))
+      ~actual:(List.sort compare (elements2 (to_binary h)))
+      string_of_int_list);
+  prop "the root's right field is always E" (fun h ->
     let b = to_binary h in
-    if
-      try from_binary b <> h with
-      | Invalid_argument _ -> true
-    then incr not_bijective;
-    if List.sort compare (elements2 b) <> List.sort compare (elements1 h) then incr lost;
-    if not (root_right_empty b) then incr sibling_root;
-    if not (half_ordered b) then incr not_half
-  done;
-  check_int
-    "converting and back gives the tree again, 300 random trees"
-    ~expect:0
-    ~actual:!not_bijective;
-  check_int "every element survives, once" ~expect:0 ~actual:!lost;
-  check_int "the root's right field is always E" ~expect:0 ~actual:!sibling_root;
-  check_int "a heap-ordered tree comes out half-ordered" ~expect:0 ~actual:!not_half;
+    holds "to_binary gives %s" (show b) (root_right_empty b));
+  prop "a heap-ordered tree comes out half-ordered" (fun h ->
+    let b = to_binary h in
+    holds "to_binary gives %s" (show b) (half_ordered b));
   (* One binary node per multiway node, on a wide tree and on a deep one. *)
   let star n = T1 (0, List.init n (fun i -> T1 (i + 1, []))) in
   let rec chain n = if n = 0 then [] else [ T1 (n, chain (n - 1)) ] in
@@ -1128,19 +1146,17 @@ module Binary_pairing_checks = Pairing_tests (Binary_pairing)
 let test_binary_pairing () =
   Binary_pairing_contract.run_contract "BinaryPairingHeap";
   (* The same heap in two shapes. *)
-  Random.init 20261001;
-  let disagree = ref 0 in
-  for _ = 0 to 299 do
-    let xs = List.init (Random.int 60) (fun _ -> Random.int 30) in
-    match Binary_pairing_contract.drain (Binary_pairing_contract.of_list xs) with
-    | got ->
-      if got <> Pairing_contract.drain (Pairing_contract.of_list xs) then incr disagree
-    | exception Failure _ -> incr disagree
-  done;
-  check_int
+  check_prop
+    ~count:300
+    ~seed:20261001
     "BinaryPairingHeap and PairingHeap drain identically, 300 random lists"
-    ~expect:0
-    ~actual:!disagree;
+    QCheck.(list_size Gen.(int_bound 59) (int_bound 29))
+    (fun xs ->
+       agrees
+         "BinaryPairingHeap's drain"
+         ~expect:(Pairing_contract.drain (Pairing_contract.of_list xs))
+         ~actual:(Binary_pairing_contract.drain (Binary_pairing_contract.of_list xs))
+         string_of_int_list);
   (* Costs only once the contract holds, and the worst case, on a heap of 100000 elements,
      only once the sequences do. *)
   Binary_pairing_checks.run_amortised "BinaryPairingHeap";

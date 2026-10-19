@@ -1495,22 +1495,29 @@ module Extract_tests (S : SORTABLE_WITH_EXTRACT with type Element.t = int) = str
       [ 1; 2; 3 ]
       (S.extract 10 (of_list [ 3; 1; 2 ]));
     eq "extract from empty is empty" [] (S.extract 3 S.empty);
-    Random.init 20260924;
-    let bad = ref 0
-    and raised = ref 0 in
-    for _ = 0 to 299 do
-      let xs = List.init (Random.int 200) (fun _ -> Random.int 50) in
-      let k = Random.int 12 in
-      match S.extract k (of_list xs) = List.take k (List.sort compare xs) with
-      | true -> ()
-      | false -> incr bad
-      | exception Failure _ -> incr raised
-    done;
-    check_int (t "no extract raises, 300 random lists") ~expect:0 ~actual:!raised;
-    check_int
+    let lists_and_k =
+      QCheck.(pair (list_size Gen.(int_bound 199) (int_bound 49)) (int_bound 11))
+    in
+    check_prop
+      ~count:300
+      ~seed:20260924
+      (t "no extract raises, 300 random lists")
+      lists_and_k
+      (fun (xs, k) ->
+         ignore (S.extract k (of_list xs));
+         true);
+    check_prop
+      ~count:300
+      ~seed:20260924
       (t "extract k is the first k of sort, 300 random lists and k")
-      ~expect:0
-      ~actual:!bad;
+      lists_and_k
+      (fun (xs, k) ->
+         agrees
+           "extract %d"
+           k
+           ~expect:(List.take k (List.sort compare xs))
+           ~actual:(S.extract k (of_list xs))
+           string_of_int_list);
     (* The collection is not consumed: extract, then sort, then extract again. *)
     let c = of_list [ 5; 3; 8; 1; 9; 2 ] in
     eq "extract 2" [ 1; 2 ] (S.extract 2 c);
